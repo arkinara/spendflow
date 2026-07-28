@@ -1,0 +1,20 @@
+owner: arkinara
+repo: spendflow
+project_title: SpendFlow Board
+project_number: 5
+project_id: PVT_kwHOEL4FrM4BesaS
+project_url: https://github.com/users/arkinara/projects/5
+status_field_id: PVTSSF_lAHOEL4FrM4BesaSzhZEtJU
+lanes:
+  todo:
+    id: f75ad846
+    name: Todo
+  in_progress:
+    id: 47fc9ee4
+    name: In Progress
+  in_qa:
+    id: 379bfbc0
+    name: In QA
+  done:
+    id: 98236657
+    name: Done
