@@ -13,3 +13,8 @@ npm-debug.log*
 .idea/
 coverage/
 scripts/__pycache__/
+
+# Next.js generated
+/frontend/.next/
+/frontend/next-env.d.ts
+/frontend/tsconfig.tsbuildinfo
