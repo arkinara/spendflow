@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ChevronDown, Check, UserCog } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar } from "@/components/ui/Avatar";
+import { useSession, ROLE_HOME, ROLE_LABEL } from "@/lib/auth/session";
 import {
   users,
   CURRENT_USER_BY_ROLE,
@@ -13,57 +14,29 @@ import {
   type User,
 } from "@/lib/mock/mock_data";
 
-interface RoleContextValue {
+/**
+ * Backwards-compatible role hook. Used inside the guarded app tree where a
+ * session is guaranteed to exist.
+ */
+export function useRole(): {
   role: Role;
-  setRole: (role: Role) => void;
   user: User;
+  setRole: (role: Role) => void;
+} {
+  const { session, user, signInAs } = useSession();
+  if (!session || !user) {
+    throw new Error("useRole requires an authenticated session");
+  }
+  return { role: session.role, user, setRole: signInAs };
 }
 
-const RoleContext = React.createContext<RoleContextValue | null>(null);
-
-export function useRole(): RoleContextValue {
-  const ctx = React.useContext(RoleContext);
-  if (!ctx) throw new Error("useRole must be used within <RoleProvider>");
-  return ctx;
-}
-
-const STORAGE_KEY = "spendflow.role";
-const ROLE_LABEL: Record<Role, string> = {
-  employee: "Employee",
-  approver: "Approver",
-  finance: "Finance Admin",
-};
-
-export function RoleProvider({ children }: { children: React.ReactNode }) {
-  const [role, setRoleState] = React.useState<Role>("employee");
-
-  React.useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY) as Role | null;
-    if (stored && stored in CURRENT_USER_BY_ROLE) setRoleState(stored);
-  }, []);
-
-  const setRole = React.useCallback((r: Role) => {
-    setRoleState(r);
-    window.localStorage.setItem(STORAGE_KEY, r);
-  }, []);
-
-  const user = getUser(CURRENT_USER_BY_ROLE[role])!;
-
-  return (
-    <RoleContext.Provider value={{ role, setRole, user }}>
-      {children}
-    </RoleContext.Provider>
-  );
-}
-
-const ROLE_HOME: Record<Role, string> = {
-  employee: "/employee",
-  approver: "/approver",
-  finance: "/finance",
-};
-
+/**
+ * Dev-only demo role switcher. Re-issues the mock session for the chosen role
+ * (equivalent to signing in as that role) and routes to its home.
+ */
 export function RoleSwitcher() {
-  const { role, setRole } = useRole();
+  const { session, signInAs } = useSession();
+  const role = session?.role ?? "employee";
   const router = useRouter();
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
@@ -76,9 +49,10 @@ export function RoleSwitcher() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  const roleUsers = (Object.keys(CURRENT_USER_BY_ROLE) as Role[]).map(
-    (r) => ({ role: r, user: getUser(CURRENT_USER_BY_ROLE[r])! })
-  );
+  const roleUsers = (Object.keys(CURRENT_USER_BY_ROLE) as Role[]).map((r) => ({
+    role: r,
+    user: getUser(CURRENT_USER_BY_ROLE[r])!,
+  }));
 
   return (
     <div className="relative" ref={ref}>
@@ -87,6 +61,7 @@ export function RoleSwitcher() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={`Viewing as ${ROLE_LABEL[role]}. Change demo role.`}
         className="inline-flex items-center gap-2 rounded-full border border-outline-variant bg-surface-container px-2.5 py-1.5 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container-highest focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         <UserCog className="h-4 w-4 text-primary" strokeWidth={1.75} aria-hidden />
@@ -101,6 +76,7 @@ export function RoleSwitcher() {
       {open && (
         <div
           role="menu"
+          aria-label="Switch demo role"
           className="absolute right-0 z-50 mt-2 w-64 animate-fade-in overflow-hidden rounded-2xl border border-outline-variant bg-surface-container-high p-1.5 shadow-lg"
         >
           <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-on-surface-variant">
@@ -114,7 +90,7 @@ export function RoleSwitcher() {
                 role="menuitemradio"
                 aria-checked={active}
                 onClick={() => {
-                  setRole(r);
+                  signInAs(r);
                   setOpen(false);
                   router.push(ROLE_HOME[r]);
                 }}

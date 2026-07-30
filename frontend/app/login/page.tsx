@@ -1,13 +1,19 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { Wallet, Mail, Lock, ArrowRight, User, ShieldCheck, Banknote } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Wallet, Mail, Lock, ArrowRight, User, ShieldCheck, Banknote, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
-import { useRole } from "@/components/shell/RoleSwitcher";
-import { CURRENT_USER_BY_ROLE, getUser, type Role } from "@/lib/mock/mock_data";
+import {
+  useSession,
+  MOCK_CREDENTIALS,
+  ROLE_HOME,
+  type SignInResult,
+} from "@/lib/auth/session";
+import { getUser } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/mock/mock_data";
 
 const PRESETS: { role: Role; label: string; icon: typeof User }[] = [
   { role: "employee", label: "Sign in as Employee", icon: User },
@@ -15,20 +21,49 @@ const PRESETS: { role: Role; label: string; icon: typeof User }[] = [
   { role: "finance", label: "Sign in as Finance", icon: Banknote },
 ];
 
-const ROLE_HOME: Record<Role, string> = {
-  employee: "/employee",
-  approver: "/approver",
-  finance: "/finance",
-};
-
 export default function LoginPage() {
+  return (
+    <React.Suspense fallback={null}>
+      <LoginForm />
+    </React.Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
-  const { setRole } = useRole();
+  const searchParams = useSearchParams();
+  const { status, signIn, signInAs } = useSession();
+
   const [email, setEmail] = React.useState("aulia.pratiwi@spendflow.example");
   const [password, setPassword] = React.useState("demo1234");
+  const [error, setError] = React.useState<string | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
 
-  function signIn(role: Role) {
-    setRole(role);
+  // Already authenticated? Bounce to the role home (or the `next` target).
+  React.useEffect(() => {
+    if (status !== "authenticated") return;
+    const next = searchParams.get("next");
+    router.replace(next || "/");
+  }, [status, searchParams, router]);
+
+  function applyResult(result: SignInResult) {
+    if (result.ok) {
+      setSubmitting(true);
+      router.push(ROLE_HOME[result.role]);
+    } else {
+      setError(result.error);
+    }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    applyResult(signIn(email, password));
+  }
+
+  function preset(role: Role) {
+    setError(null);
+    signInAs(role);
     router.push(ROLE_HOME[role]);
   }
 
@@ -73,19 +108,28 @@ export default function LoginPage() {
               Sign in to continue to your SpendFlow workspace.
             </p>
 
-            <form
-              className="mt-8 space-y-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                signIn("employee");
-              }}
-            >
+            {error && (
+              <div
+                role="alert"
+                aria-live="assertive"
+                className="mt-4 flex items-start gap-2 rounded-xl border border-error/40 bg-error-container/50 px-3.5 py-2.5 text-sm text-on-surface"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-error" strokeWidth={1.75} aria-hidden />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <form className="mt-6 space-y-4" onSubmit={handleSubmit} aria-label="Sign in">
               <TextField
                 label="Work email"
                 type="email"
                 iconLeft={Mail}
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (error) setError(null);
+                }}
+                autoComplete="email"
                 required
               />
               <TextField
@@ -93,11 +137,15 @@ export default function LoginPage() {
                 type="password"
                 iconLeft={Lock}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                helper="Any value works — this is a mock login."
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(null);
+                }}
+                helper="Demo password is demo1234."
+                autoComplete="current-password"
                 required
               />
-              <Button type="submit" fullWidth iconRight={ArrowRight}>
+              <Button type="submit" fullWidth iconRight={ArrowRight} loading={submitting}>
                 Sign in
               </Button>
             </form>
@@ -112,12 +160,14 @@ export default function LoginPage() {
 
             <div className="space-y-2.5">
               {PRESETS.map((p) => {
-                const u = getUser(CURRENT_USER_BY_ROLE[p.role])!;
+                const cred = MOCK_CREDENTIALS.find((c) => c.role === p.role)!;
+                const u = getUser(cred.userId)!;
                 return (
                   <button
                     key={p.role}
                     type="button"
-                    onClick={() => signIn(p.role)}
+                    onClick={() => preset(p.role)}
+                    aria-label={`${p.label} — ${u.name}`}
                     className="flex w-full items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-low px-4 py-3 text-left transition-colors hover:bg-surface-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   >
                     <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">

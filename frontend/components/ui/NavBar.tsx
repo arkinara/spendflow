@@ -26,10 +26,10 @@ export function NavBar({ items }: NavBarProps) {
 
   return (
     <>
-      {/* Rail — tablet (icon only) + desktop (expanded). */}
+      {/* Rail — tablet (icon only, ≥768px) + desktop (expanded, ≥1024px). */}
       <aside
-        className="fixed bottom-0 left-0 top-16 z-20 hidden w-20 flex-col gap-1 border-r border-outline-variant bg-surface-container-high px-2 py-4 sm:flex lg:w-64 lg:px-3"
-        aria-label="Primary"
+        className="fixed bottom-0 left-0 top-16 z-20 hidden w-20 flex-col gap-1 border-r border-outline-variant bg-surface-container-high px-2 py-4 md:flex lg:w-64 lg:px-3"
+        aria-label="Primary navigation"
       >
         {items.map((item) => {
           const active = isActive(pathname, item.href);
@@ -62,10 +62,10 @@ export function NavBar({ items }: NavBarProps) {
         })}
       </aside>
 
-      {/* Bottom nav — mobile. */}
+      {/* Bottom nav — mobile (<768px). */}
       <nav
-        className="fixed inset-x-0 bottom-0 z-30 flex items-stretch justify-around border-t border-outline-variant bg-surface-container-high px-1 pb-[env(safe-area-inset-bottom)] pt-1.5 sm:hidden"
-        aria-label="Primary"
+        className="fixed inset-x-0 bottom-0 z-30 flex items-stretch justify-around border-t border-outline-variant bg-surface-container-high px-1 pb-[env(safe-area-inset-bottom)] pt-1.5 md:hidden"
+        aria-label="Primary navigation"
       >
         {items.slice(0, 5).map((item) => {
           const active = isActive(pathname, item.href);

@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
-import { RoleProvider } from "@/components/shell/RoleSwitcher";
+import { SessionProvider } from "@/lib/auth/session";
 
 export const metadata: Metadata = {
   title: "SpendFlow — Spend Management",
@@ -40,9 +40,9 @@ export default function RootLayout({
       </head>
       <body>
         <ThemeProvider>
-          <RoleProvider>
+          <SessionProvider>
             <SnackbarProvider>{children}</SnackbarProvider>
-          </RoleProvider>
+          </SessionProvider>
         </ThemeProvider>
       </body>
     </html>

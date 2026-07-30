@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Bell, Wallet } from "lucide-react";
+import { Bell, LogOut, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "./Avatar";
@@ -14,6 +14,7 @@ export interface AppBarProps {
   roleSwitcher?: React.ReactNode;
   user?: { name: string; subtitle?: string; color?: string };
   homeHref?: string;
+  onSignOut?: () => void;
 }
 
 export function AppBar({
@@ -23,12 +24,17 @@ export function AppBar({
   roleSwitcher,
   user,
   homeHref = "/",
+  onSignOut,
 }: AppBarProps) {
   return (
-    <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-outline-variant bg-surface-container-high px-4 sm:px-6">
+    <header
+      className="sticky top-0 z-40 flex h-16 items-center justify-between gap-3 border-b border-outline-variant bg-surface-container-high px-4 sm:px-6"
+      aria-label="Top bar"
+    >
       <div className="flex min-w-0 items-center gap-3">
         <Link
           href={homeHref}
+          aria-label={`${title} home`}
           className="flex items-center gap-2.5 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
@@ -60,6 +66,16 @@ export function AppBar({
           )}
         </Link>
         <ThemeToggle />
+        {onSignOut && (
+          <button
+            type="button"
+            onClick={onSignOut}
+            aria-label="Sign out"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full text-on-surface-variant transition-colors hover:bg-surface-container-highest focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <LogOut className="h-5 w-5" strokeWidth={1.75} aria-hidden />
+          </button>
+        )}
         {user && (
           <div className="ml-1 hidden items-center gap-2 md:flex">
             <Avatar name={user.name} size="sm" color={(user.color as never) ?? "primary"} />
