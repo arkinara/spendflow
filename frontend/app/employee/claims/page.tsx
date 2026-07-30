@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { Plus, Search, ReceiptText, FilterX } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { useRole } from "@/components/shell/RoleSwitcher";
@@ -21,8 +22,38 @@ import { formatCurrency, formatDate } from "@/lib/format";
 
 type Filter = "all" | ClaimStatus;
 
+const VALID_STATUSES: ClaimStatus[] = [
+  "draft",
+  "pending",
+  "action_required",
+  "approved",
+  "processing",
+  "paid",
+  "rejected",
+];
+
+function resolveInitialFilter(statusParam: string | null): Filter {
+  if (statusParam && (VALID_STATUSES as string[]).includes(statusParam)) {
+    return statusParam as ClaimStatus;
+  }
+  return "all";
+}
+
+/**
+ * Suspense boundary is required because this page reads `useSearchParams` to
+ * support deep links from the dashboard status cards (e.g. `?status=pending`).
+ */
 export default function ClaimHistoryPage() {
+  return (
+    <React.Suspense fallback={null}>
+      <ClaimHistoryInner />
+    </React.Suspense>
+  );
+}
+
+function ClaimHistoryInner() {
   const { user } = useRole();
+  const searchParams = useSearchParams();
   const all = React.useMemo(
     () =>
       claimsForEmployee(user.id).sort((a, b) =>
@@ -31,7 +62,9 @@ export default function ClaimHistoryPage() {
     [user.id]
   );
 
-  const [filter, setFilter] = React.useState<Filter>("all");
+  const [filter, setFilter] = React.useState<Filter>(() =>
+    resolveInitialFilter(searchParams.get("status"))
+  );
   const [query, setQuery] = React.useState("");
 
   const counts = React.useMemo(() => {

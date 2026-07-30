@@ -542,6 +542,36 @@ export const claims: Claim[] = [
       { id: "ap-21", actorId: "u-emp-2", action: "submitted", at: "2026-07-25T14:00:00+07:00" },
     ],
   },
+
+  // 9. Paid (earlier reimbursement — second entry for the recently-paid list)
+  {
+    id: "clm-1009",
+    reference: "EXP-2026-0998",
+    title: "Team Offsite – Bandung",
+    purpose: "Quarterly operations team offsite and planning workshop.",
+    employeeId: "u-emp-1",
+    status: "paid",
+    currency: "IDR",
+    createdAt: "2026-05-04T09:00:00+07:00",
+    submittedAt: "2026-05-05T09:00:00+07:00",
+    decidedAt: "2026-05-08T09:00:00+07:00",
+    tripStart: "2026-05-02",
+    tripEnd: "2026-05-03",
+    destination: "Bandung",
+    lineItems: [
+      li("li-27", "flight", "Return flight CGK ⇄ BDO", "2026-05-02", 1_900_000, true),
+      li("li-28", "meals", "Team meals", "2026-05-02", 250_000, true),
+    ],
+    attachments: [
+      { id: "at-14", fileName: "flight-bdo.pdf", sizeKb: 198, mimeType: "application/pdf", lineItemId: "li-27", uploadedAt: "2026-05-05T08:30:00+07:00" },
+    ],
+    approvals: [
+      { id: "ap-22", actorId: "u-emp-1", action: "created", at: "2026-05-04T09:00:00+07:00" },
+      { id: "ap-23", actorId: "u-emp-1", action: "submitted", at: "2026-05-05T09:00:00+07:00" },
+      { id: "ap-24", actorId: "u-mgr-1", action: "approved", at: "2026-05-08T09:00:00+07:00", note: "Approved." },
+      { id: "ap-25", actorId: "u-fin-1", action: "paid", at: "2026-05-12T10:00:00+07:00", note: "Disbursed via bank transfer." },
+    ],
+  },
 ];
 
 /* --------------------------------------------------------------- payments -- */
