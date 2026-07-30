@@ -141,6 +141,14 @@ export interface Claim {
   attachments: Attachment[];
   approvals: ApprovalAction[];
   exception?: ClaimException;
+  /**
+   * Zero-based index into the routing steps the claim must clear before it is
+   * considered fully approved (see {@link routingStepsForClaim}). Phase 1 has a
+   * single line-manager approver at step 0; high-value or exception-flagged
+   * claims also pass through "Finance review" at step 1. Undefined is treated
+   * as 0 so existing fixtures stay valid without re-seeding.
+   */
+  currentStepIndex?: number;
 }
 
 export interface Payment {
@@ -623,6 +631,48 @@ export function computeClaimTotal(claim: Claim): number {
   return claim.lineItems.reduce((sum, item) => sum + item.amount, 0);
 }
 
+/** Threshold above which a claim needs a second "Finance review" step. */
+export const HIGH_VALUE_THRESHOLD = 5_000_000;
+
+/**
+ * Resolve the ordered approval steps a claim must clear, mirroring the routing
+ * rules fixture: standard claims stop at the line manager; high-value or
+ * exception-flagged claims also pass through a finance review step. Used by the
+ * approver decision flow to decide whether "Approve" advances the claim to the
+ * next step or finalises it.
+ */
+export function routingStepsForClaim(claim: Claim): string[] {
+  if (claim.exception || computeClaimTotal(claim) > HIGH_VALUE_THRESHOLD) {
+    return ["Line manager", "Finance review"];
+  }
+  return ["Line manager"];
+}
+
+/**
+ * Claims currently awaiting the line-manager approver (step 0). Pending claims
+ * that have already been approved past step 0 (advanced to Finance review) are
+ * intentionally excluded — they have left the approver's inbox. Phase 1 has a
+ * single approver, so the optional id is accepted for forward-compatibility but
+ * not yet used to filter.
+ */
+export function claimsForApprover(_approverId?: string): Claim[] {
+  return claims.filter(
+    (c) => c.status === "pending" && (c.currentStepIndex ?? 0) === 0
+  );
+}
+
+/**
+ * Push a notification into the live store. Used by the mock decision flow so the
+ * employee/finance audience sees a fresh row after an approval, rejection, or
+ * return — mirroring how the real backend would emit domain events.
+ */
+let notificationSeq = 9000;
+export function pushNotification(n: Omit<Notification, "id">): Notification {
+  const entry: Notification = { id: `nt-${++notificationSeq}`, ...n };
+  notifications.unshift(entry);
+  return entry;
+}
+
 export function getUser(id: string): User | undefined {
   return users.find((u) => u.id === id);
 }
@@ -641,11 +691,6 @@ export function getCategory(id: ExpenseCategoryId): ExpenseCategory | undefined 
 
 export function claimsForEmployee(employeeId: string): Claim[] {
   return claims.filter((c) => c.employeeId === employeeId);
-}
-
-/** Claims awaiting the given approver (Phase 1: single approver). */
-export function claimsForApprover(): Claim[] {
-  return claims.filter((c) => c.status === "pending");
 }
 
 export function openExceptions(): Claim[] {
