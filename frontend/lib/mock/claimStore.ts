@@ -142,3 +142,50 @@ export function __removeClaim(id: string): void {
   const idx = claims.findIndex((c) => c.id === id);
   if (idx >= 0) claims.splice(idx, 1);
 }
+
+/**
+ * Withdraw (delete) a draft claim owned by the employee. Mock-only: Phase 1 has
+ * no persistence, so "withdraw" simply removes the claim from the live array.
+ * Returns true if removed. Throws if the claim is missing, not a draft, or not
+ * owned by the employee — the page surfaces that as an explicit error state.
+ */
+export function withdrawClaim(id: string, employeeId: string): boolean {
+  const claim = claims.find((c) => c.id === id);
+  if (!claim) throw new Error("That claim no longer exists.");
+  if (claim.employeeId !== employeeId) throw new Error("Not allowed.");
+  if (claim.status !== "draft") {
+    throw new Error("Only draft claims can be withdrawn.");
+  }
+  __removeClaim(id);
+  return true;
+}
+
+/**
+ * Resubmit a claim that was returned (action_required) back into the approval
+ * flow. Mutates the live store: clears the open exception, flips status to
+ * pending, and stamps a `resubmitted` approval event so the status timeline
+ * re-renders immediately with the new transition. Returns the updated claim.
+ */
+export function resubmitClaim(id: string, employeeId: string): Claim {
+  const claim = claims.find((c) => c.id === id);
+  if (!claim) throw new Error("That claim no longer exists.");
+  if (claim.employeeId !== employeeId) throw new Error("Not allowed.");
+  if (claim.status !== "action_required") {
+    throw new Error("Only returned claims can be resubmitted.");
+  }
+
+  const now = new Date().toISOString();
+  claim.status = "pending";
+  claim.submittedAt = now;
+  if (claim.exception && claim.exception.status === "open") {
+    claim.exception = { ...claim.exception, status: "resolved" };
+  }
+  claim.approvals.push({
+    id: `${claim.id}-ap-${claim.approvals.length + 1}`,
+    actorId: employeeId,
+    action: "resubmitted",
+    at: now,
+    note: "Resubmitted after addressing the reviewer's request.",
+  });
+  return claim;
+}
