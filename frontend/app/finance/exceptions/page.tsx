@@ -4,32 +4,51 @@ import * as React from "react";
 import {
   AlertTriangle,
   ShieldCheck,
-  ReceiptText,
-  ExternalLink,
+  ShieldAlert,
   CheckCircle2,
+  XCircle,
+  RefreshCw,
+  AlertOctagon,
+  Plane,
+  BedDouble,
+  Utensils,
+  Car,
+  Route as RouteIcon,
+  Receipt,
+  type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
+import { useRole } from "@/components/shell/RoleSwitcher";
 import { Card } from "@/components/ui/Card";
 import { DataTable, type Column } from "@/components/ui/DataTable";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { TextArea } from "@/components/ui/TextArea";
-import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
+import { useFinanceExceptions } from "@/lib/mock/useFinanceLists";
+import { resolveException, type ExceptionResolution } from "@/lib/mock/claimStore";
 import {
-  openExceptions,
+  evaluateLinePolicy,
+  violationsForLine,
+} from "@/lib/mock/policy";
+import {
   computeClaimTotal,
+  getCategory,
   getUser,
   type Claim,
   type ClaimException,
+  type LineItem,
+  type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
 import { formatCurrency, formatDate } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 const EXCEPTION_LABEL: Record<ClaimException["type"], string> = {
   missing_receipt: "Missing receipt",
-  over_policy: "Over policy",
+  over_policy: "Over policy cap",
   duplicate: "Possible duplicate",
   late_submission: "Late submission",
 };
@@ -40,44 +59,163 @@ const SEVERITY_TONE: Record<ClaimException["severity"], string> = {
   low: "bg-info-container text-info-container-foreground",
 };
 
-const RESOLUTIONS = [
-  { value: "waive", label: "Waive — accept as-is" },
-  { value: "request_receipt", label: "Request receipt from employee" },
-  { value: "return", label: "Return claim to approver" },
-  { value: "reject", label: "Reject the flagged line" },
-];
+const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {
+  flight: Plane,
+  hotel: BedDouble,
+  meals: Utensils,
+  taxi: Car,
+  mileage: RouteIcon,
+  other: Receipt,
+};
 
 export default function ExceptionsPage() {
+  const { user } = useRole();
   const { show } = useSnackbar();
-  const [resolved, setResolved] = React.useState<Set<string>>(new Set());
-  const [active, setActive] = React.useState<Claim | null>(null);
-  const [resolution, setResolution] = React.useState<string>();
-  const [note, setNote] = React.useState("");
-  const [error, setError] = React.useState<string>();
+  const { state, retry, refresh } = useFinanceExceptions();
 
-  const all = openExceptions();
-  const rows = all.filter((c) => !resolved.has(c.id));
+  const [active, setActive] = React.useState<Claim | null>(null);
+  const [pendingAction, setPendingAction] = React.useState<ExceptionResolution | null>(null);
+  const [note, setNote] = React.useState("");
+  const [noteError, setNoteError] = React.useState<string>();
+  const [submitting, setSubmitting] = React.useState(false);
+  const [conflict, setConflict] = React.useState<string | null>(null);
 
   function openResolve(claim: Claim) {
     setActive(claim);
-    setResolution(undefined);
+    setPendingAction(null);
     setNote("");
-    setError(undefined);
+    setNoteError(undefined);
+  }
+
+  function closeResolve() {
+    if (submitting) return;
+    setActive(null);
+    setPendingAction(null);
+    setNote("");
+    setNoteError(undefined);
   }
 
   function confirmResolve() {
-    if (!resolution) {
-      setError("Choose how you want to resolve this exception.");
+    if (!active || !pendingAction) return;
+    if (note.trim().length === 0) {
+      setNoteError("A justification is required so the decision is auditable.");
       return;
     }
-    if (active) {
-      setResolved((s) => new Set(s).add(active.id));
-      show(`Exception on ${active.reference} resolved.`, { tone: "success" });
+    setSubmitting(true);
+    try {
+      const updated = resolveException({
+        claimId: active.id,
+        actorId: user.id,
+        action: pendingAction,
+        note,
+      });
+      show(
+        pendingAction === "override"
+          ? `Exception overridden — ${updated.reference} is ready to pay.`
+          : `${updated.reference} returned to the employee.`,
+        { tone: "success" }
+      );
+      closeResolve();
+      refresh();
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "We couldn't apply this decision. Try again.";
+      setConflict(message);
+      closeResolve();
+      refresh();
+    } finally {
+      setSubmitting(false);
     }
-    setActive(null);
   }
 
-  const columns: Column<Claim>[] = [
+  return (
+    <AppShell>
+      <div className="space-y-5">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-on-surface">Exception queue</h1>
+          <p className="mt-1 text-sm text-on-surface-variant">
+            {state.status === "ready"
+              ? `${state.claims.length} approved claim${state.claims.length === 1 ? "" : "s"} with an open policy flag awaiting your judgment.`
+              : "Approved claims with open policy flags awaiting a finance decision."}
+          </p>
+        </div>
+
+        {state.status === "loading" && <QueueSkeleton />}
+        {state.status === "error" && (
+          <QueueError message={state.message} onRetry={retry} />
+        )}
+        {state.status === "ready" && (
+          <Card padded={false}>
+            <DataTable
+              columns={buildColumns(openResolve)}
+              data={state.claims}
+              rowKey={(c) => c.id}
+              density="compact"
+              caption="Open policy exceptions on approved claims"
+              empty={
+                <EmptyState
+                  icon={ShieldCheck}
+                  title="All clear"
+                  body="No approved claims are carrying an open policy flag. Flagged claims will appear here for review."
+                />
+              }
+            />
+          </Card>
+        )}
+      </div>
+
+      <ResolveDialog
+        claim={active}
+        pendingAction={pendingAction}
+        note={note}
+        noteError={noteError}
+        submitting={submitting}
+        onChoose={(a) => {
+          setPendingAction(a);
+          setNote("");
+          setNoteError(undefined);
+        }}
+        onNoteChange={(v) => {
+          setNote(v);
+          if (noteError) setNoteError(undefined);
+        }}
+        onClose={closeResolve}
+        onConfirm={confirmResolve}
+      />
+
+      <Dialog
+        open={!!conflict}
+        onClose={() => setConflict(null)}
+        title="This claim has changed"
+        description={conflict ?? undefined}
+        icon={
+          <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-error-container text-error-container-foreground">
+            <AlertOctagon className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+          </span>
+        }
+        footer={
+          <>
+            <Button variant="text" onClick={() => setConflict(null)}>
+              Dismiss
+            </Button>
+            <Button onClick={refresh}>Refresh queue</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-on-surface-variant">
+          The claim was updated since you opened it (it may already have been
+          resolved or moved out of the finance queue). Your decision was not
+          applied to avoid acting on stale state.
+        </p>
+      </Dialog>
+    </AppShell>
+  );
+}
+
+function buildColumns(onResolve: (c: Claim) => void): Column<Claim>[] {
+  return [
     {
       key: "reference",
       header: "Claim",
@@ -93,7 +231,24 @@ export default function ExceptionsPage() {
     {
       key: "employee",
       header: "Employee",
+      sortable: true,
+      sortValue: (c) => getUser(c.employeeId)?.name ?? "Unknown",
       render: (c) => getUser(c.employeeId)?.name ?? "Unknown",
+    },
+    {
+      key: "amount",
+      header: "Total",
+      align: "right",
+      sortable: true,
+      sortValue: (c) => computeClaimTotal(c),
+      render: (c) => (
+        <div>
+          <p className="font-semibold text-on-surface">
+            {formatCurrency(computeClaimTotal(c))}
+          </p>
+          <p className="text-[11px] text-on-surface-variant">{c.currency}</p>
+        </div>
+      ),
     },
     {
       key: "type",
@@ -103,9 +258,10 @@ export default function ExceptionsPage() {
       render: (c) =>
         c.exception ? (
           <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium",
               SEVERITY_TONE[c.exception.severity]
-            }`}
+            )}
           >
             <AlertTriangle className="h-3 w-3" strokeWidth={2} aria-hidden />
             {EXCEPTION_LABEL[c.exception.type]}
@@ -113,22 +269,12 @@ export default function ExceptionsPage() {
         ) : null,
     },
     {
-      key: "amount",
-      header: "Amount",
+      key: "submitted",
+      header: "Submitted",
       align: "right",
       sortable: true,
-      sortValue: (c) => computeClaimTotal(c),
-      render: (c) => (
-        <span className="font-semibold text-on-surface">{formatCurrency(computeClaimTotal(c))}</span>
-      ),
-    },
-    {
-      key: "flagged",
-      header: "Flagged",
-      align: "right",
-      sortable: true,
-      sortValue: (c) => c.exception?.flaggedAt ?? "",
-      render: (c) => (c.exception ? formatDate(c.exception.flaggedAt) : "—"),
+      sortValue: (c) => c.submittedAt ?? c.createdAt,
+      render: (c) => formatDate(c.submittedAt ?? c.createdAt),
     },
     {
       key: "status",
@@ -141,92 +287,220 @@ export default function ExceptionsPage() {
       align: "right",
       render: (c) => (
         <div className="flex justify-end gap-1.5">
-          <Button href={`/claims/${c.id}/audit`} variant="text" size="sm" iconRight={ExternalLink}>
-            Open
+          <Button href={`/claims/${c.id}/audit`} variant="text" size="sm">
+            Audit
           </Button>
-          <Button size="sm" onClick={() => openResolve(c)}>
+          <Button size="sm" onClick={() => onResolve(c)}>
             Resolve
           </Button>
         </div>
       ),
     },
   ];
+}
+
+function ResolveDialog({
+  claim,
+  pendingAction,
+  note,
+  noteError,
+  submitting,
+  onChoose,
+  onNoteChange,
+  onClose,
+  onConfirm,
+}: {
+  claim: Claim | null;
+  pendingAction: ExceptionResolution | null;
+  note: string;
+  noteError?: string;
+  submitting: boolean;
+  onChoose: (a: ExceptionResolution) => void;
+  onNoteChange: (v: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const open = claim !== null;
+  const choosing = pendingAction === null;
 
   return (
-    <AppShell>
-      <div className="space-y-5">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-on-surface">Exception queue</h1>
-          <p className="mt-1 text-sm text-on-surface-variant">
-            {rows.length} open exception{rows.length === 1 ? "" : "s"} awaiting a decision.
-          </p>
-        </div>
-
-        <Card padded={false}>
-          <DataTable
-            columns={columns}
-            data={rows}
-            rowKey={(c) => c.id}
-            density="compact"
-            caption="Open policy exceptions"
-            empty={
-              <EmptyState
-                icon={ShieldCheck}
-                title="All clear"
-                body="No open exceptions. Flagged claims will appear here for review."
-              />
-            }
-          />
-        </Card>
-      </div>
-
-      <Dialog
-        open={active !== null}
-        onClose={() => setActive(null)}
-        title="Resolve exception"
-        description={active ? `${active.title} · ${active.reference}` : undefined}
-        icon={
-          <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-warning-container text-warning-container-foreground">
-            <ReceiptText className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-          </span>
-        }
-        footer={
+    <Dialog
+      open={open}
+      onClose={onClose}
+      dismissable={!submitting}
+      size="lg"
+      title={pendingAction === "override" ? "Override exception" : pendingAction === "reject" ? "Reject flagged line" : "Resolve exception"}
+      description={claim ? `${claim.title} · ${claim.reference}` : undefined}
+      icon={
+        <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-warning-container text-warning-container-foreground">
+          <ShieldAlert className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+        </span>
+      }
+      footer={
+        choosing ? (
           <>
-            <Button variant="text" onClick={() => setActive(null)}>
+            <Button variant="text" onClick={onClose}>
               Cancel
             </Button>
-            <Button icon={CheckCircle2} onClick={confirmResolve}>
-              Mark resolved
+            <Button variant="outlined" icon={XCircle} onClick={() => onChoose("reject")}>
+              Reject &amp; return
+            </Button>
+            <Button icon={CheckCircle2} onClick={() => onChoose("override")}>
+              Override &amp; accept
             </Button>
           </>
-        }
-      >
-        {active?.exception && (
-          <div className="mb-4 rounded-xl bg-surface-container px-4 py-3 text-sm text-on-surface">
-            {active.exception.message}
-          </div>
-        )}
-        <div className="space-y-4">
-          <Select
-            label="Resolution"
-            required
-            placeholder="Choose an action…"
-            options={RESOLUTIONS}
-            value={resolution}
-            onChange={(v) => {
-              setResolution(v);
-              if (error) setError(undefined);
-            }}
-            error={error}
-          />
+        ) : (
+          <>
+            <Button variant="text" onClick={() => onChoose(pendingAction === "override" ? "reject" : "override")} disabled={submitting}>
+              Back
+            </Button>
+            <Button
+              variant={pendingAction === "reject" ? "danger" : "filled"}
+              icon={pendingAction === "reject" ? XCircle : CheckCircle2}
+              loading={submitting}
+              onClick={onConfirm}
+            >
+              {pendingAction === "reject" ? "Reject & return" : "Confirm override"}
+            </Button>
+          </>
+        )
+      }
+    >
+      {claim?.exception && (
+        <div className="mb-4 rounded-xl bg-error-container/60 px-4 py-3 text-sm text-on-surface">
+          <p className="font-semibold">
+            {EXCEPTION_LABEL[claim.exception.type]} · {claim.exception.severity} severity
+          </p>
+          <p className="mt-0.5 text-on-surface-variant">{claim.exception.message}</p>
+        </div>
+      )}
+
+      {claim && <FlaggedLines claim={claim} />}
+
+      {!choosing && (
+        <div className="mt-4">
           <TextArea
-            label="Note (optional)"
-            placeholder="Add context for the audit trail…"
+            label={pendingAction === "override" ? "Justification (required)" : "Comment to employee (required)"}
+            required
+            placeholder={
+              pendingAction === "override"
+                ? "e.g. Pre-approved upgrade — accept the over-cap expense."
+                : "e.g. Receipt is required for this amount. Please attach and resubmit."
+            }
             value={note}
-            onChange={(e) => setNote(e.target.value)}
+            error={noteError}
+            onChange={(e) => onNoteChange(e.target.value)}
           />
         </div>
-      </Dialog>
-    </AppShell>
+      )}
+    </Dialog>
+  );
+}
+
+/** Render every line item, flagging the ones that violate policy with the reason. */
+function FlaggedLines({ claim }: { claim: Claim }) {
+  const violations = claim.lineItems.flatMap((l) =>
+    evaluateLinePolicy(
+      {
+        id: l.id,
+        categoryId: l.categoryId,
+        amount: l.amount,
+        currency: l.currency,
+        hasAttachment: l.hasReceipt,
+      },
+      claim.currency
+    )
+  );
+
+  return (
+    <div className="rounded-2xl border border-outline-variant bg-surface-container-low p-2">
+      <ul className="divide-y divide-outline-variant">
+        {claim.lineItems.map((l) => (
+          <LineRow key={l.id} line={l} violations={violationsForLine(violations, l.id)} />
+        ))}
+      </ul>
+      <div className="flex items-center justify-between border-t border-outline-variant px-3 py-2.5">
+        <span className="text-xs font-medium text-on-surface-variant">Total claimed</span>
+        <span className="text-sm font-bold text-on-surface">
+          {formatCurrency(computeClaimTotal(claim), claim.currency)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function LineRow({
+  line,
+  violations,
+}: {
+  line: LineItem;
+  violations: ReturnType<typeof violationsForLine>;
+}) {
+  const Icon = CATEGORY_ICON[line.categoryId] ?? Receipt;
+  return (
+    <li className="flex items-start gap-3 px-3 py-3">
+      <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Icon className="h-4 w-4" strokeWidth={1.75} aria-hidden />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-on-surface">{line.description}</p>
+        <p className="text-xs text-on-surface-variant">
+          {getCategory(line.categoryId)?.name} · {formatDate(line.date)} ·{" "}
+          {line.hasReceipt ? "receipt attached" : "no receipt"}
+        </p>
+        {violations.length > 0 && (
+          <ul className="mt-1.5 space-y-1">
+            {violations.map((v) => (
+              <li key={v.type}>
+                <span className="inline-flex items-center gap-1 rounded-full bg-error-container px-2 py-0.5 text-[11px] font-medium text-error-container-foreground">
+                  <ShieldAlert className="h-3 w-3" strokeWidth={1.75} aria-hidden />
+                  {v.message}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <span className="text-sm font-semibold text-on-surface">
+        {formatCurrency(line.amount, line.currency)}
+      </span>
+    </li>
+  );
+}
+
+function QueueSkeleton() {
+  return (
+    <div
+      aria-busy="true"
+      role="status"
+      aria-label="Loading exception queue"
+      className="space-y-3"
+    >
+      <Skeleton className="h-12 w-full rounded-xl" />
+      <Skeleton variant="list" lines={4} />
+    </div>
+  );
+}
+
+function QueueError({ message, onRetry }: { message?: string; onRetry: () => void }) {
+  return (
+    <Card className="border-error/40" role="alert">
+      <div className="flex flex-col items-center gap-4 px-4 py-10 text-center sm:flex-row sm:text-left">
+        <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-error/15 text-error">
+          <AlertTriangle className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold text-on-surface">
+            Couldn&rsquo;t load the exception queue
+          </h2>
+          <p className="mt-1 text-sm text-on-surface-variant">
+            {message || "Something went wrong while loading exceptions."} Try again.
+          </p>
+        </div>
+        <Button variant="outlined" icon={RefreshCw} onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    </Card>
   );
 }

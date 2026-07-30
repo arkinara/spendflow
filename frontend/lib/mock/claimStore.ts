@@ -10,6 +10,7 @@ import {
   claims,
   comments,
   pushNotification,
+  pushAudit,
   computeClaimTotal,
   getUser,
   getUserName,
@@ -19,6 +20,8 @@ import {
   type Attachment,
   type ExpenseCategoryId,
   type ClaimStatus,
+  type ClaimException,
+  type ClaimPayment,
 } from "@/lib/mock/mock_data";
 import type { CurrencyCode } from "@/lib/format";
 import type { UploadedFile } from "@/components/ui/FileUpload";
@@ -399,4 +402,281 @@ export function addClaimComment(input: CommentInput) {
   };
   comments.push(entry);
   return entry;
+}
+
+/* ============================================================================
+   Finance decisioning (Phase 1, mock) — exception resolution + payment
+   lifecycle. Each entry point mutates the live claim/approvals/audit/
+   notifications arrays so the Finance dashboard, exception queue, payment
+   board, and claim audit/timeline all re-read the new state immediately.
+   Throws with an explicit message on a stale/invalid action (a claim that
+   has moved on, a missing required justification, a missing payment method)
+   so the caller surfaces a conflict/validation error instead of a silent drop.
+   ========================================================================== */
+
+const FINANCE_ACTIONABLE_STATUSES: ClaimStatus[] = ["approved", "processing"];
+
+function assertFinanceActionable(
+  claim: Claim | undefined,
+  claimId: string
+): asserts claim is Claim {
+  if (!claim) throw new Error("That claim no longer exists.");
+  if (!FINANCE_ACTIONABLE_STATUSES.includes(claim.status)) {
+    throw new Error(
+      "This claim is no longer awaiting a finance decision — it may have been paid or returned."
+    );
+  }
+}
+
+function assertOpenException(claim: Claim): asserts claim is Claim & {
+  exception: ClaimException;
+} {
+  if (!claim.exception || claim.exception.status !== "open") {
+    throw new Error(
+      "This claim no longer has an open policy exception to resolve."
+    );
+  }
+}
+
+export type ExceptionResolution = "override" | "reject";
+
+export interface ExceptionInput {
+  claimId: string;
+  actorId: string;
+  action: ExceptionResolution;
+  /** Required justification for both override and reject. */
+  note: string;
+}
+
+/**
+ * Resolve an open policy exception on a Finance-owned claim.
+ *
+ * - override → accepts the flagged expense: clears the exception, records an
+ *   `approved` timeline event + audit row with the justification, and notifies
+ *   the employee. The claim stays Approved (ready for payment processing).
+ * - reject → returns the flagged line/claim to the employee as Action
+ *   Required with the comment; records a `returned` timeline event + audit row
+ *   and notifies the employee.
+ *
+ * Both actions require a non-empty justification note.
+ */
+export function resolveException(input: ExceptionInput): Claim {
+  const claim = claims.find((c) => c.id === input.claimId);
+  assertFinanceActionable(claim, input.claimId);
+  assertOpenException(claim);
+
+  const note = input.note.trim();
+  if (note.length === 0) {
+    throw new Error(
+      "A justification comment is required so the decision is auditable."
+    );
+  }
+
+  const now = new Date().toISOString();
+  const actorName = getUserName(input.actorId);
+  const exc = claim.exception;
+
+  if (input.action === "override") {
+    claim.exception = { ...exc, status: "resolved" };
+    claim.approvals.push({
+      id: `${claim.id}-ap-${claim.approvals.length + 1}`,
+      actorId: input.actorId,
+      action: "approved",
+      at: now,
+      note: `Exception overridden: ${note}`,
+    });
+    pushAudit({
+      claimId: claim.id,
+      actorId: input.actorId,
+      action: "Policy exception overridden",
+      at: now,
+      detail: `${exc.type} exception accepted (${exc.message}). Justification: ${note}`,
+    });
+    pushNotification({
+      audience: "employee",
+      category: "approval",
+      title: "Exception approved",
+      body: `${actorName} approved the policy exception on ${claim.title} (${claim.reference}). ${note}`,
+      at: now,
+      read: false,
+      claimId: claim.id,
+    });
+    return claim;
+  }
+
+  // reject → return the flagged line/claim to the employee.
+  claim.status = "action_required";
+  claim.decidedAt = now;
+  claim.approvals.push({
+    id: `${claim.id}-ap-${claim.approvals.length + 1}`,
+    actorId: input.actorId,
+    action: "returned",
+    at: now,
+    note: `Rejected flagged line: ${note}`,
+  });
+  pushAudit({
+    claimId: claim.id,
+    actorId: input.actorId,
+    action: "Flagged line rejected",
+    at: now,
+    detail: `${exc.type} exception rejected and returned to the employee. ${note}`,
+  });
+  pushNotification({
+    audience: "employee",
+    category: "action",
+    title: "Action required",
+    body: `${actorName} rejected a flagged line on ${claim.title} (${claim.reference}). ${note}`,
+    at: now,
+    read: false,
+    claimId: claim.id,
+  });
+  return claim;
+}
+
+export interface ProcessingInput {
+  claimId: string;
+  actorId: string;
+  method: ClaimPayment["method"];
+  /** Bank / payroll reference number — required to start processing. */
+  reference: string;
+}
+
+/**
+ * Move an Approved claim into Processing, capturing the payment method and
+ * reference number. Throws if the claim is not Approved, or if either the
+ * method or reference is missing. Records actor + timestamp on the claim's
+ * `payment` metadata, stamps a `processing` timeline event + audit row, and
+ * notifies the employee that their reimbursement is in flight.
+ */
+export function markClaimProcessing(input: ProcessingInput): Claim {
+  const claim = claims.find((c) => c.id === input.claimId);
+  if (!claim) throw new Error("That claim no longer exists.");
+  if (claim.status !== "approved") {
+    throw new Error(
+      claim.status === "processing"
+        ? "This claim is already being processed."
+        : "Only approved claims can be moved into processing."
+    );
+  }
+
+  const reference = input.reference.trim();
+  if (!input.method) {
+    throw new Error("Select a payment method before starting processing.");
+  }
+  if (reference.length === 0) {
+    throw new Error("A bank or payroll reference number is required.");
+  }
+
+  const now = new Date().toISOString();
+  const actorName = getUserName(input.actorId);
+  const total = computeClaimTotal(claim);
+
+  claim.status = "processing";
+  claim.payment = {
+    method: input.method,
+    reference,
+    processedBy: input.actorId,
+    processedAt: now,
+  };
+  claim.approvals.push({
+    id: `${claim.id}-ap-${claim.approvals.length + 1}`,
+    actorId: input.actorId,
+    action: "processing",
+    at: now,
+    note: `Payment started via ${
+      input.method === "payroll" ? "payroll" : "bank transfer"
+    } (${reference}).`,
+  });
+  pushAudit({
+    claimId: claim.id,
+    actorId: input.actorId,
+    action: "Payment processing started",
+    at: now,
+    detail: `${
+      input.method === "payroll" ? "Payroll" : "Bank transfer"
+    } ${reference} queued for IDR ${total.toLocaleString("id-ID")}.`,
+  });
+  pushNotification({
+    audience: "employee",
+    category: "payment",
+    title: "Payment processing",
+    body: `${actorName} started your reimbursement for ${claim.title} (${claim.reference}). Reference ${reference}.`,
+    at: now,
+    read: false,
+    claimId: claim.id,
+  });
+  return claim;
+}
+
+export interface PaidInput {
+  claimId: string;
+  actorId: string;
+}
+
+/**
+ * Confirm disbursement: move a Processing claim to Paid. Throws if the claim
+ * is not Processing, or if the method/reference captured at processing time is
+ * missing (a Processing claim should always carry payment metadata — this
+ * guards against corrupted/mid-transition state). Records the confirming
+ * actor + timestamp on the claim's `payment` metadata, stamps a `paid`
+ * timeline event + audit row, and notifies the employee that they've been paid.
+ */
+export function markClaimPaid(input: PaidInput): Claim {
+  const claim = claims.find((c) => c.id === input.claimId);
+  if (!claim) throw new Error("That claim no longer exists.");
+  if (claim.status !== "processing") {
+    throw new Error(
+      claim.status === "paid"
+        ? "This claim has already been paid."
+        : "Start processing before marking a claim paid."
+    );
+  }
+  if (!claim.payment || !claim.payment.method || !claim.payment.reference) {
+    throw new Error(
+      "Set a payment method and reference before marking this claim paid."
+    );
+  }
+
+  const now = new Date().toISOString();
+  const actorName = getUserName(input.actorId);
+  const total = computeClaimTotal(claim);
+
+  claim.status = "paid";
+  claim.payment = {
+    ...claim.payment,
+    paidBy: input.actorId,
+    paidAt: now,
+  };
+  claim.approvals.push({
+    id: `${claim.id}-ap-${claim.approvals.length + 1}`,
+    actorId: input.actorId,
+    action: "paid",
+    at: now,
+    note: `Disbursed via ${
+      claim.payment.method === "payroll" ? "payroll" : "bank transfer"
+    } (${claim.payment.reference}).`,
+  });
+  pushAudit({
+    claimId: claim.id,
+    actorId: input.actorId,
+    action: "Payment disbursed",
+    at: now,
+    detail: `${
+      claim.payment.method === "payroll" ? "Payroll" : "Bank transfer"
+    } ${claim.payment.reference} confirmed for IDR ${total.toLocaleString(
+      "id-ID"
+    )}.`,
+  });
+  pushNotification({
+    audience: "employee",
+    category: "payment",
+    title: "Payment sent",
+    body: `${actorName} disbursed IDR ${total.toLocaleString(
+      "id-ID"
+    )} for ${claim.title} (${claim.reference}).`,
+    at: now,
+    read: false,
+    claimId: claim.id,
+  });
+  return claim;
 }

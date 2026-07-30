@@ -9,7 +9,11 @@ import {
   SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
-import { claimsForApprover, openExceptions, type Role } from "@/lib/mock/mock_data";
+import {
+  claimsForApprover,
+  openFinanceExceptions,
+  type Role,
+} from "@/lib/mock/mock_data";
 
 /**
  * Role-aware navigation definition (Phase 1).
@@ -51,7 +55,7 @@ export function getNavItems(role: Role): NavDef[] {
           label: "Exceptions",
           href: "/finance/exceptions",
           icon: AlertTriangle,
-          badge: openExceptions().length,
+          badge: openFinanceExceptions().length,
         },
         { label: "Payments", href: "/finance/payments", icon: CreditCard },
         { label: "Policies", href: "/finance/policies", icon: SlidersHorizontal },

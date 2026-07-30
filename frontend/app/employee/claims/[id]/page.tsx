@@ -64,6 +64,7 @@ const ACTION_TONE: Record<ApprovalAction["action"], TimelineEntry["tone"]> = {
   rejected: "error",
   returned: "warning",
   resubmitted: "info",
+  processing: "info",
   paid: "success",
   commented: "default",
 };
@@ -75,6 +76,7 @@ const ACTION_LABEL: Record<ApprovalAction["action"], string> = {
   rejected: "Rejected",
   returned: "Returned for changes",
   resubmitted: "Resubmitted",
+  processing: "Payment processing",
   paid: "Payment disbursed",
   commented: "Comment added",
 };

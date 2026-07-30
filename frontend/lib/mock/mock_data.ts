@@ -94,6 +94,23 @@ export interface Attachment {
   uploadedAt: string;
 }
 
+/**
+ * Finance reimbursement metadata stamped onto a claim as it moves through the
+ * payment lifecycle (Approved → Processing → Paid). Phase 1 is mock data, so
+ * the same object serves the dashboard, payments board, and audit trail.
+ */
+export interface ClaimPayment {
+  method: "bank_transfer" | "payroll";
+  /** Bank / payroll reference number captured when Finance marks Processing. */
+  reference: string;
+  /** Finance admin who moved the claim into Processing. */
+  processedBy?: string;
+  processedAt?: string;
+  /** Finance admin who confirmed the disbursement (Mark Paid). */
+  paidBy?: string;
+  paidAt?: string;
+}
+
 export interface ApprovalAction {
   id: string;
   actorId: string;
@@ -104,6 +121,7 @@ export interface ApprovalAction {
     | "rejected"
     | "returned"
     | "resubmitted"
+    | "processing"
     | "paid"
     | "commented";
   at: string;
@@ -141,6 +159,8 @@ export interface Claim {
   attachments: Attachment[];
   approvals: ApprovalAction[];
   exception?: ClaimException;
+  /** Finance payment metadata once the claim enters the payment lifecycle. */
+  payment?: ClaimPayment;
   /**
    * Zero-based index into the routing steps the claim must clear before it is
    * considered fully approved (see {@link routingStepsForClaim}). Phase 1 has a
@@ -448,7 +468,14 @@ export const claims: Claim[] = [
       { id: "ap-10", actorId: "u-emp-2", action: "created", at: "2026-07-05T09:00:00+07:00" },
       { id: "ap-11", actorId: "u-emp-2", action: "submitted", at: "2026-07-06T09:00:00+07:00" },
       { id: "ap-12", actorId: "u-mgr-1", action: "approved", at: "2026-07-08T09:00:00+07:00", note: "Approved." },
+      { id: "ap-12b", actorId: "u-fin-1", action: "processing", at: "2026-07-29T09:00:00+07:00", note: "Bank transfer TRX-771002 queued for disbursement." },
     ],
+    payment: {
+      method: "bank_transfer",
+      reference: "TRX-771002",
+      processedBy: "u-fin-1",
+      processedAt: "2026-07-29T09:00:00+07:00",
+    },
   },
 
   // 6. Paid
@@ -482,6 +509,14 @@ export const claims: Claim[] = [
       { id: "ap-15", actorId: "u-mgr-1", action: "approved", at: "2026-06-14T09:00:00+07:00", note: "Approved." },
       { id: "ap-16", actorId: "u-fin-1", action: "paid", at: "2026-06-20T15:00:00+07:00", note: "Disbursed via bank transfer." },
     ],
+    payment: {
+      method: "bank_transfer",
+      reference: "TRX-880021",
+      processedBy: "u-fin-1",
+      processedAt: "2026-06-19T10:00:00+07:00",
+      paidBy: "u-fin-1",
+      paidAt: "2026-06-20T15:00:00+07:00",
+    },
   },
 
   // 7. Rejected
@@ -577,7 +612,125 @@ export const claims: Claim[] = [
       { id: "ap-22", actorId: "u-emp-1", action: "created", at: "2026-05-04T09:00:00+07:00" },
       { id: "ap-23", actorId: "u-emp-1", action: "submitted", at: "2026-05-05T09:00:00+07:00" },
       { id: "ap-24", actorId: "u-mgr-1", action: "approved", at: "2026-05-08T09:00:00+07:00", note: "Approved." },
+      { id: "ap-24b", actorId: "u-fin-1", action: "processing", at: "2026-05-11T09:00:00+07:00", note: "Bank transfer TRX-871130 queued." },
       { id: "ap-25", actorId: "u-fin-1", action: "paid", at: "2026-05-12T10:00:00+07:00", note: "Disbursed via bank transfer." },
+    ],
+    payment: {
+      method: "bank_transfer",
+      reference: "TRX-871130",
+      processedBy: "u-fin-1",
+      processedAt: "2026-05-11T09:00:00+07:00",
+      paidBy: "u-fin-1",
+      paidAt: "2026-05-12T10:00:00+07:00",
+    },
+  },
+
+  // 10. Approved with an OPEN over-policy exception — finance exception queue.
+  {
+    id: "clm-1010",
+    reference: "EXP-2026-1010",
+    title: "Annual Sales Kickoff – Bali",
+    purpose: "Annual sales leadership kickoff and forecasting workshop.",
+    employeeId: "u-emp-3",
+    status: "approved",
+    currency: "IDR",
+    createdAt: "2026-07-18T09:00:00+07:00",
+    submittedAt: "2026-07-19T09:00:00+07:00",
+    decidedAt: "2026-07-22T10:00:00+07:00",
+    tripStart: "2026-07-15",
+    tripEnd: "2026-07-16",
+    destination: "Bali",
+    lineItems: [
+      li("li-29", "flight", "Return flight CGK ⇄ DPS", "2026-07-15", 2_000_000, true),
+      li("li-30", "hotel", "Beachfront suite — 1 night", "2026-07-15", 1_800_000, true, { quantity: 1, unitLabel: "nights", unitRate: 1_800_000 }),
+      li("li-31", "meals", "Kickoff dinner", "2026-07-15", 300_000, true),
+    ],
+    attachments: [
+      { id: "at-15", fileName: "flight-kickoff.pdf", sizeKb: 210, mimeType: "application/pdf", lineItemId: "li-29", uploadedAt: "2026-07-19T08:30:00+07:00" },
+      { id: "at-16", fileName: "hotel-kickoff.pdf", sizeKb: 188, mimeType: "application/pdf", lineItemId: "li-30", uploadedAt: "2026-07-19T08:31:00+07:00" },
+    ],
+    approvals: [
+      { id: "ap-26", actorId: "u-emp-3", action: "created", at: "2026-07-18T09:00:00+07:00" },
+      { id: "ap-27", actorId: "u-emp-3", action: "submitted", at: "2026-07-19T09:00:00+07:00", note: "Submitted with a policy warning on the hotel rate." },
+      { id: "ap-28", actorId: "u-mgr-1", action: "approved", at: "2026-07-21T10:00:00+07:00", note: "Approved — flagged for finance exception review." },
+      { id: "ap-29", actorId: "u-mgr-1", action: "approved", at: "2026-07-22T10:00:00+07:00", note: "Finance review: cleared to pay pending exception resolution." },
+    ],
+    exception: {
+      id: "exc-3",
+      type: "over_policy",
+      severity: "medium",
+      message: "Hotel nightly rate of IDR 1,800,000 exceeds the IDR 1,200,000 policy cap by IDR 600,000.",
+      flaggedAt: "2026-07-19T09:00:30+07:00",
+      status: "open",
+    },
+  },
+
+  // 11. Approved with an OPEN missing-receipt exception — finance exception queue.
+  {
+    id: "clm-1011",
+    reference: "EXP-2026-1011",
+    title: "Client Site Survey – Surabaya",
+    purpose: "Pre-contract site survey and technical assessment.",
+    employeeId: "u-emp-3",
+    status: "approved",
+    currency: "IDR",
+    createdAt: "2026-07-20T09:00:00+07:00",
+    submittedAt: "2026-07-21T09:00:00+07:00",
+    decidedAt: "2026-07-24T09:00:00+07:00",
+    tripStart: "2026-07-17",
+    tripEnd: "2026-07-17",
+    destination: "Surabaya",
+    lineItems: [
+      li("li-32", "taxi", "Airport and inter-site taxis", "2026-07-17", 150_000, false),
+      li("li-33", "meals", "Client working lunch", "2026-07-17", 620_000, false),
+      li("li-34", "other", "Site printing and materials", "2026-07-17", 200_000, true),
+    ],
+    attachments: [
+      { id: "at-17", fileName: "site-materials.pdf", sizeKb: 142, mimeType: "application/pdf", lineItemId: "li-34", uploadedAt: "2026-07-21T08:30:00+07:00" },
+    ],
+    approvals: [
+      { id: "ap-30", actorId: "u-emp-3", action: "created", at: "2026-07-20T09:00:00+07:00" },
+      { id: "ap-31", actorId: "u-emp-3", action: "submitted", at: "2026-07-21T09:00:00+07:00", note: "Client lunch receipt to follow after the venue sends it." },
+      { id: "ap-32", actorId: "u-mgr-1", action: "approved", at: "2026-07-24T09:00:00+07:00", note: "Approved — finance to confirm the missing receipt exception." },
+    ],
+    exception: {
+      id: "exc-4",
+      type: "missing_receipt",
+      severity: "high",
+      message: "Client working lunch of IDR 620,000 exceeds the IDR 500,000 receipt threshold but has no attached receipt.",
+      flaggedAt: "2026-07-21T09:00:30+07:00",
+      status: "open",
+    },
+  },
+
+  // 12. Approved, clean (no exception) — ready to pay on the payment board.
+  {
+    id: "clm-1012",
+    reference: "EXP-2026-1012",
+    title: "Technical Training – Jakarta",
+    purpose: "Mandatory technical certification refresher.",
+    employeeId: "u-emp-3",
+    status: "approved",
+    currency: "IDR",
+    createdAt: "2026-07-23T09:00:00+07:00",
+    submittedAt: "2026-07-24T09:00:00+07:00",
+    decidedAt: "2026-07-27T09:00:00+07:00",
+    tripStart: "2026-07-21",
+    tripEnd: "2026-07-21",
+    destination: "Jakarta",
+    lineItems: [
+      li("li-35", "flight", "Return flight CGK ⇄ CGK", "2026-07-21", 1_500_000, true),
+      li("li-36", "hotel", "Hotel — 1 night", "2026-07-21", 1_000_000, true, { quantity: 1, unitLabel: "nights", unitRate: 1_000_000 }),
+      li("li-37", "meals", "Training day meals", "2026-07-21", 280_000, true),
+    ],
+    attachments: [
+      { id: "at-18", fileName: "flight-training.pdf", sizeKb: 196, mimeType: "application/pdf", lineItemId: "li-35", uploadedAt: "2026-07-24T08:30:00+07:00" },
+      { id: "at-19", fileName: "hotel-training.pdf", sizeKb: 170, mimeType: "application/pdf", lineItemId: "li-36", uploadedAt: "2026-07-24T08:31:00+07:00" },
+    ],
+    approvals: [
+      { id: "ap-33", actorId: "u-emp-3", action: "created", at: "2026-07-23T09:00:00+07:00" },
+      { id: "ap-34", actorId: "u-emp-3", action: "submitted", at: "2026-07-24T09:00:00+07:00" },
+      { id: "ap-35", actorId: "u-mgr-1", action: "approved", at: "2026-07-27T09:00:00+07:00", note: "Approved — within policy." },
     ],
   },
 ];
@@ -673,6 +826,18 @@ export function pushNotification(n: Omit<Notification, "id">): Notification {
   return entry;
 }
 
+/**
+ * Append an immutable audit row to the live audit log. Used by the mock
+ * Finance decision flow so the claim's audit trail re-renders immediately
+ * after an exception resolution or payment transition.
+ */
+let auditSeq = 8000;
+export function pushAudit(a: Omit<AuditEntry, "id">): AuditEntry {
+  const entry: AuditEntry = { id: `au-${++auditSeq}`, ...a };
+  auditLog.unshift(entry);
+  return entry;
+}
+
 export function getUser(id: string): User | undefined {
   return users.find((u) => u.id === id);
 }
@@ -695,6 +860,57 @@ export function claimsForEmployee(employeeId: string): Claim[] {
 
 export function openExceptions(): Claim[] {
   return claims.filter((c) => c.exception && c.exception.status === "open");
+}
+
+/**
+ * Claim statuses that put a claim in Finance's hands for payment: fully
+ * approved (ready to disburse), mid-flight (processing), or already paid.
+ * Used to scope the Finance exception queue so claims returned to the
+ * employee (action_required) are not counted as Finance's to resolve.
+ */
+export const FINANCE_PAYMENT_STATUSES: ClaimStatus[] = [
+  "approved",
+  "processing",
+  "paid",
+];
+
+/**
+ * Finance-scoped exception queue: claims that are in the payment lifecycle
+ * (approved / processing) AND still carry an open policy flag. These are the
+ * claims genuinely needing a Finance judgment call — not every open flag in
+ * the system (an action_required claim is back with the employee).
+ */
+export function openFinanceExceptions(): Claim[] {
+  return claims.filter(
+    (c) =>
+      FINANCE_PAYMENT_STATUSES.includes(c.status) &&
+      c.exception?.status === "open"
+  );
+}
+
+/** Claims fully approved and ready for Finance to disburse. Claims still
+ *  carrying an OPEN policy flag are excluded — they must be resolved in the
+ *  exception queue before they can be paid. */
+export function claimsReadyToPay(): Claim[] {
+  return claims.filter(
+    (c) => c.status === "approved" && c.exception?.status !== "open"
+  );
+}
+
+/** Claims whose payment is currently in flight. */
+export function claimsProcessing(): Claim[] {
+  return claims.filter((c) => c.status === "processing");
+}
+
+/** Claims already reimbursed, newest-paid first. */
+export function claimsPaid(): Claim[] {
+  return claims
+    .filter((c) => c.status === "paid")
+    .sort((a, b) => {
+      const pa = a.payment?.paidAt ?? a.decidedAt ?? a.submittedAt ?? a.createdAt;
+      const pb = b.payment?.paidAt ?? b.decidedAt ?? b.submittedAt ?? b.createdAt;
+      return pb.localeCompare(pa);
+    });
 }
 
 export function commentsForClaim(claimId: string): Comment[] {
