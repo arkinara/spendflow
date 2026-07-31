@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import {
   Bell,
   BellOff,
@@ -9,7 +10,7 @@ import {
   AlertTriangle,
   Wallet,
   Info,
-  ArrowRight,
+  RefreshCw,
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
@@ -18,12 +19,18 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import { notificationsFor, type Notification } from "@/lib/mock/mock_data";
+import { useNotifications } from "@/lib/mock/useNotifications";
+import {
+  markNotificationRead,
+  markAllNotificationsRead,
+} from "@/lib/mock/notifyStore";
+import { claimDetailRoute, type Notification } from "@/lib/mock/mock_data";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Filter = "all" | "unread" | Notification["category"];
+type Filter = "all" | "unread" | "read";
 
 const CATEGORY_ICON: Record<Notification["category"], LucideIcon> = {
   approval: ClipboardCheck,
@@ -41,36 +48,42 @@ const CATEGORY_TONE: Record<Notification["category"], string> = {
 
 export default function NotificationsPage() {
   const { role } = useRole();
+  const router = useRouter();
   const { show } = useSnackbar();
-  const base = React.useMemo(() => notificationsFor(role), [role]);
+  const { state, reload } = useNotifications(role);
 
-  const [readIds, setReadIds] = React.useState<Set<string>>(new Set());
   const [filter, setFilter] = React.useState<Filter>("all");
 
-  const items = base.map((n) => ({ ...n, read: n.read || readIds.has(n.id) }));
-  const unreadTotal = items.filter((n) => !n.read).length;
+  // Unread first (so unread surfaces at the top), then newest first within
+  // each group — per the DoD "unread first, newest first".
+  const sorted = React.useMemo(() => {
+    return [...state.items].sort((a, b) => {
+      if (a.read !== b.read) return a.read ? 1 : -1;
+      return b.at.localeCompare(a.at);
+    });
+  }, [state.items]);
 
-  const filtered = items.filter((n) => {
-    if (filter === "all") return true;
+  const unreadTotal = sorted.filter((n) => !n.read).length;
+  const readTotal = sorted.length - unreadTotal;
+
+  const filtered = sorted.filter((n) => {
     if (filter === "unread") return !n.read;
-    return n.category === filter;
+    if (filter === "read") return n.read;
+    return true;
   });
 
-  function markRead(id: string) {
-    setReadIds((s) => new Set(s).add(id));
-  }
-  function markAllRead() {
-    setReadIds(new Set(items.map((n) => n.id)));
-    show("All notifications marked as read.", { tone: "success" });
+  function open(n: Notification) {
+    // Mark as read on click (mock mutation) and navigate to the claim detail.
+    if (!n.read) markNotificationRead(n.id);
+    if (n.claimId) {
+      router.push(claimDetailRoute(role, n.claimId));
+    }
   }
 
-  const counts = {
-    all: items.length,
-    unread: unreadTotal,
-    approval: items.filter((n) => n.category === "approval").length,
-    action: items.filter((n) => n.category === "action").length,
-    payment: items.filter((n) => n.category === "payment").length,
-  };
+  function markAllRead() {
+    markAllNotificationsRead(role);
+    show("All notifications marked as read.", { tone: "success" });
+  }
 
   return (
     <AppShell
@@ -86,9 +99,11 @@ export default function NotificationsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-on-surface">Notifications</h1>
           <p className="mt-1 text-sm text-on-surface-variant">
-            {unreadTotal > 0
-              ? `${unreadTotal} unread notification${unreadTotal === 1 ? "" : "s"}`
-              : "You're all caught up."}
+            {state.status === "ready" && sorted.length > 0
+              ? unreadTotal > 0
+                ? `${unreadTotal} unread notification${unreadTotal === 1 ? "" : "s"}`
+                : "You're all caught up."
+              : "Updates about your claims and approvals."}
           </p>
         </div>
 
@@ -98,35 +113,63 @@ export default function NotificationsPage() {
             onChange={setFilter}
             ariaLabel="Filter notifications"
             options={[
-              { value: "all", label: "All", count: counts.all },
-              { value: "unread", label: "Unread", count: counts.unread },
-              { value: "approval", label: "Approvals", count: counts.approval },
-              { value: "action", label: "Actions", count: counts.action },
-              { value: "payment", label: "Payments", count: counts.payment },
+              { value: "all", label: "All", count: sorted.length },
+              { value: "unread", label: "Unread", count: unreadTotal },
+              { value: "read", label: "Read", count: readTotal },
             ]}
           />
         </div>
 
-        <Card padded={false}>
-          {filtered.length === 0 ? (
+        {state.status === "loading" ? (
+          <NotificationsSkeleton />
+        ) : state.status === "error" ? (
+          <Card className="border-error/40" role="alert">
+            <div className="flex flex-col items-center gap-4 px-4 py-10 text-center sm:flex-row sm:text-left">
+              <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-error/15 text-error">
+                <AlertTriangle className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+              </span>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-base font-semibold text-on-surface">
+                  Couldn&rsquo;t load notifications
+                </h2>
+                <p className="mt-1 text-sm text-on-surface-variant">
+                  {state.message || "Something went wrong."} Try again.
+                </p>
+              </div>
+              <Button variant="outlined" icon={RefreshCw} onClick={reload}>
+                Retry
+              </Button>
+            </div>
+          </Card>
+        ) : filtered.length === 0 ? (
+          <Card padded={false}>
             <EmptyState
               icon={filter === "unread" ? BellOff : Bell}
-              title={filter === "unread" ? "No unread notifications" : "Nothing here"
+              title={
+                sorted.length === 0
+                  ? "No notifications yet"
+                  : filter === "unread"
+                  ? "No unread notifications"
+                  : "Nothing here"
               }
               body={
-                filter === "unread"
+                sorted.length === 0
+                  ? "Notifications about your claims will show up here."
+                  : filter === "unread"
                   ? "You've read everything in this view."
-                  : "Notifications about your claims will show up here."
+                  : "Notifications you've read will appear here."
               }
             />
-          ) : (
+          </Card>
+        ) : (
+          <Card padded={false}>
             <ul className="divide-y divide-outline-variant">
               {filtered.map((n) => (
-                <NotificationRow key={n.id} notification={n} onRead={() => markRead(n.id)} />
+                <NotificationRow key={n.id} notification={n} onOpen={() => open(n)} />
               ))}
             </ul>
-          )}
-        </Card>
+          </Card>
+        )}
       </div>
     </AppShell>
   );
@@ -134,61 +177,68 @@ export default function NotificationsPage() {
 
 function NotificationRow({
   notification: n,
-  onRead,
+  onOpen,
 }: {
   notification: Notification;
-  onRead: () => void;
+  onOpen: () => void;
 }) {
   const Icon = CATEGORY_ICON[n.category];
+  const label = `${n.title}. ${n.body}. ${n.read ? "Read" : "Unread"}${n.claimId ? ". Open claim." : ""}`;
   return (
-    <li
-      className={cn(
-        "flex items-start gap-3 px-4 py-3.5 transition-colors",
-        !n.read && "bg-primary/[0.04]"
-      )}
-    >
-      <span
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={label}
         className={cn(
-          "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full",
-          CATEGORY_TONE[n.category]
+          "flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors hover:bg-surface-container-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
+          !n.read && "bg-primary/[0.04]"
         )}
       >
-        <Icon className="h-5 w-5" strokeWidth={1.75} aria-hidden />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-3">
-          <p className="text-sm font-semibold text-on-surface">{n.title}</p>
-          <div className="flex shrink-0 items-center gap-2">
-            {!n.read && (
-              <span className="h-2 w-2 rounded-full bg-primary" aria-label="Unread" />
-            )}
-            <time className="text-xs text-on-surface-variant">{formatRelativeTime(n.at)}</time>
+        <span
+          className={cn(
+            "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full",
+            CATEGORY_TONE[n.category]
+          )}
+        >
+          <Icon className="h-5 w-5" strokeWidth={1.75} aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm font-semibold text-on-surface">{n.title}</p>
+            <div className="flex shrink-0 items-center gap-2">
+              {!n.read && (
+                <span
+                  className="h-2 w-2 rounded-full bg-primary"
+                  aria-label="Unread"
+                />
+              )}
+              <time className="text-xs text-on-surface-variant">
+                {formatRelativeTime(n.at)}
+              </time>
+            </div>
           </div>
-        </div>
-        <p className="mt-0.5 text-sm text-on-surface-variant">{n.body}</p>
-        <div className="mt-2 flex items-center gap-3">
+          <p className="mt-0.5 text-sm text-on-surface-variant">{n.body}</p>
           {n.claimId && (
-            <Button
-              href={`/claims/${n.claimId}/audit`}
-              variant="text"
-              size="sm"
-              iconRight={ArrowRight}
-              className="h-8 px-2"
-            >
-              View claim
-            </Button>
-          )}
-          {!n.read && (
-            <button
-              type="button"
-              onClick={onRead}
-              className="text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              Mark as read
-            </button>
+            <p className="mt-1.5 text-xs font-medium text-primary">
+              {n.read ? "View claim" : "Mark as read & open claim"}
+            </p>
           )}
         </div>
-      </div>
+      </button>
     </li>
+  );
+}
+
+function NotificationsSkeleton() {
+  return (
+    <div
+      aria-busy="true"
+      role="status"
+      aria-label="Loading notifications"
+      className="space-y-3"
+    >
+      <Skeleton variant="list" lines={4} />
+    </div>
   );
 }

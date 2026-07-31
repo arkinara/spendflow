@@ -1020,3 +1020,35 @@ export function notificationsFor(role: Role): Notification[] {
 export function unreadCount(role: Role): number {
   return notifications.filter((n) => n.audience === role && !n.read).length;
 }
+
+/**
+ * Whether a user may participate in a claim's comments / audit trail.
+ *
+ * Phase 1 has one user per role: the claim submitter, their line manager
+ * (the approver in the claim's routing — every seeded employee reports to
+ * u-mgr-1), and the Finance Admin. The submitter, any approver in the claim's
+ * routing, and Finance are participants; anyone else is blocked. Used to gate
+ * the comments thread and the audit viewer per ticket #8.
+ */
+export function isClaimParticipant(claim: Claim, user: User): boolean {
+  if (user.role === "finance") return true;
+  if (claim.employeeId === user.id) return true;
+  if (user.role === "approver") {
+    // Phase 1 routing step 0 is "submitter_manager" → resolve to the manager id.
+    const submitter = getUser(claim.employeeId);
+    return submitter?.managerId === user.id;
+  }
+  return false;
+}
+
+/**
+ * Resolve the claim detail route for a role. Employee and Approver each have a
+ * dedicated per-claim detail page; Finance has no standalone claim detail in
+ * Phase 1, so the audit trail (Finance-accessible, claim-scoped) is the
+ * closest "claim view". Used by notification click navigation (#8).
+ */
+export function claimDetailRoute(role: Role, claimId: string): string {
+  if (role === "employee") return `/employee/claims/${claimId}`;
+  if (role === "approver") return `/approver/claims/${claimId}`;
+  return `/claims/${claimId}/audit`;
+}

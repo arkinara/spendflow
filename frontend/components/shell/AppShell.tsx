@@ -9,6 +9,7 @@ import { useSession } from "@/lib/auth/session";
 import { getNavItems } from "@/lib/auth/nav";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
 import { unreadCount } from "@/lib/mock/mock_data";
+import { useNotificationVersion } from "@/lib/mock/notifyStore";
 
 export interface AppShellProps {
   action?: React.ReactNode;
@@ -19,6 +20,10 @@ export function AppShell({ action, children }: AppShellProps) {
   const { role, user } = useRole();
   const { signOut } = useSession();
   const router = useRouter();
+  // Subscribe to mark-read mutations so the header badge updates the moment a
+  // notification is read on the Notifications page (single source of truth:
+  // the live `notifications` array).
+  useNotificationVersion();
   const items: NavItem[] = getNavItems(role);
   const unread = unreadCount(role);
 
