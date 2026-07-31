@@ -42,13 +42,24 @@ export interface User {
   avatarColor: string;
 }
 
+/**
+ * Admin-managed expense category. `id` is a plain string (not the seeded
+ * {@link ExpenseCategoryId} union) so Finance Admins can add new categories
+ * with arbitrary codes; seeded claims keep their union-typed `categoryId`
+ * values. `requiresMileage` flags distance-based categories (computed from
+ * km × rate at entry time) per the category-management DoD.
+ */
 export interface ExpenseCategory {
-  id: ExpenseCategoryId;
+  id: string;
   name: string;
+  /** Short stable code shown in the claim builder + reports (e.g. "FLT"). */
+  code: string;
   icon: string; // lucide icon name
   requiresReceipt: boolean;
   receiptThreshold: number; // IDR — above this a receipt is mandatory
   perItemCap?: number;
+  /** True for distance-based categories (mileage) — drives the km × rate UI. */
+  requiresMileage: boolean;
   active: boolean;
 }
 
@@ -57,17 +68,59 @@ export interface Policy {
   name: string;
   description: string;
   categoryId?: ExpenseCategoryId;
+  /** Max reimbursable amount for the period / per-item scope. */
   limit: number;
   period: "per_item" | "per_day" | "per_trip" | "per_month";
   currency: CurrencyCode;
+  /** Whether a receipt is required at all for matching expenses. */
+  receiptRequired: boolean;
+  /** Amount at/above which a receipt becomes mandatory. */
+  receiptRequiredAbove: number;
+  /** Amount at/above which a written justification is mandatory. */
+  justificationRequiredAbove: number;
+  /**
+   * ISO date the policy takes effect from. Changes apply to claims submitted
+   * on/after this date; historical claims stay evaluated under the rules in
+   * force at their submission time (mock effective dating).
+   */
+  effectiveDate: string;
   active: boolean;
+}
+
+/** Who an approval routing step is assigned to. */
+export type ApproverType = "submitter_manager" | "specific_user" | "finance";
+
+export interface RoutingStep {
+  id: string;
+  approverType: ApproverType;
+  /** Required when approverType === "specific_user"; ignored otherwise. */
+  approverId?: string;
+  /** Display label, e.g. "Line manager" or a named approver. */
+  label: string;
+}
+
+/**
+ * Structured matching criteria for a route. A claim matches when every
+ * populated criterion is satisfied (amount within range, category equal,
+ * department equal). An empty/undefined criterion is treated as "any".
+ */
+export interface RoutingMatch {
+  minAmount?: number;
+  maxAmount?: number;
+  categoryId?: ExpenseCategoryId;
+  department?: string;
 }
 
 export interface RoutingRule {
   id: string;
   name: string;
-  condition: string;
-  steps: string[];
+  /** Human-readable summary of {@link match} (kept for legacy display). */
+  condition?: string;
+  match: RoutingMatch;
+  /** Ordered approval steps; index 0 is the first reviewer. */
+  steps: RoutingStep[];
+  /** Fallback route used when no specific active route matches a claim. */
+  isFallback?: boolean;
   active: boolean;
 }
 
@@ -273,15 +326,20 @@ export const CURRENT_USER_BY_ROLE: Record<Role, string> = {
   finance: "u-fin-1",
 };
 
+/** Distinct department list used by the routing match-criteria dropdown. */
+export const DEPARTMENTS: string[] = Array.from(
+  new Set(users.map((u) => u.department))
+).sort();
+
 /* ------------------------------------------------------------- categories -- */
 
 export const categories: ExpenseCategory[] = [
-  { id: "flight", name: "Flight", icon: "Plane", requiresReceipt: true, receiptThreshold: 500_000, active: true },
-  { id: "hotel", name: "Hotel", icon: "BedDouble", requiresReceipt: true, receiptThreshold: 500_000, perItemCap: 1_200_000, active: true },
-  { id: "meals", name: "Meals", icon: "Utensils", requiresReceipt: true, receiptThreshold: 250_000, perItemCap: 350_000, active: true },
-  { id: "taxi", name: "Taxi / Ride-hailing", icon: "Car", requiresReceipt: false, receiptThreshold: 200_000, active: true },
-  { id: "mileage", name: "Mileage", icon: "Route", requiresReceipt: false, receiptThreshold: 0, active: true },
-  { id: "other", name: "Other", icon: "Receipt", requiresReceipt: true, receiptThreshold: 250_000, active: true },
+  { id: "flight", name: "Flight", code: "FLT", icon: "Plane", requiresReceipt: true, receiptThreshold: 500_000, requiresMileage: false, active: true },
+  { id: "hotel", name: "Hotel", code: "HTL", icon: "BedDouble", requiresReceipt: true, receiptThreshold: 500_000, perItemCap: 1_200_000, requiresMileage: false, active: true },
+  { id: "meals", name: "Meals", code: "MEL", icon: "Utensils", requiresReceipt: true, receiptThreshold: 250_000, perItemCap: 350_000, requiresMileage: false, active: true },
+  { id: "taxi", name: "Taxi / Ride-hailing", code: "TAX", icon: "Car", requiresReceipt: false, receiptThreshold: 200_000, requiresMileage: false, active: true },
+  { id: "mileage", name: "Mileage", code: "KIL", icon: "Route", requiresReceipt: false, receiptThreshold: 0, requiresMileage: true, active: true },
+  { id: "other", name: "Other", code: "OTH", icon: "Receipt", requiresReceipt: true, receiptThreshold: 250_000, requiresMileage: false, active: true },
 ];
 
 export const MILEAGE_RATE = 1_200; // IDR per km
@@ -289,19 +347,47 @@ export const MILEAGE_RATE = 1_200; // IDR per km
 /* ---------------------------------------------------------------- policies -- */
 
 export const policies: Policy[] = [
-  { id: "pol-1", name: "Hotel nightly cap", description: "Maximum reimbursable hotel rate per night for domestic travel.", categoryId: "hotel", limit: 1_200_000, period: "per_item", currency: "IDR", active: true },
-  { id: "pol-2", name: "Meal daily allowance", description: "Combined meals per day while travelling.", categoryId: "meals", limit: 350_000, period: "per_day", currency: "IDR", active: true },
-  { id: "pol-3", name: "Receipt requirement", description: "Any single expense above IDR 500,000 requires an attached receipt.", limit: 500_000, period: "per_item", currency: "IDR", active: true },
-  { id: "pol-4", name: "Trip pre-approval", description: "Trips with an estimated total above IDR 5,000,000 need pre-approval.", limit: 5_000_000, period: "per_trip", currency: "IDR", active: true },
-  { id: "pol-5", name: "Mileage rate", description: "Personal vehicle mileage reimbursed at a fixed rate.", categoryId: "mileage", limit: 1_200, period: "per_item", currency: "IDR", active: true },
+  { id: "pol-1", name: "Hotel nightly cap", description: "Maximum reimbursable hotel rate per night for domestic travel.", categoryId: "hotel", limit: 1_200_000, period: "per_item", currency: "IDR", receiptRequired: true, receiptRequiredAbove: 500_000, justificationRequiredAbove: 1_200_000, effectiveDate: "2026-01-01", active: true },
+  { id: "pol-2", name: "Meal daily allowance", description: "Combined meals per day while travelling.", categoryId: "meals", limit: 350_000, period: "per_day", currency: "IDR", receiptRequired: true, receiptRequiredAbove: 250_000, justificationRequiredAbove: 350_000, effectiveDate: "2026-01-01", active: true },
+  { id: "pol-3", name: "Receipt requirement", description: "Any single expense above IDR 500,000 requires an attached receipt.", limit: 500_000, period: "per_item", currency: "IDR", receiptRequired: true, receiptRequiredAbove: 500_000, justificationRequiredAbove: 1_000_000, effectiveDate: "2026-01-01", active: true },
+  { id: "pol-4", name: "Trip pre-approval", description: "Trips with an estimated total above IDR 5,000,000 need pre-approval.", limit: 5_000_000, period: "per_trip", currency: "IDR", receiptRequired: true, receiptRequiredAbove: 500_000, justificationRequiredAbove: 5_000_000, effectiveDate: "2026-01-01", active: true },
+  { id: "pol-5", name: "Mileage rate", description: "Personal vehicle mileage reimbursed at a fixed rate.", categoryId: "mileage", limit: 1_200, period: "per_item", currency: "IDR", receiptRequired: false, receiptRequiredAbove: 0, justificationRequiredAbove: 0, effectiveDate: "2026-01-01", active: true },
 ];
 
 /* -------------------------------------------------------------- routing -- */
 
 export const routingRules: RoutingRule[] = [
-  { id: "rt-1", name: "Standard claim", condition: "Total ≤ IDR 5,000,000", steps: ["Line manager"], active: true },
-  { id: "rt-2", name: "High-value claim", condition: "Total > IDR 5,000,000", steps: ["Line manager", "Finance review"], active: true },
-  { id: "rt-3", name: "Exception flagged", condition: "Any policy exception present", steps: ["Line manager", "Finance review"], active: true },
+  {
+    id: "rt-1",
+    name: "High-value claim",
+    condition: "Total > IDR 5,000,000",
+    match: { minAmount: 5_000_001 },
+    steps: [
+      { id: "rt-1-s1", approverType: "submitter_manager", label: "Line manager" },
+      { id: "rt-1-s2", approverType: "finance", label: "Finance review" },
+    ],
+    active: true,
+  },
+  {
+    id: "rt-2",
+    name: "Sales department claim",
+    condition: "Department = Sales",
+    match: { department: "Sales" },
+    steps: [
+      { id: "rt-2-s1", approverType: "submitter_manager", label: "Line manager" },
+      { id: "rt-2-s2", approverType: "specific_user", approverId: "u-fin-1", label: "Finance Admin" },
+    ],
+    active: true,
+  },
+  {
+    id: "rt-fallback",
+    name: "Standard claim (fallback)",
+    condition: "Applies when no specific route matches",
+    match: {},
+    steps: [{ id: "rt-fb-s1", approverType: "submitter_manager", label: "Line manager" }],
+    isFallback: true,
+    active: true,
+  },
 ];
 
 /* ----------------------------------------------------------------- claims -- */
@@ -850,7 +936,7 @@ export function getClaim(id: string): Claim | undefined {
   return claims.find((c) => c.id === id);
 }
 
-export function getCategory(id: ExpenseCategoryId): ExpenseCategory | undefined {
+export function getCategory(id: string): ExpenseCategory | undefined {
   return categories.find((c) => c.id === id);
 }
 
