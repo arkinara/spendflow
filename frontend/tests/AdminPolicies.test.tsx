@@ -68,7 +68,11 @@ import {
   setRouteActive,
   reorderRouteSteps,
   matchRouteForClaim,
+  isSupportedPolicyCurrency,
+  SUPPORTED_POLICY_CURRENCIES,
+  type PolicyInput,
 } from "@/lib/mock/adminStore";
+import * as adminStoreModule from "@/lib/mock/adminStore";
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -254,6 +258,71 @@ describe("Admin store — policy CRUD + effective dating", () => {
         effectiveDate: today,
       })
     ).toThrow(/positive/i);
+  });
+
+  it("rejects an unsupported currency at the store boundary", () => {
+    // Currency is TypeScript-typed, but the store must enforce the allowlist at
+    // runtime so a cast/bypass (or future BE payload) is rejected, not stored.
+    expect(isSupportedPolicyCurrency("IDR")).toBe(true);
+    expect(isSupportedPolicyCurrency("EUR")).toBe(false);
+    const base: Omit<PolicyInput, "currency" | "name"> = {
+      limit: 400_000,
+      period: "per_item",
+      receiptRequired: true,
+      receiptRequiredAbove: 100_000,
+      justificationRequiredAbove: 400_000,
+      effectiveDate: today,
+    };
+    expect(() =>
+      createPolicy({ ...base, name: "Bad currency", currency: "EUR" as never })
+    ).toThrow(/not supported/i);
+    // Supported currency still persists.
+    expect(
+      createPolicy({ ...base, name: "OK currency", currency: "USD" }).currency
+    ).toBe("USD");
+    expect(SUPPORTED_POLICY_CURRENCIES).toContain("IDR");
+  });
+
+  it("blocks a policy where a threshold exceeds the max amount (min<max guard)", () => {
+    // Receipt-required threshold above the limit — blocked.
+    expect(() =>
+      createPolicy({
+        name: "Bad receipt",
+        limit: 500_000,
+        period: "per_item",
+        currency: "IDR",
+        receiptRequired: true,
+        receiptRequiredAbove: 800_000,
+        justificationRequiredAbove: 500_000,
+        effectiveDate: today,
+      })
+    ).toThrow(/receipt-required threshold cannot exceed the max amount/i);
+    // Justification-required threshold above the limit — blocked.
+    expect(() =>
+      createPolicy({
+        name: "Bad just",
+        limit: 500_000,
+        period: "per_item",
+        currency: "IDR",
+        receiptRequired: true,
+        receiptRequiredAbove: 250_000,
+        justificationRequiredAbove: 750_000,
+        effectiveDate: today,
+      })
+    ).toThrow(/justification-required threshold cannot exceed the max amount/i);
+    // Threshold equal to the limit is permitted (justification at/above the cap).
+    expect(() =>
+      createPolicy({
+        name: "Equal threshold ok",
+        limit: 500_000,
+        period: "per_item",
+        currency: "IDR",
+        receiptRequired: true,
+        receiptRequiredAbove: 250_000,
+        justificationRequiredAbove: 500_000,
+        effectiveDate: today,
+      })
+    ).not.toThrow();
   });
 
   it("policyEffectiveOn honours the effective date (future policy not yet in force)", () => {
@@ -530,6 +599,81 @@ describe("Policy admin UI — add/edit + effective-date display", () => {
     expect(policies.length).toBe(before + 1);
   });
 
+  it("blocks a policy where the receipt threshold exceeds the max amount and surfaces the error inline", async () => {
+    renderPage();
+    await waitForReady(/Hotel nightly cap/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.change(within(dialog).getByLabelText(/^name/i), {
+      target: { value: "Bad threshold policy" },
+    });
+    // Limit lower than the receipt threshold → cross-field min<max guard.
+    fireEvent.change(within(dialog).getByLabelText(/max amount/i), {
+      target: { value: "500000" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/receipt required above/i), {
+      target: { value: "800000" },
+    });
+    fireEvent.change(
+      within(dialog).getByLabelText(/justification required above/i),
+      { target: { value: "500000" } }
+    );
+
+    const before = policies.length;
+    fireEvent.click(within(dialog).getByRole("button", { name: /create policy/i }));
+
+    // Inline cross-field error renders and the store is untouched.
+    expect(
+      await within(dialog).findByText(/receipt threshold cannot exceed the max amount/i)
+    ).toBeInTheDocument();
+    expect(policies.length).toBe(before);
+  });
+
+  it("surfaces a store currency error inline instead of a silent toast", async () => {
+    // The currency Select constrains to supported codes, so the runtime
+    // allowlist is exercised at the store boundary — simulate a future caller
+    // (or BE payload) that bypasses it, and assert the dialog shows the error
+    // inline on the currency field.
+    const spy = vi
+      .spyOn(adminStoreModule, "createPolicy")
+      .mockImplementation(() => {
+        throw new Error(
+          'Currency “XYZ” is not supported. Choose one of: IDR, USD.'
+        );
+      });
+
+    try {
+      renderPage();
+      await waitForReady(/Hotel nightly cap/i);
+
+      fireEvent.click(screen.getByRole("button", { name: /new policy/i }));
+      const dialog = await screen.findByRole("dialog");
+
+      fireEvent.change(within(dialog).getByLabelText(/^name/i), {
+        target: { value: "Currency reject" },
+      });
+      fireEvent.change(within(dialog).getByLabelText(/max amount/i), {
+        target: { value: "750000" },
+      });
+      fireEvent.change(within(dialog).getByLabelText(/receipt required above/i), {
+        target: { value: "250000" },
+      });
+      fireEvent.change(
+        within(dialog).getByLabelText(/justification required above/i),
+        { target: { value: "750000" } }
+      );
+
+      fireEvent.click(within(dialog).getByRole("button", { name: /create policy/i }));
+      expect(
+        await within(dialog).findByText(/not supported/i)
+      ).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("edits an existing policy's effective date and updates the displayed value without touching other policies", async () => {
     renderPage();
     await waitForReady(/Hotel nightly cap/i);
@@ -622,6 +766,17 @@ describe("Policy admin — access control", () => {
     );
     // Admin content never mounts for the employee session.
     expect(screen.queryByText("Policy administration")).not.toBeInTheDocument();
+  });
+
+  it("renders an access-denied message before redirecting an Employee session", async () => {
+    seedEmployee();
+    renderPage();
+
+    // A visible "not authorized" alert is rendered (not just a transient toast),
+    // satisfying the access-denied acceptance criterion for /finance/policies.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/not authorized/i);
+    expect(navMocks.replace).toHaveBeenCalledWith("/employee");
   });
 });
 

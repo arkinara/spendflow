@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { ShieldX } from "lucide-react";
 import { useSession } from "@/lib/auth/session";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
 import { useSnackbar } from "@/components/ui/Snackbar";
@@ -15,8 +16,8 @@ import { SessionError } from "./SessionError";
  * - loading → skeleton
  * - session-store failure → explicit error state (never an infinite skeleton)
  * - unauthenticated → redirect to /login?next=<path>
- * - authenticated but role not allowed → redirect to the role's home with a
- *   "not authorized" toast (never a blank/broken page)
+ * - authenticated but role not allowed → render a "not authorized" alert, then
+ *   redirect to the role's home with a toast (never a blank/broken page)
  * - authenticated + allowed → render children
  */
 export function RouteGuard({
@@ -31,6 +32,7 @@ export function RouteGuard({
   const router = useRouter();
   const { show } = useSnackbar();
   const [redirecting, setRedirecting] = React.useState(false);
+  const [denyRole, setDenyRole] = React.useState(false);
   const redirected = React.useRef(false);
 
   React.useEffect(() => {
@@ -44,6 +46,7 @@ export function RouteGuard({
     }
     if (session && !allowedRoles.includes(session.role)) {
       redirected.current = true;
+      setDenyRole(true);
       setRedirecting(true);
       show("You're not authorized to view that page.", { tone: "error" });
       router.replace(ROLE_HOME[session.role]);
@@ -51,6 +54,25 @@ export function RouteGuard({
   }, [status, session, allowedRoles, pathname, router, show]);
 
   if (status === "error") return <SessionError />;
+  // While redirecting a role-mismatched session, surface a visible access-denied
+  // notice (role="alert") instead of a bare skeleton, so the user — and the
+  // access-control test — sees an explicit "not authorized" message before the
+  // redirect completes.
+  if (redirecting && denyRole) {
+    return (
+      <div
+        role="alert"
+        aria-live="assertive"
+        className="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 rounded-2xl border border-outline-variant bg-surface-container px-6 py-10 text-center"
+      >
+        <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-error-container text-error-container-foreground">
+          <ShieldX className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+        </span>
+        <p className="font-medium text-on-surface">You&apos;re not authorized to view this page.</p>
+        <p className="text-sm text-on-surface-variant">Redirecting to your home screen…</p>
+      </div>
+    );
+  }
   if (status === "loading" || redirecting) return <AppShellSkeleton />;
   if (!session || !allowedRoles.includes(session.role)) return <AppShellSkeleton />;
   return <>{children}</>;

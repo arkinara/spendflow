@@ -56,6 +56,7 @@ import {
   reorderRouteSteps,
   summarizeMatch,
   approverTypeLabel,
+  isSupportedPolicyCurrency,
   type CategoryInput,
   type PolicyInput,
   type RouteInput,
@@ -689,22 +690,19 @@ function PolicyTab() {
   const [confirm, setConfirm] = React.useState<Policy | null>(null);
 
   function handleSave(input: PolicyInput) {
-    try {
-      if (editing) {
-        updatePolicy(editing.id, input);
-        show(`Policy “${input.name}” updated.`, { tone: "success" });
-      } else {
-        createPolicy(input);
-        show(`Policy “${input.name}” created.`, { tone: "success" });
-      }
-      setEditing(null);
-      setCreating(false);
-      refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Could not save the policy.", {
-        tone: "error",
-      });
+    // Store validation errors (currency allowlist, threshold vs. max, etc.)
+    // intentionally propagate to the dialog, which maps them to inline field
+    // errors. Success path keeps the confirmation snackbar + live refresh.
+    if (editing) {
+      updatePolicy(editing.id, input);
+      show(`Policy “${input.name}” updated.`, { tone: "success" });
+    } else {
+      createPolicy(input);
+      show(`Policy “${input.name}” created.`, { tone: "success" });
     }
+    setEditing(null);
+    setCreating(false);
+    refresh();
   }
 
   function handleToggle() {
@@ -867,6 +865,7 @@ function PolicyDialog({
   const [errors, setErrors] = React.useState<{
     name?: string;
     limit?: string;
+    currency?: string;
     receiptRequiredAbove?: string;
     justificationRequiredAbove?: string;
     effectiveDate?: string;
@@ -915,26 +914,53 @@ function PolicyDialog({
     ) {
       next.justificationRequiredAbove = "Enter zero or a positive amount.";
     }
+    // Currency allowlist (mirrors the store boundary so an unsupported code is
+    // flagged inline before it reaches createPolicy/updatePolicy).
+    if (!isSupportedPolicyCurrency(currency)) {
+      next.currency = "Choose a supported currency.";
+    }
+    // Cross-field guard: a trigger threshold must not exceed the max amount.
+    if (!next.limit && !next.receiptRequiredAbove && rra > limitNum) {
+      next.receiptRequiredAbove = "Receipt threshold cannot exceed the max amount.";
+    }
+    if (!next.limit && !next.justificationRequiredAbove && jra > limitNum) {
+      next.justificationRequiredAbove =
+        "Justification threshold cannot exceed the max amount.";
+    }
     if (!effectiveDate || Number.isNaN(new Date(effectiveDate).getTime())) {
       next.effectiveDate = "Pick an effective date.";
     }
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
-    onSave({
-      id: initial?.id,
-      name,
-      description,
-      categoryId: (categoryId || undefined) as PolicyInput["categoryId"],
-      limit: limitNum,
-      period,
-      currency,
-      receiptRequired,
-      receiptRequiredAbove: rra,
-      justificationRequiredAbove: jra,
-      effectiveDate,
-      active: initial?.active,
-    });
+    try {
+      onSave({
+        id: initial?.id,
+        name,
+        description,
+        categoryId: (categoryId || undefined) as PolicyInput["categoryId"],
+        limit: limitNum,
+        period,
+        currency,
+        receiptRequired,
+        receiptRequiredAbove: rra,
+        justificationRequiredAbove: jra,
+        effectiveDate,
+        active: initial?.active,
+      });
+    } catch (err) {
+      // Surface store-boundary errors (currency allowlist, threshold vs. max)
+      // as inline field errors instead of a transient toast.
+      const msg = err instanceof Error ? err.message : "Could not save the policy.";
+      const mapped: typeof errors = {};
+      if (/currency/i.test(msg)) mapped.currency = msg;
+      else if (/receipt-required threshold/i.test(msg))
+        mapped.receiptRequiredAbove = msg;
+      else if (/justification-required threshold/i.test(msg))
+        mapped.justificationRequiredAbove = msg;
+      else mapped.name = msg;
+      setErrors((cur) => ({ ...cur, ...mapped }));
+    }
   }
 
   const categoryOptions = [
@@ -1007,6 +1033,7 @@ function PolicyDialog({
             label="Currency"
             options={CURRENCY_OPTIONS}
             value={currency}
+            error={errors.currency}
             onChange={(v) => setCurrency(v as CurrencyCode)}
           />
         </div>

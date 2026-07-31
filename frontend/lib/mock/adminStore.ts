@@ -143,6 +143,21 @@ export function getActiveCategories(): ExpenseCategory[] {
 
 /* ================================================================ POLICIES == */
 
+/**
+ * Currencies a spend policy may be denominated in (Phase 1). `PolicyInput`
+ * types `currency` as `CurrencyCode`, but that is TypeScript-only — a value
+ * cast past the compiler (or arriving from future BE wiring / JSON) would be
+ * persisted unchecked. This runtime allowlist is enforced at the store write
+ * boundary ({@link assertPolicyInput}) so an unknown ISO 4217 code is rejected
+ * with a clear typed error instead of silently stored.
+ */
+export const SUPPORTED_POLICY_CURRENCIES: readonly CurrencyCode[] = ["IDR", "USD"];
+
+/** True when `code` is a policy currency the store will persist. */
+export function isSupportedPolicyCurrency(code: string): boolean {
+  return (SUPPORTED_POLICY_CURRENCIES as readonly string[]).includes(code);
+}
+
 export interface PolicyInput {
   id?: string;
   name: string;
@@ -161,6 +176,11 @@ export interface PolicyInput {
 function assertPolicyInput(input: PolicyInput): void {
   const name = input.name.trim();
   if (!name) throw new Error("Policy name is required.");
+  if (!isSupportedPolicyCurrency(input.currency)) {
+    throw new Error(
+      `Currency “${input.currency}” is not supported. Choose one of: ${SUPPORTED_POLICY_CURRENCIES.join(", ")}.`
+    );
+  }
   if (Number.isNaN(input.limit) || input.limit <= 0) {
     throw new Error("Max amount must be a positive number.");
   }
@@ -175,6 +195,17 @@ function assertPolicyInput(input: PolicyInput): void {
     input.justificationRequiredAbove < 0
   ) {
     throw new Error("Justification-required threshold cannot be negative.");
+  }
+  // Cross-field guard (analogous to the routing min<max check): a trigger
+  // threshold must not exceed the max reimbursable amount, otherwise the rule
+  // is unreachable for in-policy expenses.
+  if (input.receiptRequiredAbove > input.limit) {
+    throw new Error("Receipt-required threshold cannot exceed the max amount.");
+  }
+  if (input.justificationRequiredAbove > input.limit) {
+    throw new Error(
+      "Justification-required threshold cannot exceed the max amount."
+    );
   }
   if (!input.effectiveDate || Number.isNaN(new Date(input.effectiveDate).getTime())) {
     throw new Error("A valid effective date is required.");
