@@ -29,7 +29,7 @@ describe("canAccess", () => {
     expect(canAccess("approver", "/approver")).toBe(true);
     expect(canAccess("approver", "/finance")).toBe(false);
     expect(canAccess("approver", "/employee")).toBe(false);
-    expect(canAccess("approver", "/reports")).toBe(true);
+    expect(canAccess("approver", "/reports")).toBe(false);
   });
 
   it("blocks Finance Admin from Employee and Approver routes", () => {

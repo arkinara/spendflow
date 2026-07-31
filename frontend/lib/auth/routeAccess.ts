@@ -22,7 +22,7 @@ export function routeAccess(pathname: string): RouteAccess {
   if (pathname.startsWith("/employee")) return ["employee"];
   if (pathname.startsWith("/approver")) return ["approver"];
   if (pathname.startsWith("/finance")) return ["finance"];
-  if (pathname.startsWith("/reports")) return ["approver", "finance"];
+  if (pathname.startsWith("/reports")) return ["finance"];
   if (pathname.startsWith("/notifications")) return ["employee", "approver", "finance"];
   if (pathname.startsWith("/claims")) return ["employee", "approver", "finance"];
   return "auth";

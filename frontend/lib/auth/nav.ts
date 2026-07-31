@@ -45,7 +45,6 @@ export function getNavItems(role: Role): NavDef[] {
           icon: LayoutDashboard,
           badge: claimsForApprover().length,
         },
-        { label: "Reports", href: "/reports", icon: BarChart3 },
         { label: "Alerts", href: "/notifications", icon: Bell },
       ];
     case "finance":

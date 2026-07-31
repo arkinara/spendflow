@@ -3,5 +3,5 @@
 import { RouteGuard } from "@/components/shell/RouteGuard";
 
 export default function ReportsLayout({ children }: { children: React.ReactNode }) {
-  return <RouteGuard allowedRoles={["approver", "finance"]}>{children}</RouteGuard>;
+  return <RouteGuard allowedRoles={["finance"]}>{children}</RouteGuard>;
 }
