@@ -20,6 +20,7 @@ import { FinanceError } from "./services/finance.js";
 import { AdminError } from "./services/admin.js";
 import { CommentError } from "./services/comments.js";
 import { NotificationError } from "./services/notifications.js";
+import { ReportingError } from "./services/reporting.js";
 import {
   claimErrorHandler,
   claimsRoutes,
@@ -31,6 +32,7 @@ import { financeErrorHandler, financeRoutes } from "./routes/finance.js";
 import { adminErrorHandler, adminRoutes } from "./routes/admin.js";
 import { commentErrorHandler, commentRoutes } from "./routes/comments.js";
 import { notificationErrorHandler, notificationRoutes } from "./routes/notifications.js";
+import { reportingErrorHandler, reportingRoutes } from "./routes/reporting.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -98,6 +100,9 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     }
     if (err instanceof NotificationError) {
       return notificationErrorHandler(err, c);
+    }
+    if (err instanceof ReportingError) {
+      return reportingErrorHandler(err, c);
     }
     return claimErrorHandler(err, c);
   });
@@ -195,6 +200,9 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   /* --------------------------- #15 comments + notifications + audit query -- */
   app.route("/", commentRoutes({ auth, db, env }));
   app.route("/", notificationRoutes({ auth, db, env }));
+
+  /* --------------------------- #16 reporting query + CSV export API ------- */
+  app.route("/", reportingRoutes({ auth, db, env }));
 
   return app;
 }

@@ -258,3 +258,31 @@ export async function authedPostForm(
 export async function authedDelete(app: Hono, path: string, cookie: string | null) {
   return app.request(path, { method: "DELETE", headers: withCookie(cookie) });
 }
+
+/**
+ * Provision an arbitrary user into the harness DB (used by tests that need
+ * extra personas beyond the three default demo users — e.g. a second
+ * department for reporting filters). Wraps the production provisioning path
+ * so the row is password-verifiable via the normal login flow.
+ */
+export async function provisionSeedUser(
+  h: Harness,
+  opts: {
+    id: string;
+    name: string;
+    email: string;
+    role: Role;
+    managerId?: string;
+    department?: string;
+  },
+): Promise<void> {
+  await provisionUser(h.db, {
+    id: opts.id,
+    name: opts.name,
+    email: opts.email,
+    password: DEMO.password,
+    role: opts.role,
+    managerId: opts.managerId ?? null,
+    department: opts.department ?? null,
+  });
+}
