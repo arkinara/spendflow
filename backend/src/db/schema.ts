@@ -217,6 +217,8 @@ export const CLAIM_STATUSES = [
   "action_required",
   "approved",
   "rejected",
+  "processing",
+  "paid",
 ] as const;
 export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
 
@@ -554,6 +556,57 @@ export const notificationsRelations = relations(notificationsTable, ({ one }) =>
   }),
 }));
 
+/* ----------------------------------------------------------------- payments -- */
+
+export const PAYMENT_METHODS = ["bank_transfer", "check", "cash", "other"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+export const PAYMENT_STATUSES = ["processing", "paid"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+/**
+ * Reimbursement record for a claim, created when Finance transitions a claim
+ * to Processing (method + reference captured then) and updated in place when
+ * Finance marks it Paid (processed_by/processed_at stamped then). One row per
+ * claim — a claim can only be processed once (#13).
+ */
+export const paymentsTable = sqliteTable(
+  "payments",
+  {
+    id: text("id").primaryKey(),
+    claimId: text("claim_id")
+      .notNull()
+      .references(() => claimsTable.id, { onDelete: "cascade" }),
+    method: text("method", { enum: PAYMENT_METHODS }).notNull(),
+    referenceNumber: text("reference_number").notNull(),
+    amount: integer("amount").notNull(),
+    currency: text("currency").notNull().default("IDR"),
+    status: text("status", { enum: PAYMENT_STATUSES }).notNull().default("processing"),
+    // Set only once the payment is marked Paid; null while Processing.
+    processedBy: text("processed_by").references(() => usersTable.id, {
+      onDelete: "set null",
+    }),
+    processedAt: integer("processed_at", { mode: "timestamp" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    claimIdx: index("payments_claim_idx").on(t.claimId),
+    statusIdx: index("payments_status_idx").on(t.status),
+  })
+);
+
+export const paymentsRelations = relations(paymentsTable, ({ one }) => ({
+  claim: one(claimsTable, {
+    fields: [paymentsTable.claimId],
+    references: [claimsTable.id],
+  }),
+  processor: one(usersTable, {
+    fields: [paymentsTable.processedBy],
+    references: [usersTable.id],
+  }),
+}));
+
 /* -------------------------------------------------------------- exports ---- */
 
 /** The schema handed to Better Auth's Drizzle adapter + owned by this app. */
@@ -572,6 +625,7 @@ export const schema = {
   approvalSteps: approvalStepsTable,
   approvalActions: approvalActionsTable,
   notifications: notificationsTable,
+  payments: paymentsTable,
 };
 
 export type Schema = typeof schema;

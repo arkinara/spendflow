@@ -16,6 +16,7 @@ import {
 import { auditForEntity } from "./services/audit.js";
 import { AttachmentError } from "./services/attachments.js";
 import { ApprovalError } from "./services/approvals.js";
+import { FinanceError } from "./services/finance.js";
 import {
   claimErrorHandler,
   claimsRoutes,
@@ -23,6 +24,7 @@ import {
 } from "./routes/claims.js";
 import { attachmentRoutes, attachmentErrorHandler } from "./routes/attachments.js";
 import { approvalErrorHandler, approvalRoutes } from "./routes/approvals.js";
+import { financeErrorHandler, financeRoutes } from "./routes/finance.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -78,6 +80,9 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     }
     if (err instanceof ApprovalError) {
       return approvalErrorHandler(err, c);
+    }
+    if (err instanceof FinanceError) {
+      return financeErrorHandler(err, c);
     }
     return claimErrorHandler(err, c);
   });
@@ -165,6 +170,9 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
 
   /* ----------------------------------------------- #12 approver decisions -- */
   app.route("/", approvalRoutes({ auth, db, env }));
+
+  /* ------------------------------------- #13 finance exceptions + payments -- */
+  app.route("/", financeRoutes({ auth, db, env }));
 
   return app;
 }
