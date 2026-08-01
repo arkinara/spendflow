@@ -12,6 +12,8 @@ export interface Env {
   frontendOrigin: string | null;
   sessionExpiresIn: number;
   port: number;
+  /** Override for the local attachment storage directory (tests / prod). */
+  uploadsDir: string | null;
 }
 
 function str(name: string, fallback?: string): string {
@@ -43,5 +45,6 @@ export function loadEnv(overrides: Partial<Env> = {}): Env {
       overrides.frontendOrigin ?? process.env.FRONTEND_ORIGIN ?? null,
     sessionExpiresIn: overrides.sessionExpiresIn ?? int("SESSION_EXPIRES_IN", 604800),
     port: overrides.port ?? int("PORT", 8787),
+    uploadsDir: overrides.uploadsDir ?? process.env.UPLOADS_DIR ?? null,
   };
 }

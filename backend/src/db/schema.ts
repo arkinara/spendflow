@@ -1,5 +1,5 @@
-import { relations } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { relations, sql } from "drizzle-orm";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import type { AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 /**
@@ -139,15 +139,439 @@ export const auditLogsTable = sqliteTable("audit_logs", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+/* ------------------------------------------------------------- categories -- */
+
+/**
+ * Admin-managed expense category. Seeded with the Phase 1 set (flight, hotel,
+ * meals, taxi, mileage, other). `mileage_rate` (IDR per km) drives the
+ * server-side mileage amount computation in claimStore.
+ */
+export const categoriesTable = sqliteTable(
+  "categories",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    code: text("code").notNull(),
+    requiresReceipt: integer("requires_receipt", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    receiptThreshold: integer("receipt_threshold").notNull().default(0),
+    perItemCap: integer("per_item_cap"),
+    // Set only for distance-based categories (mileage). Server reads this to
+    // compute amount = quantity × mileage_rate, never trusting client amount.
+    mileageRate: integer("mileage_rate"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({ activeIdx: index("categories_active_idx").on(t.active) })
+);
+
+/* --------------------------------------------------------------- policies -- */
+
+/**
+ * Configurable spend policy. Consumed by the (pure) policy engine at claim
+ * submission time. Scoped to a category when `category_id` is set; otherwise
+ * applies to every line item. CRUD UI is BE-admin (#13–16); this ticket only
+ * reads rows.
+ */
+export const policiesTable = sqliteTable(
+  "policies",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    categoryId: text("category_id").references(() => categoriesTable.id, {
+      onDelete: "set null",
+    }),
+    limitAmount: integer("limit_amount"),
+    period: text("period", {
+      enum: ["per_item", "per_day", "per_trip", "per_month"],
+    })
+      .notNull()
+      .default("per_item"),
+    currency: text("currency").notNull().default("IDR"),
+    receiptRequired: integer("receipt_required", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    receiptRequiredAbove: integer("receipt_required_above").notNull().default(0),
+    justificationRequiredAbove: integer("justification_required_above")
+      .notNull()
+      .default(0),
+    effectiveDate: text("effective_date").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    activeIdx: index("policies_active_idx").on(t.active),
+    categoryIdx: index("policies_category_idx").on(t.categoryId),
+  })
+);
+
+/* ----------------------------------------------------------------- claims -- */
+
+export const CLAIM_STATUSES = [
+  "draft",
+  "pending",
+  "action_required",
+  "approved",
+  "rejected",
+] as const;
+export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
+
+export const claimsTable = sqliteTable(
+  "claims",
+  {
+    id: text("id").primaryKey(),
+    // Human-readable reference, e.g. "EXP-2026-1001". Generated server-side.
+    reference: text("reference").notNull().unique(),
+    title: text("title").notNull(),
+    purpose: text("purpose").notNull().default(""),
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    status: text("status", { enum: CLAIM_STATUSES }).notNull().default("draft"),
+    currency: text("currency").notNull().default("IDR"),
+    tripStart: text("trip_start"),
+    tripEnd: text("trip_end"),
+    destination: text("destination"),
+    // The route resolved at submission time. Null while the claim is a draft.
+    approvalRouteId: text("approval_route_id").references(
+      (): AnySQLiteColumn => approvalRoutesTable.id,
+      { onDelete: "set null" }
+    ),
+    // Zero-based index into the resolved route's ordered steps. The claim is at
+    // this approver's desk; advanced by approve until the final step clears.
+    currentStepIndex: integer("current_step_index").notNull().default(0),
+    // Aggregated policy warning summary persisted at submit time (JSON). Used
+    // by downstream exception review. Null when no warnings fired.
+    policyException: text("policy_exception"),
+    submittedAt: integer("submitted_at", { mode: "timestamp" }),
+    decidedAt: integer("decided_at", { mode: "timestamp" }),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    employeeIdx: index("claims_employee_idx").on(t.employeeId),
+    statusIdx: index("claims_status_idx").on(t.status),
+    routeIdx: index("claims_route_idx").on(t.approvalRouteId),
+  })
+);
+
+export const claimsRelations = relations(claimsTable, ({ one, many }) => ({
+  employee: one(usersTable, {
+    fields: [claimsTable.employeeId],
+    references: [usersTable.id],
+  }),
+  approvalRoute: one(approvalRoutesTable, {
+    fields: [claimsTable.approvalRouteId],
+    references: [approvalRoutesTable.id],
+  }),
+  lineItems: many(claimLineItemsTable),
+  approvalActions: many(approvalActionsTable),
+}));
+
+/* ------------------------------------------------------- claim_line_items -- */
+
+export const claimLineItemsTable = sqliteTable(
+  "claim_line_items",
+  {
+    id: text("id").primaryKey(),
+    claimId: text("claim_id")
+      .notNull()
+      .references(() => claimsTable.id, { onDelete: "cascade" }),
+    categoryId: text("category_id")
+      .notNull()
+      .references(() => categoriesTable.id, { onDelete: "restrict" }),
+    description: text("description").notNull().default(""),
+    // ISO date the expense was incurred.
+    date: text("date").notNull(),
+    // Minor-units integer. For mileage categories this is computed server-side
+    // from quantity × category.mileage_rate and never trusted from the client.
+    amount: integer("amount").notNull(),
+    currency: text("currency").notNull().default("IDR"),
+    // Quantity of units (e.g. km for mileage, nights for hotel).
+    quantity: integer("quantity"),
+    unitLabel: text("unit_label"),
+    // Snapshot of the rate applied at entry (audit trail for mileage lines).
+    unitRate: integer("unit_rate"),
+    // Denormalised "has at least one attachment" flag — the policy engine
+    // reads this to decide whether a receipt is missing. Maintained by the
+    // attachment service on upload/delete.
+    hasReceipt: integer("has_receipt", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    note: text("note"),
+    // JSON array of policy violations persisted at submit time. Null when the
+    // line passed all policies cleanly. Overwritten on resubmit (idempotent).
+    policyFlag: text("policy_flag"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    claimIdx: index("claim_line_items_claim_idx").on(t.claimId),
+    categoryIdx: index("claim_line_items_category_idx").on(t.categoryId),
+  })
+);
+
+export const claimLineItemsRelations = relations(
+  claimLineItemsTable,
+  ({ one, many }) => ({
+    claim: one(claimsTable, {
+      fields: [claimLineItemsTable.claimId],
+      references: [claimsTable.id],
+    }),
+    category: one(categoriesTable, {
+      fields: [claimLineItemsTable.categoryId],
+      references: [categoriesTable.id],
+    }),
+    attachments: many(attachmentsTable),
+  })
+);
+
+/* ------------------------------------------------------------ attachments -- */
+
+export const attachmentsTable = sqliteTable(
+  "attachments",
+  {
+    id: text("id").primaryKey(),
+    lineItemId: text("line_item_id")
+      .notNull()
+      .references(() => claimLineItemsTable.id, { onDelete: "cascade" }),
+    // Original client-side filename (sanitised for the on-disk path separately).
+    fileName: text("file_name").notNull(),
+    // Relative path under backend/uploads/ (<lineId>/<filename>).
+    fileUrl: text("file_url").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    // Manually-entered receipt metadata (NO OCR extraction in Phase 1).
+    merchant: text("merchant"),
+    amount: integer("amount"),
+    currency: text("currency"),
+    transactionDate: text("transaction_date"),
+    uploadedBy: text("uploaded_by")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    uploadedAt: integer("uploaded_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    lineItemIdx: index("attachments_line_item_idx").on(t.lineItemId),
+    uploaderIdx: index("attachments_uploaded_by_idx").on(t.uploadedBy),
+  })
+);
+
+export const attachmentsRelations = relations(attachmentsTable, ({ one }) => ({
+  lineItem: one(claimLineItemsTable, {
+    fields: [attachmentsTable.lineItemId],
+    references: [claimLineItemsTable.id],
+  }),
+  uploader: one(usersTable, {
+    fields: [attachmentsTable.uploadedBy],
+    references: [usersTable.id],
+  }),
+}));
+
+/* -------------------------------------------------------- approval_routes -- */
+
+export const APPROVER_TYPES = [
+  "submitter_manager",
+  "specific_user",
+  "finance",
+] as const;
+export type ApproverType = (typeof APPROVER_TYPES)[number];
+
+export const approvalRoutesTable = sqliteTable(
+  "approval_routes",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    // Structured match criteria. A claim matches when every populated criterion
+    // is satisfied. All-null = matches any claim (used by the fallback route).
+    matchMinAmount: integer("match_min_amount"),
+    matchMaxAmount: integer("match_max_amount"),
+    matchCategoryId: text("match_category_id").references(
+      (): AnySQLiteColumn => categoriesTable.id,
+      { onDelete: "set null" }
+    ),
+    matchDepartment: text("match_department"),
+    isFallback: integer("is_fallback", { mode: "boolean" }).notNull().default(false),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    activeIdx: index("approval_routes_active_idx").on(t.active),
+    fallbackIdx: index("approval_routes_fallback_idx").on(t.isFallback),
+  })
+);
+
+export const approvalRoutesRelations = relations(
+  approvalRoutesTable,
+  ({ one, many }) => ({
+    steps: many(approvalStepsTable),
+    matchCategory: one(categoriesTable, {
+      fields: [approvalRoutesTable.matchCategoryId],
+      references: [categoriesTable.id],
+    }),
+  })
+);
+
+/* --------------------------------------------------------- approval_steps -- */
+
+export const approvalStepsTable = sqliteTable(
+  "approval_steps",
+  {
+    id: text("id").primaryKey(),
+    routeId: text("route_id")
+      .notNull()
+      .references(() => approvalRoutesTable.id, { onDelete: "cascade" }),
+    // Zero-based ordering. Step 0 is the first reviewer.
+    orderIndex: integer("order_index").notNull(),
+    approverType: text("approver_type", { enum: APPROVER_TYPES }).notNull(),
+    // Required when approverType === "specific_user"; null otherwise.
+    approverId: text("approver_id").references((): AnySQLiteColumn => usersTable.id, {
+      onDelete: "set null",
+    }),
+    label: text("label").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    routeIdx: index("approval_steps_route_idx").on(t.routeId),
+    orderIdx: index("approval_steps_order_idx").on(t.orderIndex),
+  })
+);
+
+export const approvalStepsRelations = relations(approvalStepsTable, ({ one }) => ({
+  route: one(approvalRoutesTable, {
+    fields: [approvalStepsTable.routeId],
+    references: [approvalRoutesTable.id],
+  }),
+  approver: one(usersTable, {
+    fields: [approvalStepsTable.approverId],
+    references: [usersTable.id],
+  }),
+}));
+
+/* ------------------------------------------------------- approval_actions -- */
+
+export const APPROVAL_ACTIONS = [
+  "created",
+  "submitted",
+  "approved",
+  "rejected",
+  "returned",
+  "resubmitted",
+  "withdrawn",
+] as const;
+export type ApprovalAction = (typeof APPROVAL_ACTIONS)[number];
+
+export const approvalActionsTable = sqliteTable(
+  "approval_actions",
+  {
+    id: text("id").primaryKey(),
+    claimId: text("claim_id")
+      .notNull()
+      .references(() => claimsTable.id, { onDelete: "cascade" }),
+    // The step this decision was taken against. Used for stale-decision
+    // detection + audit. Null for lifecycle actions (created/submitted/etc).
+    stepId: text("step_id").references((): AnySQLiteColumn => approvalStepsTable.id, {
+      onDelete: "set null",
+    }),
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    action: text("action", { enum: APPROVAL_ACTIONS }).notNull(),
+    comment: text("comment"),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    claimIdx: index("approval_actions_claim_idx").on(t.claimId),
+    stepIdx: index("approval_actions_step_idx").on(t.stepId),
+    actorIdx: index("approval_actions_actor_idx").on(t.actorId),
+  })
+);
+
+export const approvalActionsRelations = relations(
+  approvalActionsTable,
+  ({ one }) => ({
+    claim: one(claimsTable, {
+      fields: [approvalActionsTable.claimId],
+      references: [claimsTable.id],
+    }),
+    step: one(approvalStepsTable, {
+      fields: [approvalActionsTable.stepId],
+      references: [approvalStepsTable.id],
+    }),
+    actor: one(usersTable, {
+      fields: [approvalActionsTable.actorId],
+      references: [usersTable.id],
+    }),
+  })
+);
+
+/* ------------------------------------------------------------ notifications -- */
+
+export const NOTIFICATION_CATEGORIES = [
+  "approval",
+  "action",
+  "payment",
+  "system",
+] as const;
+export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
+
+export const notificationsTable = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    recipientId: text("recipient_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    category: text("category", { enum: NOTIFICATION_CATEGORIES }).notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    claimId: text("claim_id").references((): AnySQLiteColumn => claimsTable.id, {
+      onDelete: "set null",
+    }),
+    read: integer("read", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    recipientIdx: index("notifications_recipient_idx").on(t.recipientId),
+    readIdx: index("notifications_read_idx").on(t.read),
+  })
+);
+
+export const notificationsRelations = relations(notificationsTable, ({ one }) => ({
+  recipient: one(usersTable, {
+    fields: [notificationsTable.recipientId],
+    references: [usersTable.id],
+  }),
+  claim: one(claimsTable, {
+    fields: [notificationsTable.claimId],
+    references: [claimsTable.id],
+  }),
+}));
+
 /* -------------------------------------------------------------- exports ---- */
 
-/** The schema handed to Better Auth's Drizzle adapter. */
+/** The schema handed to Better Auth's Drizzle adapter + owned by this app. */
 export const schema = {
   users: usersTable,
   sessions: sessionsTable,
   accounts: accountsTable,
   verifications: verificationsTable,
   auditLogs: auditLogsTable,
+  categories: categoriesTable,
+  policies: policiesTable,
+  claims: claimsTable,
+  claimLineItems: claimLineItemsTable,
+  attachments: attachmentsTable,
+  approvalRoutes: approvalRoutesTable,
+  approvalSteps: approvalStepsTable,
+  approvalActions: approvalActionsTable,
+  notifications: notificationsTable,
 };
 
 export type Schema = typeof schema;

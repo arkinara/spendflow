@@ -1,9 +1,9 @@
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { Auth } from "./auth/index.js";
-import { AuthError, dataScopeFor, requireRole, requireUser } from "./auth/permissions.js";
+import { dataScopeFor, requireRole, requireUser } from "./auth/permissions.js";
 import type { DB } from "./db/index.js";
 import type { Env } from "./config.js";
 import {
@@ -14,6 +14,15 @@ import {
   UserServiceError,
 } from "./services/users.js";
 import { auditForEntity } from "./services/audit.js";
+import { AttachmentError } from "./services/attachments.js";
+import { ApprovalError } from "./services/approvals.js";
+import {
+  claimErrorHandler,
+  claimsRoutes,
+  jsonError,
+} from "./routes/claims.js";
+import { attachmentRoutes, attachmentErrorHandler } from "./routes/attachments.js";
+import { approvalErrorHandler, approvalRoutes } from "./routes/approvals.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -25,10 +34,6 @@ const roleSchema = z.enum(["employee", "approver", "finance"]);
 const setManagerSchema = z.object({
   managerId: z.string().min(1).nullable(),
 });
-
-function jsonError(c: Context, status: ContentfulStatusCode, code: string, message: string) {
-  return c.json({ error: { code, message } }, status);
-}
 
 /**
  * Build the Hono application wired to a specific auth + db pair. Factory form
@@ -59,17 +64,22 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   //   POST /api/auth/sign-up/email   → create a credential user
   app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
+  // Centralised error → JSON envelope. Each domain service has its own typed
+  // error class; we route the error to its handler and fall back to the claim
+  // handler (which covers ClaimError + AuthError + a generic 500).
   app.onError((err, c) => {
-    if (err instanceof AuthError) {
-      return jsonError(c, err.status as ContentfulStatusCode, err.code, err.message);
-    }
     if (err instanceof UserServiceError) {
       const status: ContentfulStatusCode =
         err.code === "not_found" ? 404 : 400;
       return jsonError(c, status, err.code, err.message);
     }
-    const msg = err instanceof Error ? err.message : "Internal error";
-    return jsonError(c, 500, "internal", msg);
+    if (err instanceof AttachmentError) {
+      return attachmentErrorHandler(err, c);
+    }
+    if (err instanceof ApprovalError) {
+      return approvalErrorHandler(err, c);
+    }
+    return claimErrorHandler(err, c);
   });
 
   /* ----------------------------------------------------------- /api/me ---- */
@@ -88,14 +98,13 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     const ctx = await requireUser(auth, c.req.raw.headers);
     const scope = dataScopeFor(ctx.user);
     const users = listUsers(db);
-    const visible =
-      scope.allData
-        ? users
-        : scope.ownOnly
-          ? users.filter((u) => u.id === scope.userId)
-          : users.filter(
-              (u) => u.id === scope.userId || u.managerId === scope.managerId
-            );
+    const visible = scope.allData
+      ? users
+      : scope.ownOnly
+        ? users.filter((u) => u.id === scope.userId)
+        : users.filter(
+            (u) => u.id === scope.userId || u.managerId === scope.managerId
+          );
     return c.json({ scope, items: visible });
   });
 
@@ -111,7 +120,12 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     const body = await c.req.json().catch(() => ({}));
     const parsed = roleSchema.safeParse(body.role ?? body);
     if (!parsed.success) {
-      return jsonError(c, 400, "invalid_role", "Role must be one of: employee, approver, finance");
+      return jsonError(
+        c,
+        400,
+        "invalid_role",
+        "Role must be one of: employee, approver, finance"
+      );
     }
     const role = asRole(parsed.data)!;
     const { user, audit } = changeRole(db, c.req.param("id"), role, actor.user.id);
@@ -123,7 +137,12 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     const body = await c.req.json().catch(() => ({}));
     const parsed = setManagerSchema.safeParse(body);
     if (!parsed.success) {
-      return jsonError(c, 400, "invalid_body", "Body must be { managerId: string | null }");
+      return jsonError(
+        c,
+        400,
+        "invalid_body",
+        "Body must be { managerId: string | null }"
+      );
     }
     const { user, audit } = setManager(
       db,
@@ -139,6 +158,13 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     const entries = auditForEntity(db, "user", c.req.param("id"));
     return c.json({ entries });
   });
+
+  /* ------------------------------------------- #11 claims + attachments ---- */
+  app.route("/", claimsRoutes({ auth, db, env }));
+  app.route("/", attachmentRoutes({ auth, db, env }));
+
+  /* ----------------------------------------------- #12 approver decisions -- */
+  app.route("/", approvalRoutes({ auth, db, env }));
 
   return app;
 }

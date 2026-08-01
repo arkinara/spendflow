@@ -1,0 +1,880 @@
+/* ============================================================================
+ * SpendFlow — claimStore domain service (ticket #11).
+ *
+ * Backs claim creation/edit/submit/withdraw/resubmit lifecycle. All mutations
+ * are scoped to the owning employee and only allowed while the claim is in a
+ * mutable status (Draft, or Action Required for resubmit). Mileage amounts are
+ * computed server-side from distance × category rate; the client amount is
+ * never trusted for mileage categories. Submission resolves the approval
+ * route via the shared engine and stamps non-blocking policy warnings.
+ * ========================================================================== */
+
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import {
+  approvalActionsTable,
+  categoriesTable,
+  claimLineItemsTable,
+  claimsTable,
+  usersTable,
+  type ApprovalAction,
+  type ClaimStatus,
+} from "../db/schema.js";
+import type { DB } from "../db/index.js";
+import { writeAudit } from "./audit.js";
+import { writeNotification } from "./notifications.js";
+import {
+  evaluateClaim,
+  type ClaimPolicySummary,
+  type PolicyWarning,
+} from "./policy.js";
+import { resolveApprovalRoute, RoutingError } from "./approval-engine.js";
+import {
+  listActiveCategories,
+  listActivePolicies,
+  loadApprovalRoutes,
+} from "./config.js";
+
+export class ClaimError extends Error {
+  constructor(
+    public status: number,
+    public code:
+      | "not_found"
+      | "forbidden"
+      | "wrong_status"
+      | "no_line_items"
+      | "invalid_line"
+      | "unknown_category"
+      | "routing_failed",
+    message: string
+  ) {
+    super(message);
+    this.name = "ClaimError";
+  }
+}
+
+/* ----------------------------------------------------------- public types -- */
+
+export interface LineItemInput {
+  id?: string;
+  categoryId: string;
+  description?: string;
+  date: string;
+  amount?: number;
+  currency?: string;
+  /** Distance (km) for mileage categories — drives server-side computation. */
+  quantity?: number;
+  unitLabel?: string;
+  note?: string;
+}
+
+export interface CreateClaimInput {
+  title: string;
+  purpose?: string;
+  currency?: string;
+  tripStart?: string;
+  tripEnd?: string;
+  destination?: string;
+  lineItems?: LineItemInput[];
+}
+
+export interface UpdateClaimInput {
+  title?: string;
+  purpose?: string;
+  currency?: string;
+  tripStart?: string | null;
+  tripEnd?: string | null;
+  destination?: string | null;
+}
+
+export interface ClaimLineItemRow {
+  id: string;
+  claimId: string;
+  categoryId: string;
+  description: string;
+  date: string;
+  amount: number;
+  currency: string;
+  quantity: number | null;
+  unitLabel: string | null;
+  unitRate: number | null;
+  hasReceipt: boolean;
+  note: string | null;
+  policyFlag: PolicyWarning[] | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ClaimRow {
+  id: string;
+  reference: string;
+  title: string;
+  purpose: string;
+  employeeId: string;
+  status: ClaimStatus;
+  currency: string;
+  tripStart: string | null;
+  tripEnd: string | null;
+  destination: string | null;
+  approvalRouteId: string | null;
+  currentStepIndex: number;
+  policyException: ClaimPolicySummary | null;
+  submittedAt: Date | null;
+  decidedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  lineItems: ClaimLineItemRow[];
+}
+
+export interface SubmitResult {
+  claim: ClaimRow;
+  warnings: PolicyWarning[];
+  summary: ClaimPolicySummary | null;
+}
+
+/* ------------------------------------------------------------- internals -- */
+
+const MILEAGE_CATEGORY_ID = "mileage";
+
+function newId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+/** Next human-readable reference, e.g. "EXP-2026-1004". */
+function nextReference(db: DB): string {
+  const year = new Date().getFullYear();
+  const count = db
+    .select({ id: claimsTable.id })
+    .from(claimsTable)
+    .all().length;
+  // 1001 offset matches the seeded fixtures so new claims read naturally.
+  const seq = (1001 + count).toString().padStart(4, "0");
+  return `EXP-${year}-${seq}`;
+}
+
+function loadClaimRow(db: DB, id: string) {
+  const row = db
+    .select()
+    .from(claimsTable)
+    .where(eq(claimsTable.id, id))
+    .get();
+  return row;
+}
+
+export function loadClaimOrThrow(db: DB, id: string) {
+  const row = loadClaimRow(db, id);
+  if (!row) throw new ClaimError(404, "not_found", `Claim ${id} not found`);
+  return row;
+}
+
+export function toClaimRow(
+  db: DB,
+  row: typeof claimsTable.$inferSelect
+): ClaimRow {
+  const lines = db
+    .select()
+    .from(claimLineItemsTable)
+    .where(eq(claimLineItemsTable.claimId, row.id))
+    .orderBy(asc(claimLineItemsTable.createdAt))
+    .all()
+    .map((l) => ({
+      id: l.id,
+      claimId: l.claimId,
+      categoryId: l.categoryId,
+      description: l.description,
+      date: l.date,
+      amount: l.amount,
+      currency: l.currency,
+      quantity: l.quantity,
+      unitLabel: l.unitLabel,
+      unitRate: l.unitRate,
+      hasReceipt: l.hasReceipt,
+      note: l.note,
+      policyFlag: l.policyFlag ? (JSON.parse(l.policyFlag) as PolicyWarning[]) : null,
+      createdAt: l.createdAt,
+      updatedAt: l.updatedAt,
+    }));
+  return {
+    id: row.id,
+    reference: row.reference,
+    title: row.title,
+    purpose: row.purpose,
+    employeeId: row.employeeId,
+    status: row.status,
+    currency: row.currency,
+    tripStart: row.tripStart,
+    tripEnd: row.tripEnd,
+    destination: row.destination,
+    approvalRouteId: row.approvalRouteId,
+    currentStepIndex: row.currentStepIndex,
+    policyException: row.policyException
+      ? (JSON.parse(row.policyException) as ClaimPolicySummary)
+      : null,
+    submittedAt: row.submittedAt,
+    decidedAt: row.decidedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    lineItems: lines,
+  };
+}
+
+function assertOwnedBy(
+  row: typeof claimsTable.$inferSelect,
+  employeeId: string
+) {
+  if (row.employeeId !== employeeId) {
+    throw new ClaimError(
+      403,
+      "forbidden",
+      "You do not own this claim"
+    );
+  }
+}
+
+function assertStatus(
+  row: typeof claimsTable.$inferSelect,
+  allowed: ClaimStatus[]
+) {
+  if (!allowed.includes(row.status)) {
+    throw new ClaimError(
+      409,
+      "wrong_status",
+      `Claim is ${row.status}; expected ${allowed.join(" or ")}`
+    );
+  }
+}
+
+/**
+ * Resolve the server-side amount for a line item. Mileage categories compute
+ * amount from `quantity × category.mileage_rate`; the client-supplied amount
+ * is ignored for mileage. Non-mileage categories honour the client amount.
+ */
+function resolveLineAmount(
+  db: DB,
+  line: LineItemInput
+): { amount: number; quantity: number | null; unitLabel: string | null; unitRate: number | null } {
+  const category = db
+    .select()
+    .from(categoriesTable)
+    .where(eq(categoriesTable.id, line.categoryId))
+    .get();
+  if (!category) {
+    throw new ClaimError(
+      400,
+      "unknown_category",
+      `Category ${line.categoryId} does not exist`
+    );
+  }
+
+  if (category.id === MILEAGE_CATEGORY_ID || category.mileageRate != null) {
+    const quantity = line.quantity;
+    if (quantity == null || quantity < 0) {
+      throw new ClaimError(
+        400,
+        "invalid_line",
+        "Mileage line items require a non-negative quantity (distance in km)"
+      );
+    }
+    const rate = category.mileageRate ?? 0;
+    return {
+      amount: quantity * rate,
+      quantity,
+      unitLabel: line.unitLabel ?? "km",
+      unitRate: rate,
+    };
+  }
+
+  const amount = line.amount;
+  if (amount == null || !Number.isFinite(amount) || amount < 0) {
+    throw new ClaimError(
+      400,
+      "invalid_line",
+      "Line items require a non-negative numeric amount"
+    );
+  }
+  return { amount: Math.round(amount), quantity: line.quantity ?? null, unitLabel: line.unitLabel ?? null, unitRate: null };
+}
+
+function validateLine(line: LineItemInput) {
+  if (!line.categoryId || typeof line.categoryId !== "string") {
+    throw new ClaimError(400, "invalid_line", "Each line item requires a category");
+  }
+  if (!line.date || typeof line.date !== "string") {
+    throw new ClaimError(400, "invalid_line", "Each line item requires a date");
+  }
+}
+
+function recordAction(
+  db: DB,
+  args: {
+    claimId: string;
+    actorId: string;
+    action: ApprovalAction;
+    stepId?: string | null;
+    comment?: string | null;
+  }
+) {
+  db.insert(approvalActionsTable)
+    .values({
+      id: newId("act"),
+      claimId: args.claimId,
+      stepId: args.stepId ?? null,
+      actorId: args.actorId,
+      action: args.action,
+      comment: args.comment ?? null,
+      createdAt: new Date(),
+    })
+    .run();
+}
+
+/* --------------------------------------------------------------- create ---- */
+
+/**
+ * Create a Draft claim owned by `employeeId`, optionally with initial line
+ * items. Mileage line items have their amount computed server-side.
+ */
+export function createClaim(
+  db: DB,
+  employeeId: string,
+  input: CreateClaimInput
+): ClaimRow {
+  if (!input.title?.trim()) {
+    throw new ClaimError(400, "invalid_line", "Claim title is required");
+  }
+  const now = new Date();
+  const id = newId("clm");
+  const reference = nextReference(db);
+
+  const lineRows: Array<{
+    id: string;
+    categoryId: string;
+    description: string;
+    date: string;
+    amount: number;
+    currency: string;
+    quantity: number | null;
+    unitLabel: string | null;
+    unitRate: number | null;
+  }> = [];
+
+  for (const line of input.lineItems ?? []) {
+    validateLine(line);
+    const resolved = resolveLineAmount(db, line);
+    lineRows.push({
+      id: line.id ?? newId("li"),
+      categoryId: line.categoryId,
+      description: line.description ?? "",
+      date: line.date,
+      amount: resolved.amount,
+      currency: line.currency ?? "IDR",
+      quantity: resolved.quantity,
+      unitLabel: resolved.unitLabel,
+      unitRate: resolved.unitRate,
+    });
+  }
+
+  db.transaction((tx) => {
+    tx.insert(claimsTable)
+      .values({
+        id,
+        reference,
+        title: input.title.trim(),
+        purpose: input.purpose?.trim() ?? "",
+        employeeId,
+        status: "draft",
+        currency: input.currency ?? "IDR",
+        tripStart: input.tripStart ?? null,
+        tripEnd: input.tripEnd ?? null,
+        destination: input.destination ?? null,
+        approvalRouteId: null,
+        currentStepIndex: 0,
+        policyException: null,
+        submittedAt: null,
+        decidedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    for (const l of lineRows) {
+      tx.insert(claimLineItemsTable)
+        .values({
+          id: l.id,
+          claimId: id,
+          categoryId: l.categoryId,
+          description: l.description,
+          date: l.date,
+          amount: l.amount,
+          currency: l.currency,
+          quantity: l.quantity,
+          unitLabel: l.unitLabel,
+          unitRate: l.unitRate,
+          hasReceipt: false,
+          note: null,
+          policyFlag: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+    }
+    tx.insert(approvalActionsTable)
+      .values({
+        id: newId("act"),
+        claimId: id,
+        stepId: null,
+        actorId: employeeId,
+        action: "created",
+        comment: null,
+        createdAt: now,
+      })
+      .run();
+  });
+
+  const row = loadClaimOrThrow(db, id);
+  return toClaimRow(db, row);
+}
+
+/* ----------------------------------------------------------------- get ---- */
+
+/** Load a claim with its line items. Ownership/visibility is checked upstream. */
+export function getClaim(db: DB, id: string): ClaimRow | null {
+  const row = loadClaimRow(db, id);
+  return row ? toClaimRow(db, row) : null;
+}
+
+/** Load + assert ownership (for employee self-service mutations). */
+export function getOwnedClaim(
+  db: DB,
+  id: string,
+  employeeId: string
+): ClaimRow {
+  const row = loadClaimOrThrow(db, id);
+  assertOwnedBy(row, employeeId);
+  return toClaimRow(db, row);
+}
+
+/* ----------------------------------------------------------------- edit ---- */
+
+/** Edit a Draft claim's top-level fields (title/purpose/dates/etc). */
+export function updateClaim(
+  db: DB,
+  id: string,
+  employeeId: string,
+  patch: UpdateClaimInput
+): ClaimRow {
+  const row = loadClaimOrThrow(db, id);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["draft", "action_required"]);
+  const updates: Partial<typeof claimsTable.$inferInsert> = { updatedAt: new Date() };
+  if (patch.title != null) {
+    if (!patch.title.trim()) {
+      throw new ClaimError(400, "invalid_line", "Claim title cannot be empty");
+    }
+    updates.title = patch.title.trim();
+  }
+  if (patch.purpose != null) updates.purpose = patch.purpose.trim();
+  if (patch.currency != null) updates.currency = patch.currency;
+  if (patch.tripStart !== undefined) updates.tripStart = patch.tripStart ?? null;
+  if (patch.tripEnd !== undefined) updates.tripEnd = patch.tripEnd ?? null;
+  if (patch.destination !== undefined) updates.destination = patch.destination ?? null;
+  db.update(claimsTable).set(updates).where(eq(claimsTable.id, id)).run();
+  return toClaimRow(db, loadClaimOrThrow(db, id));
+}
+
+/** Add a line item to a Draft/Action Required claim. */
+export function addLineItem(
+  db: DB,
+  claimId: string,
+  employeeId: string,
+  line: LineItemInput
+): ClaimLineItemRow {
+  const row = loadClaimOrThrow(db, claimId);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["draft", "action_required"]);
+  validateLine(line);
+  const resolved = resolveLineAmount(db, line);
+  const id = line.id ?? newId("li");
+  const now = new Date();
+  db.insert(claimLineItemsTable)
+    .values({
+      id,
+      claimId,
+      categoryId: line.categoryId,
+      description: line.description ?? "",
+      date: line.date,
+      amount: resolved.amount,
+      currency: line.currency ?? row.currency,
+      quantity: resolved.quantity,
+      unitLabel: resolved.unitLabel,
+      unitRate: resolved.unitRate,
+      hasReceipt: false,
+      note: line.note ?? null,
+      policyFlag: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .run();
+  return toClaimRow(db, loadClaimOrThrow(db, claimId)).lineItems.find(
+    (l) => l.id === id
+  )!;
+}
+
+/** Edit an existing line item (Draft/Action Required only). */
+export function updateLineItem(
+  db: DB,
+  claimId: string,
+  lineId: string,
+  employeeId: string,
+  patch: Partial<LineItemInput> & { categoryId: string; date: string }
+): ClaimLineItemRow {
+  const row = loadClaimOrThrow(db, claimId);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["draft", "action_required"]);
+  const existing = db
+    .select()
+    .from(claimLineItemsTable)
+    .where(
+      and(
+        eq(claimLineItemsTable.id, lineId),
+        eq(claimLineItemsTable.claimId, claimId)
+      )
+    )
+    .get();
+  if (!existing) {
+    throw new ClaimError(404, "not_found", `Line item ${lineId} not found`);
+  }
+  const merged: LineItemInput = {
+    categoryId: patch.categoryId,
+    description: patch.description ?? existing.description,
+    date: patch.date,
+    quantity: patch.quantity ?? existing.quantity ?? undefined,
+    unitLabel: patch.unitLabel ?? existing.unitLabel ?? undefined,
+    note: patch.note ?? existing.note ?? undefined,
+    currency: patch.currency ?? existing.currency,
+  };
+  const resolved = resolveLineAmount(db, merged);
+  const now = new Date();
+  db.update(claimLineItemsTable)
+    .set({
+      categoryId: merged.categoryId,
+      description: merged.description ?? "",
+      date: merged.date,
+      amount: resolved.amount,
+      currency: merged.currency ?? row.currency,
+      quantity: resolved.quantity,
+      unitLabel: resolved.unitLabel,
+      unitRate: resolved.unitRate,
+      note: merged.note ?? null,
+      // Editing a line invalidates any previously-stamped policy flag; it will
+      // be recomputed on next submit.
+      policyFlag: null,
+      updatedAt: now,
+    })
+    .where(eq(claimLineItemsTable.id, lineId))
+    .run();
+  return toClaimRow(db, loadClaimOrThrow(db, claimId)).lineItems.find(
+    (l) => l.id === lineId
+  )!;
+}
+
+/** Remove a line item (Draft/Action Required only). */
+export function removeLineItem(
+  db: DB,
+  claimId: string,
+  lineId: string,
+  employeeId: string
+): void {
+  const row = loadClaimOrThrow(db, claimId);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["draft", "action_required"]);
+  db.delete(claimLineItemsTable)
+    .where(
+      and(
+        eq(claimLineItemsTable.id, lineId),
+        eq(claimLineItemsTable.claimId, claimId)
+      )
+    )
+    .run();
+}
+
+/* ------------------------------------------------------- submit/resubmit -- */
+
+function buildPolicyInputs(claim: ClaimRow) {
+  return claim.lineItems.map((l) => ({
+    id: l.id,
+    categoryId: l.categoryId,
+    amount: l.amount,
+    currency: l.currency,
+    hasAttachment: l.hasReceipt,
+  }));
+}
+
+/**
+ * Core submission: validate, compute policy warnings, resolve the approval
+ * route, transition to Pending Approval, and stamp the resolved route + step
+ * 0. Reused by submit (draft → pending) and resubmit (action_required → pending).
+ *
+ * All writes happen in a single transaction; policy flags are overwritten on
+ * every (re)submit so duplicate flags can never accumulate (idempotent).
+ */
+function applySubmission(
+  db: DB,
+  claim: ClaimRow,
+  employeeId: string,
+  actionLabel: ApprovalAction
+): SubmitResult {
+  if (claim.lineItems.length === 0) {
+    throw new ClaimError(
+      400,
+      "no_line_items",
+      "A claim must have at least one line item before submission"
+    );
+  }
+
+  const asOfIso = new Date().toISOString().slice(0, 10);
+  const policies = listActivePolicies(db, asOfIso);
+  const categories = listActiveCategories(db);
+  const { warnings, summary } = evaluateClaim(
+    buildPolicyInputs(claim),
+    policies,
+    claim.currency,
+    categories
+  );
+
+  // Resolve route against the claim's current totals + the employee's dept.
+  const employee = db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, employeeId))
+    .get();
+  const routes = loadApprovalRoutes(db);
+  let resolved;
+  try {
+    resolved = resolveApprovalRoute(
+      {
+        totalAmount: claim.lineItems.reduce((s, l) => s + l.amount, 0),
+        categoryIds: Array.from(
+          new Set(claim.lineItems.map((l) => l.categoryId))
+        ),
+        department: employee?.department ?? null,
+      },
+      routes
+    );
+  } catch (err) {
+    if (err instanceof RoutingError) {
+      throw new ClaimError(503, "routing_failed", err.message);
+    }
+    throw err;
+  }
+
+  const now = new Date();
+  const warningsByLine = new Map<string, PolicyWarning[]>();
+  for (const w of warnings) {
+    const list = warningsByLine.get(w.lineId) ?? [];
+    list.push(w);
+    warningsByLine.set(w.lineId, list);
+  }
+
+  db.transaction((tx) => {
+    tx.update(claimsTable)
+      .set({
+        status: "pending",
+        approvalRouteId: resolved.route.id,
+        currentStepIndex: 0,
+        policyException: summary ? JSON.stringify(summary) : null,
+        submittedAt: now,
+        decidedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(claimsTable.id, claim.id))
+      .run();
+
+    // Overwrite (idempotent) policy flags per line.
+    for (const line of claim.lineItems) {
+      const ws = warningsByLine.get(line.id) ?? null;
+      tx.update(claimLineItemsTable)
+        .set({
+          policyFlag: ws ? JSON.stringify(ws) : null,
+          updatedAt: now,
+        })
+        .where(eq(claimLineItemsTable.id, line.id))
+        .run();
+    }
+
+    tx.insert(approvalActionsTable)
+      .values({
+        id: newId("act"),
+        claimId: claim.id,
+        stepId: resolved.steps[0]?.id ?? null,
+        actorId: employeeId,
+        action: actionLabel,
+        comment: null,
+        createdAt: now,
+      })
+      .run();
+
+    writeAudit(tx, {
+      actorId: employeeId,
+      action: `claim.${actionLabel}`,
+      entityType: "claim",
+      entityId: claim.id,
+      before: { status: claim.status },
+      after: { status: "pending", routeId: resolved.route.id },
+    });
+
+    // Notify the first-step approver (resolved best-effort: manager / specific
+    // user / every finance user). Non-blocking if the approver can't resolve.
+    notifyFirstApprover(tx, claim, resolved.steps[0], employee?.managerId ?? null);
+  });
+
+  return {
+    claim: toClaimRow(db, loadClaimOrThrow(db, claim.id)),
+    warnings,
+    summary,
+  };
+}
+
+function notifyFirstApprover(
+  db: DB,
+  claim: ClaimRow,
+  step: { approverType: string; approverId?: string | null } | undefined,
+  employeeManagerId: string | null
+) {
+  if (!step) return;
+  const title = `Claim ${claim.reference} submitted for approval`;
+  const body = `"${claim.title}" is awaiting your review.`;
+  if (step.approverType === "submitter_manager" && employeeManagerId) {
+    writeNotification(db, {
+      recipientId: employeeManagerId,
+      category: "approval",
+      title,
+      body,
+      claimId: claim.id,
+    });
+  } else if (step.approverType === "specific_user" && step.approverId) {
+    writeNotification(db, {
+      recipientId: step.approverId,
+      category: "approval",
+      title,
+      body,
+      claimId: claim.id,
+    });
+  } else if (step.approverType === "finance") {
+    const financeUsers = db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.role, "finance"))
+      .all();
+    for (const fu of financeUsers) {
+      writeNotification(db, {
+        recipientId: fu.id,
+        category: "approval",
+        title,
+        body,
+        claimId: claim.id,
+      });
+    }
+  }
+}
+
+/** Submit a Draft claim for approval. */
+export function submitClaim(
+  db: DB,
+  id: string,
+  employeeId: string
+): SubmitResult {
+  const row = loadClaimOrThrow(db, id);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["draft"]);
+  return applySubmission(db, toClaimRow(db, row), employeeId, "submitted");
+}
+
+/**
+ * Resubmit a claim that was returned (Action Required). Re-runs validation,
+ * policy evaluation, and route resolution; transitions back to Pending.
+ */
+export function resubmitClaim(
+  db: DB,
+  id: string,
+  employeeId: string
+): SubmitResult {
+  const row = loadClaimOrThrow(db, id);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["action_required"]);
+  return applySubmission(db, toClaimRow(db, row), employeeId, "resubmitted");
+}
+
+/* ----------------------------------------------------------- withdraw ---- */
+
+/**
+ * Withdraw a Pending claim back to Action Required (employee pulls it from the
+ * approver's queue to fix something). Records the lifecycle action.
+ */
+export function withdrawClaim(
+  db: DB,
+  id: string,
+  employeeId: string,
+  comment?: string
+): ClaimRow {
+  const row = loadClaimOrThrow(db, id);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["pending"]);
+  const now = new Date();
+  db.transaction((tx) => {
+    tx.update(claimsTable)
+      .set({
+        status: "action_required",
+        decidedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(claimsTable.id, id))
+      .run();
+    recordAction(tx, {
+      claimId: id,
+      actorId: employeeId,
+      action: "withdrawn",
+      comment: comment ?? null,
+    });
+    writeAudit(tx, {
+      actorId: employeeId,
+      action: "claim.withdrawn",
+      entityType: "claim",
+      entityId: id,
+      before: { status: "pending" },
+      after: { status: "action_required" },
+    });
+  });
+  return toClaimRow(db, loadClaimOrThrow(db, id));
+}
+
+/* --------------------------------------------------------- delete claim -- */
+
+/** Permanently delete a Draft claim (and its line items via cascade). */
+export function deleteClaim(db: DB, id: string, employeeId: string): void {
+  const row = loadClaimOrThrow(db, id);
+  assertOwnedBy(row, employeeId);
+  assertStatus(row, ["draft"]);
+  db.delete(claimsTable).where(eq(claimsTable.id, id)).run();
+}
+
+/* --------------------------------------------------------- list / inbox -- */
+
+/** Claims owned by an employee, newest first. */
+export function listClaimsForEmployee(
+  db: DB,
+  employeeId: string,
+  filter?: { status?: ClaimStatus[] }
+): ClaimRow[] {
+  const rows = db
+    .select()
+    .from(claimsTable)
+    .where(
+      filter?.status?.length
+        ? and(
+            eq(claimsTable.employeeId, employeeId),
+            inArray(claimsTable.status, filter.status)
+          )
+        : eq(claimsTable.employeeId, employeeId)
+    )
+    .orderBy(desc(claimsTable.createdAt))
+    .all();
+  return rows.map((r) => toClaimRow(db, r));
+}
