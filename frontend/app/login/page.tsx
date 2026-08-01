@@ -8,12 +8,9 @@ import { TextField } from "@/components/ui/TextField";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import {
   useSession,
-  MOCK_CREDENTIALS,
   ROLE_HOME,
-  type SignInResult,
 } from "@/lib/auth/session";
-import { getUser } from "@/lib/mock/mock_data";
-import type { Role } from "@/lib/mock/mock_data";
+import { CURRENT_USER_BY_ROLE, getUser, type Role } from "@/lib/mock/mock_data";
 
 const PRESETS: { role: Role; label: string; icon: typeof User }[] = [
   { role: "employee", label: "Sign in as Employee", icon: User },
@@ -46,25 +43,29 @@ function LoginForm() {
     router.replace(next || "/");
   }, [status, searchParams, router]);
 
-  function applyResult(result: SignInResult) {
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    const result = await signIn(email, password);
     if (result.ok) {
-      setSubmitting(true);
       router.push(ROLE_HOME[result.role]);
     } else {
       setError(result.error);
+      setSubmitting(false);
     }
   }
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function preset(role: Role) {
     setError(null);
-    applyResult(signIn(email, password));
-  }
-
-  function preset(role: Role) {
-    setError(null);
-    signInAs(role);
-    router.push(ROLE_HOME[role]);
+    setSubmitting(true);
+    const result = await signInAs(role);
+    if (result.ok) {
+      router.push(ROLE_HOME[role]);
+    } else {
+      setError(result.error);
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -86,7 +87,7 @@ function LoginForm() {
             finance handled in the same place.
           </p>
         </div>
-        <p className="text-sm text-primary-foreground/70">Phase 1 prototype · mock data only</p>
+        <p className="text-sm text-primary-foreground/70">Phase 1 prototype · live auth, demo data</p>
       </div>
 
       {/* Form panel */}
@@ -160,8 +161,7 @@ function LoginForm() {
 
             <div className="space-y-2.5">
               {PRESETS.map((p) => {
-                const cred = MOCK_CREDENTIALS.find((c) => c.role === p.role)!;
-                const u = getUser(cred.userId)!;
+                const u = getUser(CURRENT_USER_BY_ROLE[p.role])!;
                 return (
                   <button
                     key={p.role}

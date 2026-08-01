@@ -3,22 +3,68 @@
 Responsive spend-management, reimbursement, and approval app for travel expenses.
 Built with **Next.js (App Router) + TypeScript + Tailwind CSS + Material Design 3**.
 
-> **Prototype only.** No backend, no database, no API, no OCR. Every screen renders
-> from mock fixtures in `lib/mock/mock_data.ts`. Receipt upload is manual (file
-> metadata only). "Auth" is a role preset, not real authentication.
+> **Phase 1.** Authentication + sessions are backed by the real Better Auth +
+> Drizzle backend (`../backend`). The other verticals (claims, approvals,
+> finance, admin, notifications, reporting) still render from mock fixtures in
+> `lib/mock/` and will be wired to the backend in tickets #18–#24. Receipt
+> upload is manual (file metadata only). OCR is Phase 2.
 
 ## Requirements
 
 - Node.js 18.18+ (tested on Node 22)
 - npm 9+
+- The SpendFlow backend running locally (see
+  [`../backend/README.md`](../backend/README.md)) — auth + sessions come from it.
 
-## Install & run
+## Install & run (two-server dev workflow)
+
+The frontend and backend are two separate dev servers that talk over HTTP. The
+browser needs both: the Next.js app on `:3000` and the Hono/Better Auth API on
+`:8787`.
 
 ```bash
+# 1. Backend (terminal A)
+cd backend
+cp .env.example .env            # set FRONTEND_ORIGIN=http://localhost:3000
+npm install
+npm run db:migrate
+npm run seed                   # creates the 3 demo users (password: demo1234)
+npm run dev                    # → http://localhost:8787
+
+# 2. Frontend (terminal B)
 cd frontend
-npm install          # install dependencies
-npm run dev          # start the dev server → http://localhost:3000
+cp .env.example .env.local     # NEXT_PUBLIC_BE_URL=http://localhost:8787
+npm install
+npm run dev                    # → http://localhost:3000
 ```
+
+Open http://localhost:3000 and sign in with a demo account (below). The session
+is an httpOnly cookie set by Better Auth and is sent automatically
+(`credentials: "include"`) on every fetch — it survives reloads and is
+invalidated server-side on sign-out.
+
+### Expected ports
+
+| Server  | Default URL                 | Env var                |
+|---------|-----------------------------|------------------------|
+| Frontend| http://localhost:3000       | —                      |
+| Backend | http://localhost:8787       | `NEXT_PUBLIC_BE_URL` (FE) / `PORT` (BE) |
+| CORS    | FE origin allowed by BE     | `FRONTEND_ORIGIN` (BE) |
+
+If the browser console shows a CORS preflight error, ensure `FRONTEND_ORIGIN`
+in `backend/.env` matches the exact origin the FE is served from
+(`http://localhost:3000`).
+
+### Demo credentials (after `npm run seed` in `backend/`)
+
+| Role     | Email                              | Password  | Home        |
+|----------|------------------------------------|-----------|-------------|
+| Employee | `aulia.pratiwi@spendflow.example`  | `demo1234`| `/employee` |
+| Approver | `dewi.anggraeni@spendflow.example` | `demo1234`| `/approver` |
+| Finance  | `ridwan.saputra@spendflow.example` | `demo1234`| `/finance`  |
+
+The login page's three preset buttons sign in as these personas against the
+real backend (not a mock).
 
 Other scripts:
 
@@ -44,11 +90,11 @@ workflow without logging in and out.
 
 There are three ways to change the active role:
 
-1. **Landing page (`/`)** — pick a role card.
+1. **Landing page (`/`)** — pick a role card (signs in against the BE).
 2. **Login page (`/login`)** — use the "Sign in as Employee / Approver / Finance" presets.
 3. **Role switcher in the top app bar** — the *"Viewing as …"* dropdown (dev-only). It
-   swaps the mock user, persists the choice in `localStorage` (`spendflow.role`), and
-   routes you to that role's dashboard. The left navigation rail updates to match the role.
+   re-signs-in as the chosen role against the BE and routes you to that role's
+   dashboard. The left navigation rail updates to match the role.
 
 The **theme toggle** (sun/moon icon in the app bar) switches light/dark; the choice is
 remembered in `localStorage` (`spendflow.theme`).
@@ -101,7 +147,9 @@ frontend/
 ├─ lib/
 │  ├─ utils.ts              # cn() class merger
 │  ├─ format.ts             # currency / date / relative-time helpers
-│  └─ mock/mock_data.ts     # ALL fixtures (users, claims, payments, policies, …)
+│  ├─ auth/                 # apiClient (Better Auth HTTP) + SessionProvider + routeAccess
+│  ├─ api/fetch.ts          # apiFetch() wrapper + global 401 handler
+│  └─ mock/mock_data.ts     # fixtures (users, claims, payments, policies, …) — retired in #24
 ├─ tailwind.config.ts       # M3 tokens, radius, spacing, motion
 └─ app/globals.css          # CSS variables (light + dark)
 ```

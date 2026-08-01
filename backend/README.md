@@ -24,6 +24,25 @@ npm run seed                    # seed the 3 demo personas (password: demo1234)
 npm run dev                     # start Hono on http://localhost:8787
 ```
 
+### Two-server dev workflow (with the frontend)
+
+The Next.js frontend (`../frontend`) talks to this backend over HTTP. Run both
+in dev:
+
+```bash
+# terminal A — backend (this repo)
+cd backend && npm run dev         # http://localhost:8787
+
+# terminal B — frontend
+cd frontend && npm run dev        # http://localhost:3000
+```
+
+The frontend targets this server via `NEXT_PUBLIC_BE_URL`
+(default `http://localhost:8787`); this server must allow the FE origin via
+`FRONTEND_ORIGIN` (default `http://localhost:3000`) so the browser can send the
+httpOnly session cookie cross-origin. See `../frontend/README.md` for the full
+flow and the demo credentials.
+
 Verify everything passes:
 
 ```bash

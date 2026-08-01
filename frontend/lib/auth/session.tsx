@@ -2,51 +2,53 @@
 
 import * as React from "react";
 import {
-  CURRENT_USER_BY_ROLE,
   getUser,
   type Role,
   type User,
 } from "@/lib/mock/mock_data";
+import {
+  getCurrentUser as apiGetCurrentUser,
+  signIn as apiSignIn,
+  signOut as apiSignOut,
+  type AuthUser,
+} from "@/lib/auth/apiClient";
+import { registerUnauthorizedHandler } from "@/lib/api/fetch";
 
 /**
- * Mock session provider (Phase 1).
+ * Session provider backed by the Better Auth + Drizzle backend (ticket #17).
  *
- * NO backend, NO Better Auth — this module is the source of truth for the
- * authenticated session in the web prototype. Three demo credentials back the
- * Employee, Manager/Approver, and Finance Admin roles. The session is persisted
- * to localStorage so it survives reloads; a parse/store failure surfaces as an
- * explicit error state instead of an infinite loading skeleton.
+ * The httpOnly cookie issued by the BE is the single source of truth — there is
+ * NO localStorage persistence. On mount we read `/api/me`; `signIn`/`signInAs`
+ * POST to the BE auth endpoints; `signOut` invalidates the server-side session.
+ *
+ * The React context shape is identical to the prior mock provider so existing
+ * consumers (RouteGuard, AppBar, RoleSwitcher, login) keep working unchanged.
+ *
+ * `SESSION_STORAGE_KEY` is still exported purely as a stable constant that the
+ * Phase 1 vitest harness keys its fixtures on (the test setup maps it to a
+ * mocked `/api/me` response); production code never reads or writes it.
  */
 
 export const SESSION_STORAGE_KEY = "spendflow.session";
 export const DEMO_PASSWORD = "demo1234";
 
-export interface MockCredential {
+export interface DemoCredential {
   email: string;
   password: string;
   role: Role;
-  userId: string;
 }
 
-export const MOCK_CREDENTIALS: MockCredential[] = [
-  {
-    email: "aulia.pratiwi@spendflow.example",
-    password: DEMO_PASSWORD,
-    role: "employee",
-    userId: "u-emp-1",
-  },
-  {
-    email: "dewi.anggraeni@spendflow.example",
-    password: DEMO_PASSWORD,
-    role: "approver",
-    userId: "u-mgr-1",
-  },
-  {
-    email: "ridwan.saputra@spendflow.example",
-    password: DEMO_PASSWORD,
-    role: "finance",
-    userId: "u-fin-1",
-  },
+/**
+ * Seeded demo credentials. These match `backend/src/db/seed.ts` exactly (run
+ * `npm run seed` in `backend/`), so the dev-mode role preset buttons sign in
+ * against the real BE. NOTE: the ticket body mentioned `*@demo.local` emails,
+ * but the actual BE seed (and the existing FE mock personas) use the
+ * `*@spendflow.example` addresses below — using `@demo.local` would 401.
+ */
+export const DEMO_CREDENTIALS: DemoCredential[] = [
+  { email: "aulia.pratiwi@spendflow.example", password: DEMO_PASSWORD, role: "employee" },
+  { email: "dewi.anggraeni@spendflow.example", password: DEMO_PASSWORD, role: "approver" },
+  { email: "ridwan.saputra@spendflow.example", password: DEMO_PASSWORD, role: "finance" },
 ];
 
 export const ROLE_HOME: Record<Role, string> = {
@@ -71,40 +73,40 @@ export type SessionStatus = "loading" | "authenticated" | "unauthenticated" | "e
 
 export type SignInResult = { ok: true; role: Role } | { ok: false; error: string };
 
-export function resolveCredential(email: string): MockCredential | undefined {
-  const norm = (email ?? "").trim().toLowerCase();
-  return MOCK_CREDENTIALS.find((c) => c.email === norm);
+function credentialForRole(role: Role): DemoCredential {
+  const cred = DEMO_CREDENTIALS.find((c) => c.role === role);
+  if (!cred) throw new Error(`No demo credential registered for role "${role}".`);
+  return cred;
 }
 
-/** Pure validation used by both the login form and the unit tests. */
-export function validateCredentials(email: string, password: string): SignInResult {
-  const e = (email ?? "").trim();
-  const p = password ?? "";
-  if (!e || !p) {
-    return { ok: false, error: "Enter your work email and password." };
-  }
-  const cred = resolveCredential(e);
-  if (!cred) {
-    return {
-      ok: false,
-      error: "We don't recognize that email. Try one of the demo accounts below.",
-    };
-  }
-  if (p !== cred.password) {
-    return {
-      ok: false,
-      error: "Incorrect password. The demo password is demo1234.",
-    };
-  }
-  return { ok: true, role: cred.role };
+/**
+ * Phase 1 bridge: the BE user carries role + identity, but display fields
+ * (`jobTitle`, `avatarColor`) still live in the mock fixtures until #24
+ * retires the mocks. We enrich by id so the AppBar / RoleSwitcher render the
+ * seeded persona data unchanged. The seeded BE user ids (`u-emp-1`, `u-mgr-1`,
+ * `u-fin-1`) intentionally match the mock fixture ids.
+ */
+function toDisplayUser(authUser: AuthUser): User {
+  const mock = getUser(authUser.id);
+  if (mock) return mock;
+  return {
+    id: authUser.id,
+    name: authUser.name || authUser.email,
+    email: authUser.email,
+    role: authUser.role,
+    jobTitle: authUser.jobTitle || ROLE_LABEL[authUser.role],
+    department: authUser.department || "",
+    managerId: authUser.managerId || undefined,
+    avatarColor: "primary",
+  };
 }
 
-interface SessionContextValue {
+export interface SessionContextValue {
   status: SessionStatus;
   session: MockSession | null;
   user: User | null;
-  signIn: (email: string, password: string) => SignInResult;
-  signInAs: (role: Role) => void;
+  signIn: (email: string, password: string) => Promise<SignInResult>;
+  signInAs: (role: Role) => Promise<SignInResult>;
   signOut: () => void;
 }
 
@@ -116,92 +118,98 @@ export function useSession(): SessionContextValue {
   return ctx;
 }
 
-function readStoredSession(): MockSession | null {
-  const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
-  if (!raw) return null;
-  const parsed = JSON.parse(raw) as Partial<MockSession>;
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-      typeof parsed.userId !== "string" ||
-      typeof parsed.role !== "string" ||
-      !(parsed.role in CURRENT_USER_BY_ROLE)
-  ) {
-    return null;
-  }
-  return {
-    userId: parsed.userId,
-    role: parsed.role as Role,
-    issuedAt: typeof parsed.issuedAt === "number" ? parsed.issuedAt : Date.now(),
-  };
-}
-
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = React.useState<SessionStatus>("loading");
   const [session, setSession] = React.useState<MockSession | null>(null);
+  const [user, setUser] = React.useState<User | null>(null);
 
-  // Resolve the persisted session on mount. Any storage/parse failure becomes an
-  // explicit error state — never an infinite loading skeleton.
-  React.useEffect(() => {
-    try {
-      const stored = readStoredSession();
-      if (stored && getUser(stored.userId)) {
-        setSession(stored);
-        setStatus("authenticated");
-      } else {
-        if (stored) window.localStorage.removeItem(SESSION_STORAGE_KEY);
-        setStatus("unauthenticated");
-      }
-    } catch {
-      setStatus("error");
-    }
-  }, []);
-
-  const persist = React.useCallback((next: MockSession) => {
-    try {
-      window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Storage may be unavailable (private mode); the in-memory session still
-      // holds for the lifetime of this tab.
-    }
-    setSession(next);
+  const applyUser = React.useCallback((authUser: AuthUser) => {
+    setUser(toDisplayUser(authUser));
+    setSession({ userId: authUser.id, role: authUser.role, issuedAt: Date.now() });
     setStatus("authenticated");
   }, []);
 
-  const signIn = React.useCallback(
-    (email: string, password: string): SignInResult => {
-      const result = validateCredentials(email, password);
-      if (result.ok) {
-        const cred = resolveCredential(email)!;
-        persist({ userId: cred.userId, role: cred.role, issuedAt: Date.now() });
-      }
-      return result;
-    },
-    [persist]
-  );
-
-  const signInAs = React.useCallback(
-    (role: Role) => {
-      persist({
-        userId: CURRENT_USER_BY_ROLE[role],
-        role,
-        issuedAt: Date.now(),
-      });
-    },
-    [persist]
-  );
-
-  const signOut = React.useCallback(() => {
-    try {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
-    } catch {
-      // ignore — in-memory state is the source of truth here
-    }
+  const reset = React.useCallback(() => {
+    setUser(null);
     setSession(null);
     setStatus("unauthenticated");
   }, []);
 
-  const user = session ? getUser(session.userId) ?? null : null;
+  // Read the live BE session on mount. The httpOnly cookie is sent with
+  // `credentials: "include"`; 401 means "no session" (not an error). Any other
+  // failure becomes an explicit error state — never an infinite skeleton.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const authUser = await apiGetCurrentUser();
+        if (cancelled) return;
+        if (authUser) applyUser(authUser);
+        else reset();
+      } catch {
+        if (!cancelled) setStatus("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyUser, reset]);
+
+  // Register the global 401 handler: any `apiFetch()` 401 resets the FE session
+  // and routes to `/login?next=<current>`. A hard navigation is used so it
+  // fires even on routes without a mounted RouteGuard.
+  React.useEffect(() => {
+    registerUnauthorizedHandler(() => {
+      reset();
+      if (
+        typeof window !== "undefined" &&
+        !window.location.pathname.startsWith("/login")
+      ) {
+        const next = window.location.pathname + window.location.search;
+        window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+      }
+    });
+    return () => registerUnauthorizedHandler(null);
+  }, [reset]);
+
+  const signIn = React.useCallback(
+    async (email: string, password: string): Promise<SignInResult> => {
+      setStatus("loading");
+      try {
+        const authUser = await apiSignIn(email, password);
+        applyUser(authUser);
+        return { ok: true, role: authUser.role };
+      } catch (err) {
+        reset();
+        const message =
+          err instanceof Error && err.message
+            ? err.message
+            : "Sign-in failed. Please try again.";
+        return { ok: false, error: message };
+      }
+    },
+    [applyUser, reset]
+  );
+
+  const signInAs = React.useCallback(
+    async (role: Role): Promise<SignInResult> => {
+      const cred = credentialForRole(role);
+      // Optimistically flip to "loading" so an immediate route push (the
+      // RoleSwitcher / landing cards fire-and-forget) is seen by RouteGuard as
+      // "in flight" rather than "unauthenticated" — preventing a flash
+      // redirect to /login before the BE call resolves.
+      setStatus("loading");
+      return signIn(cred.email, cred.password);
+    },
+    [signIn]
+  );
+
+  const signOut = React.useCallback(() => {
+    // Clear FE state first so a slow/unreachable BE still drops the session
+    // and routes to /login; the server-side invalidation is fire-and-forget.
+    reset();
+    void apiSignOut();
+  }, [reset]);
 
   const value = React.useMemo<SessionContextValue>(
     () => ({ status, session, user, signIn, signInAs, signOut }),

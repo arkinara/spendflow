@@ -54,8 +54,8 @@ function seedEmployee() {
   );
 }
 
-function renderWizard() {
-  return render(
+async function renderWizard() {
+  render(
     <ThemeProvider>
       <SessionProvider>
         <SnackbarProvider>
@@ -66,6 +66,11 @@ function renderWizard() {
       </SessionProvider>
     </ThemeProvider>
   );
+  // The BE-backed SessionProvider resolves the session on a microtask
+  // (GET /api/me). Wait for the RouteGuard skeleton to clear before the sync
+  // queries that drive the wizard run — same pattern the other vertical tests
+  // already use (await findBy / waitFor).
+  await screen.findByLabelText(/claim title/i);
 }
 
 function setInput(labelMatch: RegExp, value: string) {
@@ -125,8 +130,8 @@ afterEach(() => {
 });
 
 describe("Claim wizard — stepper back/forward preserves data", () => {
-  it("preserves trip details when navigating back from expenses", () => {
-    renderWizard();
+  it("preserves trip details when navigating back from expenses", async () => {
+    await renderWizard();
     setInput(/claim title/i, "My Preserved Trip");
     setInput(/destination/i, "Bali");
     setInput(/purpose/i, "Offsite");
@@ -142,8 +147,8 @@ describe("Claim wizard — stepper back/forward preserves data", () => {
     expect((screen.getByLabelText(/destination/i) as HTMLInputElement).value).toBe("Bali");
   });
 
-  it("preserves line item entries when navigating back from review", () => {
-    renderWizard();
+  it("preserves line item entries when navigating back from review", async () => {
+    await renderWizard();
     goToExpenses();
     fillDefaultLine({ description: "Saved Expense", amount: "250000" });
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
@@ -158,8 +163,8 @@ describe("Claim wizard — stepper back/forward preserves data", () => {
 });
 
 describe("Line Item Entry — category, mileage, add/remove", () => {
-  it("auto-calculates mileage amount from distance × rate (editable)", () => {
-    renderWizard();
+  it("auto-calculates mileage amount from distance × rate (editable)", async () => {
+    await renderWizard();
     goToExpenses();
     const line = lineContainer(1);
     selectCategory(line, "Mileage");
@@ -174,8 +179,8 @@ describe("Line Item Entry — category, mileage, add/remove", () => {
     expect(amountInput.value).toBe("55000");
   });
 
-  it("can add and remove line items across categories", () => {
-    renderWizard();
+  it("can add and remove line items across categories", async () => {
+    await renderWizard();
     goToExpenses();
     fireEvent.click(screen.getByRole("button", { name: /add another expense/i }));
     expect(screen.getByLabelText("Expense 1")).toBeInTheDocument();
@@ -190,8 +195,8 @@ describe("Line Item Entry — category, mileage, add/remove", () => {
     expect(screen.getByLabelText("Expense 1")).toBeInTheDocument();
   });
 
-  it("blocks submission with no line items and shows a clear message", () => {
-    renderWizard();
+  it("blocks submission with no line items and shows a clear message", async () => {
+    await renderWizard();
     goToExpenses();
     fireEvent.click(
       within(screen.getByLabelText("Expense 1")).getByRole("button", {
@@ -208,8 +213,8 @@ describe("Line Item Entry — category, mileage, add/remove", () => {
 });
 
 describe("Receipt Attachment (manual) — upload, preview, remove, validation", () => {
-  it("attaches an image, shows a removable preview, and keeps manual fields on remove", () => {
-    renderWizard();
+  it("attaches an image, shows a removable preview, and keeps manual fields on remove", async () => {
+    await renderWizard();
     goToExpenses();
     const line = lineContainer(1);
     fillDefaultLine();
@@ -226,8 +231,8 @@ describe("Receipt Attachment (manual) — upload, preview, remove, validation", 
     );
   });
 
-  it("rejects an unsupported file type with a clear error and no broken attachment", () => {
-    renderWizard();
+  it("rejects an unsupported file type with a clear error and no broken attachment", async () => {
+    await renderWizard();
     goToExpenses();
     const line = lineContainer(1);
     attachFile(line, "notes.txt", "text/plain");
@@ -238,16 +243,16 @@ describe("Receipt Attachment (manual) — upload, preview, remove, validation", 
 });
 
 describe("Pre-Submit Policy Check — inline warnings", () => {
-  it("warns when a receipt-required threshold is exceeded without an attachment", () => {
-    renderWizard();
+  it("warns when a receipt-required threshold is exceeded without an attachment", async () => {
+    await renderWizard();
     goToExpenses();
     // Flight line, amount above the 500k threshold, no receipt attached
     fillDefaultLine({ amount: "800000" });
     expect(screen.getByText(/flagged for review/i)).toBeInTheDocument();
   });
 
-  it("warns when an amount exceeds the category cap", () => {
-    renderWizard();
+  it("warns when an amount exceeds the category cap", async () => {
+    await renderWizard();
     goToExpenses();
     const line = lineContainer(1);
     selectCategory(line, "Meals"); // cap 350000
@@ -255,8 +260,8 @@ describe("Pre-Submit Policy Check — inline warnings", () => {
     expect(screen.getByText(/exceeds the meals cap/i)).toBeInTheDocument();
   });
 
-  it("still allows submission with warnings and flags the claim for review", () => {
-    renderWizard();
+  it("still allows submission with warnings and flags the claim for review", async () => {
+    await renderWizard();
     goToExpenses();
     fillDefaultLine({ amount: "800000", description: "Over-threshold flight" });
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
@@ -266,23 +271,22 @@ describe("Pre-Submit Policy Check — inline warnings", () => {
     screen.getByText(/policy warning/i);
 
     fireEvent.click(screen.getByRole("button", { name: /submit claim/i }));
-    return waitFor(() => expect(navMocks.push).toHaveBeenCalledTimes(1)).then(() => {
-      const path = navMocks.push.mock.calls[0][0] as string;
-      expect(path).toMatch(/^\/employee\/claims\/clm-\d+$/);
-      const id = path.split("/").pop()!;
-      createdIds.push(id);
-      const claim = getClaim(id);
-      expect(claim).toBeTruthy();
-      expect(claim!.status).toBe("pending");
-      expect(claim!.exception).toBeDefined();
-      expect(claim!.exception!.type).toBe("missing_receipt");
-    });
+    await waitFor(() => expect(navMocks.push).toHaveBeenCalledTimes(1));
+    const path = navMocks.push.mock.calls[0][0] as string;
+    expect(path).toMatch(/^\/employee\/claims\/clm-\d+$/);
+    const id = path.split("/").pop()!;
+    createdIds.push(id);
+    const claim = getClaim(id);
+    expect(claim).toBeTruthy();
+    expect(claim!.status).toBe("pending");
+    expect(claim!.exception).toBeDefined();
+    expect(claim!.exception!.type).toBe("missing_receipt");
   });
 });
 
 describe("Submission — success & failure paths", () => {
   it("creates the claim in the mock store with no warnings and routes to its detail page", async () => {
-    renderWizard();
+    await renderWizard();
     goToExpenses();
     fillDefaultLine({ amount: "300000" }); // below threshold → clean
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
@@ -312,7 +316,7 @@ describe("Submission — success & failure paths", () => {
       throw new Error("mock save failed");
     });
 
-    renderWizard();
+    await renderWizard();
     goToExpenses();
     fillDefaultLine({ amount: "300000" });
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
