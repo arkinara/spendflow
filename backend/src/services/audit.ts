@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { auditLogsTable } from "../db/schema.js";
 import type { DB } from "../db/index.js";
 import type { AuditEntry } from "../types.js";
@@ -51,6 +51,32 @@ export function auditForEntity(db: DB, entityType: string, entityId: string): Au
     .orderBy(desc(auditLogsTable.createdAt))
     .all()
     .filter((row) => row.entityId === entityId)
+    .map((row) => ({
+      id: row.id,
+      actorId: row.actorId,
+      action: row.action,
+      entityType: row.entityType,
+      entityId: row.entityId,
+      before: row.before ? JSON.parse(row.before) : null,
+      after: row.after ? JSON.parse(row.after) : null,
+      createdAt: row.createdAt,
+    }));
+}
+
+/**
+ * Full audit timeline for a claim, chronological (ascending) order. There is
+ * no update/delete path on `audit_logs` — this is a read-only projection over
+ * the append-only table.
+ */
+export function listAuditForClaim(db: DB, claimId: string): AuditEntry[] {
+  return db
+    .select()
+    .from(auditLogsTable)
+    .where(
+      and(eq(auditLogsTable.entityType, "claim"), eq(auditLogsTable.entityId, claimId))
+    )
+    .orderBy(asc(auditLogsTable.createdAt), sql`rowid ASC`)
+    .all()
     .map((row) => ({
       id: row.id,
       actorId: row.actorId,

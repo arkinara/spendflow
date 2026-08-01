@@ -541,12 +541,17 @@ export const notificationsTable = sqliteTable(
     claimId: text("claim_id").references((): AnySQLiteColumn => claimsTable.id, {
       onDelete: "set null",
     }),
+    // Legacy read flag from #10-#13. Superseded by `readAt` (#15), kept only so
+    // the additive migration never drops/renames a column; new code reads and
+    // writes `readAt` exclusively.
     read: integer("read", { mode: "boolean" }).notNull().default(false),
+    // Null while unread; stamped with the mark-read timestamp otherwise (#15).
+    readAt: integer("read_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   },
   (t) => ({
     recipientIdx: index("notifications_recipient_idx").on(t.recipientId),
-    readIdx: index("notifications_read_idx").on(t.read),
+    readAtIdx: index("notifications_read_at_idx").on(t.readAt),
   })
 );
 
@@ -558,6 +563,43 @@ export const notificationsRelations = relations(notificationsTable, ({ one }) =>
   claim: one(claimsTable, {
     fields: [notificationsTable.claimId],
     references: [claimsTable.id],
+  }),
+}));
+
+/* ------------------------------------------------------------- comments --- */
+
+/**
+ * Contextual discussion on a claim (#15), separate from formal approval
+ * decisions (`approval_actions.comment`). Visible to any claim participant —
+ * submitter, current/former approver, finance admin. Adding a comment never
+ * mutates claim status.
+ */
+export const commentsTable = sqliteTable(
+  "comments",
+  {
+    id: text("id").primaryKey(),
+    claimId: text("claim_id")
+      .notNull()
+      .references(() => claimsTable.id, { onDelete: "cascade" }),
+    authorId: text("author_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  },
+  (t) => ({
+    claimIdx: index("comments_claim_idx").on(t.claimId),
+  })
+);
+
+export const commentsRelations = relations(commentsTable, ({ one }) => ({
+  claim: one(claimsTable, {
+    fields: [commentsTable.claimId],
+    references: [claimsTable.id],
+  }),
+  author: one(usersTable, {
+    fields: [commentsTable.authorId],
+    references: [usersTable.id],
   }),
 }));
 
@@ -630,6 +672,7 @@ export const schema = {
   approvalSteps: approvalStepsTable,
   approvalActions: approvalActionsTable,
   notifications: notificationsTable,
+  comments: commentsTable,
   payments: paymentsTable,
 };
 

@@ -18,6 +18,8 @@ import { AttachmentError } from "./services/attachments.js";
 import { ApprovalError } from "./services/approvals.js";
 import { FinanceError } from "./services/finance.js";
 import { AdminError } from "./services/admin.js";
+import { CommentError } from "./services/comments.js";
+import { NotificationError } from "./services/notifications.js";
 import {
   claimErrorHandler,
   claimsRoutes,
@@ -27,6 +29,8 @@ import { attachmentRoutes, attachmentErrorHandler } from "./routes/attachments.j
 import { approvalErrorHandler, approvalRoutes } from "./routes/approvals.js";
 import { financeErrorHandler, financeRoutes } from "./routes/finance.js";
 import { adminErrorHandler, adminRoutes } from "./routes/admin.js";
+import { commentErrorHandler, commentRoutes } from "./routes/comments.js";
+import { notificationErrorHandler, notificationRoutes } from "./routes/notifications.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -88,6 +92,12 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     }
     if (err instanceof AdminError) {
       return adminErrorHandler(err, c);
+    }
+    if (err instanceof CommentError) {
+      return commentErrorHandler(err, c);
+    }
+    if (err instanceof NotificationError) {
+      return notificationErrorHandler(err, c);
     }
     return claimErrorHandler(err, c);
   });
@@ -181,6 +191,10 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
 
   /* --------------------------------- #14 policy/category/routing admin API -- */
   app.route("/", adminRoutes({ auth, db, env }));
+
+  /* --------------------------- #15 comments + notifications + audit query -- */
+  app.route("/", commentRoutes({ auth, db, env }));
+  app.route("/", notificationRoutes({ auth, db, env }));
 
   return app;
 }
