@@ -169,6 +169,11 @@ export const categoriesTable = sqliteTable(
 
 /* --------------------------------------------------------------- policies -- */
 
+/** Allowlisted policy/claim currencies (BE-admin, #14). Enforced at the store
+ *  boundary — the column itself stays plain `text` for portability. */
+export const CURRENCIES = ["IDR", "USD"] as const;
+export type Currency = (typeof CURRENCIES)[number];
+
 /**
  * Configurable spend policy. Consumed by the (pure) policy engine at claim
  * submission time. Scoped to a category when `category_id` is set; otherwise
