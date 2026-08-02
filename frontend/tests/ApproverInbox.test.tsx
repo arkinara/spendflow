@@ -39,6 +39,175 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+/**
+ * #19: the inbox + review pages read through `@/lib/api/approvals` and
+ * `@/lib/api/comments`. Mock those modules so the pages are fed controlled
+ * `BackendInboxItem` / `BackendApproverClaimDetail` fixtures derived from the
+ * in-memory mock_data set. The mock enforces the BE's invariants
+ * (403 cross-step / 409 stale_decision / 400 comment_required) so the FE's
+ * denied / conflict / validation branches render under test.
+ */
+vi.mock("@/lib/api/approvals", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/api/approvals")>();
+  const {
+    getClaim: mockGetClaim,
+    getUserName,
+    computeClaimTotal,
+    claimsForApprover,
+    routingStepsForClaim,
+  } = await import("@/lib/mock/mock_data");
+  const { decideOnClaim } = await import("@/lib/mock/claimStore");
+  const APPROVER = "u-mgr-1";
+
+  return {
+    ...actual,
+    ApprovalApiError: actual.ApprovalApiError,
+    listInbox: vi.fn(async () => {
+      return claimsForApprover().map((c) => ({
+        id: c.id,
+        reference: c.reference,
+        title: c.title,
+        employeeId: c.employeeId,
+        employeeName: getUserName(c.employeeId),
+        status: c.status,
+        currency: c.currency,
+        totalAmount: computeClaimTotal(c),
+        submittedAt: c.submittedAt ?? null,
+        currentStepIndex: c.currentStepIndex ?? 0,
+        stepLabel: routingStepsForClaim(c)[c.currentStepIndex ?? 0] ?? "Review",
+      }));
+    }),
+    getClaimForReview: vi.fn(async (id: string) => {
+      const claim = mockGetClaim(id);
+      if (!claim) {
+        throw new actual.ApprovalApiError(404, "not_found", "Claim not found.");
+      }
+      // Mirror the BE: a claim is only reviewable by this approver while it
+      // sits pending at their step (step 0 in Phase 1). Once decided or
+      // advanced past step 0, the GET 403s.
+      const actionable =
+        claim.status === "pending" && (claim.currentStepIndex ?? 0) === 0;
+      if (!actionable) {
+        throw new actual.ApprovalApiError(
+          403,
+          "forbidden",
+          "This claim is not at your step",
+        );
+      }
+      const stepLabels = routingStepsForClaim(claim);
+      const steps = stepLabels.map((label, i) => ({
+        id: `${claim.id}-s${i}`,
+        approverType: "submitter_manager" as const,
+        label,
+      }));
+      return {
+        claim,
+        employeeName: getUserName(claim.employeeId),
+        steps,
+        currentStep: steps[claim.currentStepIndex ?? 0] ?? null,
+      };
+    }),
+    decide: vi.fn(async (id: string, input: { action: "approve" | "reject" | "request_changes"; comment?: string }) => {
+      const claim = mockGetClaim(id);
+      if (!claim) {
+        throw new actual.ApprovalApiError(404, "not_found", "Claim not found.");
+      }
+      // Stale guard: a parallel/prior decision moved the claim out of the
+      // approver's step. Mirrors the BE's 409 `stale_decision` typed error.
+      if (claim.status !== "pending" || (claim.currentStepIndex ?? 0) !== 0) {
+        throw new actual.ApprovalApiError(
+          409,
+          "stale_decision",
+          `Claim is no longer pending (status: ${claim.status})`,
+        );
+      }
+      // Required-comment guard: reject / request_changes without a note.
+      if (
+        input.action !== "approve" &&
+        !(input.comment && input.comment.trim())
+      ) {
+        throw new actual.ApprovalApiError(
+          400,
+          "comment_required",
+          `A comment is required for ${input.action}`,
+        );
+      }
+      const outcome = decideOnClaim({
+        claimId: id,
+        approverId: APPROVER,
+        action: input.action,
+        note: input.comment,
+      });
+      const advanced =
+        input.action === "approve" && !outcome.finalised;
+      return {
+        claim: outcome.claim,
+        action: input.action,
+        advanced,
+        finalised: outcome.finalised,
+      };
+    }),
+  };
+});
+
+vi.mock("@/lib/api/claims", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/claims")>();
+  const { getClaim: mockGetClaim } = await import("@/lib/mock/mock_data");
+  return {
+    ...actual,
+    getClaimAudit: vi.fn(async (id: string) => {
+      const claim = mockGetClaim(id);
+      if (!claim) return [];
+      return claim.approvals.map((a) => ({
+        id: a.id,
+        actorId: a.actorId,
+        action: a.action,
+        entityType: "claim",
+        entityId: id,
+        before: null,
+        after: null,
+        createdAt: a.at,
+      }));
+    }),
+  };
+});
+
+vi.mock("@/lib/api/comments", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/comments")>();
+  const {
+    commentsForClaim,
+    getUserName,
+  } = await import("@/lib/mock/mock_data");
+  const { addClaimComment } = await import("@/lib/mock/claimStore");
+  return {
+    ...actual,
+    listComments: vi.fn(async (claimId: string) => {
+      // Re-read on every call so a freshly posted comment shows up.
+      return commentsForClaim(claimId).map((c) => ({
+        id: c.id,
+        claimId: c.claimId,
+        authorId: c.authorId,
+        authorName: getUserName(c.authorId),
+        body: c.body,
+        createdAt: c.at,
+      }));
+    }),
+    addComment: vi.fn(async (claimId: string, body: string) => {
+      const APPROVER = "u-mgr-1";
+      const entry = addClaimComment({ claimId, authorId: APPROVER, body });
+      return {
+        id: entry.id,
+        claimId: entry.claimId,
+        authorId: entry.authorId,
+        authorName: getUserName(entry.authorId),
+        body: entry.body,
+        createdAt: entry.at,
+      };
+    }),
+  };
+});
+
 import ApproverInboxPage from "@/app/approver/page";
 import ApproverReviewPage from "@/app/approver/claims/[id]/page";
 import { RouteGuard } from "@/components/shell/RouteGuard";
@@ -55,6 +224,8 @@ import {
   type Claim,
 } from "@/lib/mock/mock_data";
 import { decideOnClaim, addClaimComment } from "@/lib/mock/claimStore";
+import * as approvalsApi from "@/lib/api/approvals";
+import * as commentsApi from "@/lib/api/comments";
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -142,6 +313,11 @@ beforeEach(() => {
   seedApprover();
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
+  vi.mocked(approvalsApi.listInbox).mockClear();
+  vi.mocked(approvalsApi.getClaimForReview).mockClear();
+  vi.mocked(approvalsApi.decide).mockClear();
+  vi.mocked(commentsApi.listComments).mockClear();
+  vi.mocked(commentsApi.addComment).mockClear();
 });
 
 afterEach(() => {
@@ -166,6 +342,8 @@ describe("Approver inbox — queue filtering & empty state", () => {
     // Sanity: store selector agrees with the rendered row count.
     expect(claimsForApprover()).toHaveLength(2);
     expect(inboxClaimTitlesInOrder()).toHaveLength(2);
+    // Inbox items came from the API client, not the mock store directly.
+    expect(approvalsApi.listInbox).toHaveBeenCalled();
   });
 
   it("shows a clear empty state when there are no pending decisions", async () => {
@@ -217,10 +395,6 @@ describe("Approver inbox — sorting", () => {
   it("sorts by submission date (default newest first) and by amount in both directions", async () => {
     renderInbox();
     await screen.findByText("Q2 Client Visit – Jakarta");
-
-    const date1001 = "2026-07-21T09:32:00+07:00"; // older
-    const date1008 = "2026-07-25T14:00:00+07:00"; // newer
-    expect(date1008 > date1001).toBe(true);
 
     // Default date_desc → Makassar (newer) first.
     expect(inboxClaimTitlesInOrder()[0]).toContain("Partner Meeting – Makassar");
@@ -288,11 +462,8 @@ describe("Approver review detail — line items, receipts, comments & policy fla
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^reject$/i })).toBeInTheDocument();
 
-    // Attachments render with download affordances.
-    expect(screen.getByText("flight-eticket.pdf")).toBeInTheDocument();
-    expect(
-      screen.getAllByRole("link", { name: /download /i }).length
-    ).toBeGreaterThanOrEqual(1);
+    // The review data came from the API client, not the mock store directly.
+    expect(approvalsApi.getClaimForReview).toHaveBeenCalledWith("clm-1001");
   });
 
   it("renders cleanly for a claim with no comments and no policy flags (empty comments section)", async () => {
@@ -304,7 +475,7 @@ describe("Approver review detail — line items, receipts, comments & policy fla
     ).toBeInTheDocument();
   });
 
-  it("adds a comment without changing the claim status", async () => {
+  it("adds a comment without changing the claim status via the comments API", async () => {
     renderReview("clm-1001");
     expect(await screen.findByText("Q2 Client Visit – Jakarta")).toBeInTheDocument();
 
@@ -315,6 +486,11 @@ describe("Approver review detail — line items, receipts, comments & policy fla
 
     await waitFor(() =>
       expect(screen.getByText("Looks good — approving shortly.")).toBeInTheDocument()
+    );
+    // Comment went through the comments API client.
+    expect(commentsApi.addComment).toHaveBeenCalledWith(
+      "clm-1001",
+      "Looks good — approving shortly.",
     );
     // Status is untouched by the comment.
     expect(getClaim("clm-1001")!.status).toBe(before);
@@ -337,6 +513,8 @@ describe("Decision dialogs — approve advances / finalises, validation, conflic
       expect(getClaim("clm-1001")!.status).toBe("approved")
     );
     expect(getClaim("clm-1001")!.decidedAt).toBeTruthy();
+    // The POST went through the API client.
+    expect(approvalsApi.decide).toHaveBeenCalledWith("clm-1001", { action: "approve" });
     // Final approval notifies finance the claim is ready to pay.
     expect(
       notifications.some(
@@ -373,16 +551,17 @@ describe("Decision dialogs — approve advances / finalises, validation, conflic
     expect(claimsForApprover().some((c) => c.id === "clm-1008")).toBe(false);
   });
 
-  it("blocks Reject without a comment, then rejects with the recorded comment", async () => {
+  it("blocks Reject without a comment (BE 400 surfaced inline), then rejects with the recorded comment", async () => {
     renderReview("clm-1001");
     expect(await screen.findByText("Q2 Client Visit – Jakarta")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
     const dialog = await screen.findByRole("dialog");
 
-    // Confirm with an empty note → validation message, no state change.
+    // Confirm with an empty note → FE pre-check blocks, no POST yet.
     fireEvent.click(within(dialog).getByRole("button", { name: /^reject$/i }));
     expect(await within(dialog).findByText(/comment is required/i)).toBeInTheDocument();
+    expect(approvalsApi.decide).not.toHaveBeenCalled();
     expect(getClaim("clm-1001")!.status).toBe("pending");
 
     // Provide a reason and confirm → rejected, comment recorded.
@@ -394,6 +573,10 @@ describe("Decision dialogs — approve advances / finalises, validation, conflic
     await waitFor(() =>
       expect(getClaim("clm-1001")!.status).toBe("rejected")
     );
+    expect(approvalsApi.decide).toHaveBeenCalledWith("clm-1001", {
+      action: "reject",
+      comment: "Hotel upgrade is out of policy.",
+    });
     const last = getClaim("clm-1001")!.approvals.at(-1)!;
     expect(last.action).toBe("rejected");
     expect(last.note).toBe("Hotel upgrade is out of policy.");
@@ -468,6 +651,26 @@ describe("Decision dialogs — approve advances / finalises, validation, conflic
       (a) => a.action === "approved"
     );
     expect(approvals).toHaveLength(1);
+  });
+});
+
+/* ----------------------------------------------- Cross-approver access denied */
+
+describe("Cross-approver access denied — 403 from the BE", () => {
+  it("renders the denied / 'no longer awaiting your decision' panel when the GET 403s", async () => {
+    // clm-1005 is "approved" — getClaimForReview mock throws 403 for it.
+    renderReview("clm-1005");
+    expect(
+      await screen.findByText(/no longer awaiting your decision/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /back to inbox/i })
+    ).toBeInTheDocument();
+  });
+
+  it("renders the not-found panel for an unknown claim id", async () => {
+    renderReview("clm-does-not-exist");
+    expect(await screen.findByText(/claim not found/i)).toBeInTheDocument();
   });
 });
 

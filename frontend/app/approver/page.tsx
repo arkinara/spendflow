@@ -5,7 +5,6 @@ import {
   Inbox,
   Hourglass,
   ClipboardCheck,
-  ShieldAlert,
   RefreshCw,
   AlertTriangle,
 } from "lucide-react";
@@ -21,11 +20,8 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useApproverInbox } from "@/lib/mock/useApproverInbox";
-import {
-  computeClaimTotal,
-  getUser,
-  type Claim,
-} from "@/lib/mock/mock_data";
+import type { BackendInboxItem } from "@/lib/api/approvals";
+import type { CurrencyCode } from "@/lib/format";
 import {
   formatCurrency,
   formatCurrencyCompact,
@@ -41,24 +37,19 @@ const SORT_OPTIONS = [
   { value: "amount_asc" as const, label: "Amount (low → high)" },
 ];
 
-/** A claim is "policy-flagged" if it carries an open exception. */
-function hasOpenPolicyFlag(claim: Claim): boolean {
-  return !!claim.exception && claim.exception.status === "open";
-}
-
-function sortClaims(claims: Claim[], key: SortKey): Claim[] {
-  const byDate = (c: Claim) => c.submittedAt ?? c.createdAt;
-  const byAmount = (c: Claim) => computeClaimTotal(c);
+function sortItems(items: BackendInboxItem[], key: SortKey): BackendInboxItem[] {
+  const byDate = (c: BackendInboxItem) => c.submittedAt ?? "";
+  const byAmount = (c: BackendInboxItem) => c.totalAmount;
   switch (key) {
     case "date_asc":
-      return [...claims].sort((a, b) => byDate(a).localeCompare(byDate(b)));
+      return [...items].sort((a, b) => byDate(a).localeCompare(byDate(b)));
     case "amount_desc":
-      return [...claims].sort((a, b) => byAmount(b) - byAmount(a));
+      return [...items].sort((a, b) => byAmount(b) - byAmount(a));
     case "amount_asc":
-      return [...claims].sort((a, b) => byAmount(a) - byAmount(b));
+      return [...items].sort((a, b) => byAmount(a) - byAmount(b));
     case "date_desc":
     default:
-      return [...claims].sort((a, b) => byDate(b).localeCompare(byDate(a)));
+      return [...items].sort((a, b) => byDate(b).localeCompare(byDate(a)));
   }
 }
 
@@ -68,13 +59,13 @@ export default function ApproverDashboard() {
   const [sort, setSort] = React.useState<SortKey>("date_desc");
 
   const sorted = React.useMemo(
-    () => (state.status === "ready" ? sortClaims(state.claims, sort) : []),
+    () => (state.status === "ready" ? sortItems(state.items, sort) : []),
     [state, sort]
   );
 
   const pendingValue =
     state.status === "ready"
-      ? state.claims.reduce((s, c) => s + computeClaimTotal(c), 0)
+      ? state.items.reduce((s, c) => s + c.totalAmount, 0)
       : 0;
 
   return (
@@ -92,7 +83,7 @@ export default function ApproverDashboard() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <MetricCard
             label="Awaiting your review"
-            value={state.status === "ready" ? String(state.claims.length) : "—"}
+            value={state.status === "ready" ? String(state.items.length) : "—"}
             icon={Inbox}
             hint="In your inbox"
           />
@@ -112,10 +103,10 @@ export default function ApproverDashboard() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-on-surface-variant">
-                {state.claims.length === 0
+                {state.items.length === 0
                   ? "No claims awaiting a decision."
-                  : `${state.claims.length} claim${
-                      state.claims.length === 1 ? "" : "s"
+                  : `${state.items.length} claim${
+                      state.items.length === 1 ? "" : "s"
                     } awaiting a decision`}
               </p>
               <div className="w-full sm:w-64">
@@ -145,7 +136,7 @@ export default function ApproverDashboard() {
               ) : (
                 <ul className="divide-y divide-outline-variant px-2 pb-2 pt-1">
                   {sorted.map((c) => (
-                    <InboxRow key={c.id} claim={c} />
+                    <InboxRow key={c.id} item={c} />
                   ))}
                 </ul>
               )}
@@ -157,46 +148,37 @@ export default function ApproverDashboard() {
   );
 }
 
-function InboxRow({ claim }: { claim: Claim }) {
-  const employee = getUser(claim.employeeId);
-  const total = computeClaimTotal(claim);
-  const flagged = hasOpenPolicyFlag(claim);
+function InboxRow({ item }: { item: BackendInboxItem }) {
+  const total = item.totalAmount;
   return (
     <li>
       <ListItem
-        href={`/approver/claims/${claim.id}`}
+        href={`/approver/claims/${item.id}`}
         leading={
           <Avatar
-            name={employee?.name ?? "Unknown"}
-            color={(employee?.avatarColor as never) ?? "primary"}
+            name={item.employeeName || "Unknown"}
+            color="primary"
           />
         }
         title={
           <span className="inline-flex items-center gap-1.5">
-            {claim.title}
-            {flagged && (
-              <span
-                className="inline-flex items-center gap-0.5 rounded-full bg-error-container px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-error-container-foreground"
-                title={claim.exception?.message}
-              >
-                <ShieldAlert className="h-3 w-3" strokeWidth={2} aria-hidden />
-                Policy flag
-              </span>
-            )}
+            {item.title}
           </span>
         }
-        subtitle={`${employee?.name ?? "Unknown"} · ${claim.reference} · ${
-          claim.lineItems.length
-        } items`}
+        subtitle={`${item.employeeName || "Unknown"} · ${item.reference} · ${item.stepLabel}`}
         meta={
           <div className="space-y-1">
             <p className="text-sm font-semibold text-on-surface">
-              {formatCurrency(total, claim.currency)}
+              {formatCurrency(total, (item.currency as CurrencyCode) ?? "IDR")}
             </p>
-            <p>{formatRelativeTime(claim.submittedAt ?? claim.createdAt)}</p>
+            <p>
+              {item.submittedAt
+                ? formatRelativeTime(item.submittedAt)
+                : "—"}
+            </p>
           </div>
         }
-        trailing={<StatusChip status={claim.status} size="sm" />}
+        trailing={<StatusChip status={item.status as never} size="sm" />}
         showChevron
       />
     </li>

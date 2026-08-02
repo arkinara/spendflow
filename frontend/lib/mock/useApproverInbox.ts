@@ -1,33 +1,38 @@
 "use client";
 
-import * as React from "react";
-import { claimsForApprover, type Claim } from "@/lib/mock/mock_data";
-
-/**
- * Simulated async fetch of the claims awaiting the current approver's step.
+/* ============================================================================
+ * SpendFlow — useApproverInbox (ticket #19, FE wiring).
+ * HTTP-backed: reads `GET /api/approver/inbox`. The caller's identity is
+ * inferred from the session, so the legacy `approverId` argument is accepted
+ * for signature compatibility and ignored. A BE 401 is handled globally by
+ * `apiFetch`; other failures surface as a retry-capable `error` state.
  *
- * Mock data is synchronous, but the inbox still shows a brief loading skeleton
- * and an explicit, retry-capable error state — matching ticket #5's negative
- * acceptance criteria (no blank list, no infinite spinner, clear empty state).
- * Selectors read the live `claims` array on every (re)load, so a freshly
- * decided claim disappears immediately after a mock decision action mutates the
- * store.
- */
+ * The hook's state-machine interface (`{ state, retry, refresh }`) is
+ * unchanged from the mock version so the inbox page keeps its loading /
+ * error / ready branching shape — only the row data type moves from the FE
+ * mock `Claim` to the BE-owned `ApproverInboxItem`.
+ * ========================================================================== */
+
+import * as React from "react";
+import {
+  listInbox,
+  ApprovalApiError,
+  type BackendInboxItem,
+} from "@/lib/api/approvals";
+
 export type ApproverInboxState =
   | { status: "loading" }
-  | { status: "ready"; claims: Claim[] }
+  | { status: "ready"; items: BackendInboxItem[] }
   | { status: "error"; message: string };
 
 export interface UseApproverInbox {
   state: ApproverInboxState;
   retry: () => void;
-  /** Force a fresh read of the live store (e.g. after navigating back). */
+  /** Force a fresh read (e.g. after navigating back from a decision). */
   refresh: () => void;
 }
 
-const SIMULATED_LATENCY_MS = 200;
-
-export function useApproverInbox(approverId: string): UseApproverInbox {
+export function useApproverInbox(_approverId: string): UseApproverInbox {
   const [state, setState] = React.useState<ApproverInboxState>({
     status: "loading",
   });
@@ -35,26 +40,28 @@ export function useApproverInbox(approverId: string): UseApproverInbox {
 
   React.useEffect(() => {
     let cancelled = false;
-    const timer = window.setTimeout(() => {
+    setState({ status: "loading" });
+
+    (async () => {
       try {
-        const claims = claimsForApprover(approverId);
-        if (!cancelled) setState({ status: "ready", claims });
+        const items = await listInbox();
+        if (!cancelled) setState({ status: "ready", items });
       } catch (err) {
-        if (!cancelled) {
-          setState({
-            status: "error",
-            message:
-              err instanceof Error ? err.message : "Failed to load your inbox.",
-          });
-        }
+        if (cancelled) return;
+        const message =
+          err instanceof ApprovalApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Failed to load your inbox.";
+        setState({ status: "error", message });
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
-  }, [approverId, attempt]);
+  }, [attempt]);
 
   const retry = React.useCallback(() => {
     setState({ status: "loading" });

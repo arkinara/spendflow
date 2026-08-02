@@ -21,7 +21,6 @@ import {
   Car,
   Route as RouteIcon,
   Receipt,
-  MessagesSquare,
   AlertOctagon,
   type LucideIcon,
 } from "lucide-react";
@@ -38,20 +37,26 @@ import { Avatar } from "@/components/ui/Avatar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useApproverClaim } from "@/lib/mock/useApproverClaim";
-import { decideOnClaim, addClaimComment, type DecisionAction } from "@/lib/mock/claimStore";
+import {
+  decide as apiDecide,
+  ApprovalApiError,
+  type DecisionAction,
+} from "@/lib/api/approvals";
+import {
+  listComments as apiListComments,
+  addComment as apiAddComment,
+  CommentApiError,
+  type BackendComment,
+} from "@/lib/api/comments";
+import type { BackendAuditEntry } from "@/lib/api/claims";
 import { evaluateLinePolicy } from "@/lib/mock/policy";
 import {
-  getUser,
   getUserName,
   getCategory,
-  commentsForClaim,
   computeClaimTotal,
-  routingStepsForClaim,
   type Claim,
   type LineItem,
   type Attachment,
-  type Comment,
-  type ApprovalAction,
   type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
 import { formatCurrency, formatDate, formatDateTime, formatRelativeTime } from "@/lib/format";
@@ -66,29 +71,98 @@ const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {
   other: Receipt,
 };
 
-const ACTION_TONE: Record<ApprovalAction["action"], TimelineEntry["tone"]> = {
+const ACTION_TONE: Record<string, TimelineEntry["tone"]> = {
   created: "default",
   submitted: "info",
   approved: "success",
   rejected: "error",
   returned: "warning",
   resubmitted: "info",
+  withdrawn: "warning",
   processing: "info",
   paid: "success",
   commented: "default",
+  default: "default",
 };
 
-const ACTION_LABEL: Record<ApprovalAction["action"], string> = {
+const ACTION_LABEL: Record<string, string> = {
   created: "Claim created",
   submitted: "Submitted for approval",
   approved: "Approved",
   rejected: "Rejected",
   returned: "Returned for changes",
   resubmitted: "Resubmitted",
+  withdrawn: "Withdrawn",
   processing: "Payment processing",
   paid: "Payment disbursed",
   commented: "Comment added",
 };
+
+/**
+ * Normalise a backend audit `action` string (e.g. `claim.submitted`,
+ * `claim.approved.advance`) into a stable key the label/tone maps understand.
+ * Mirrors the employee detail page (#18); unknown prefixes fall back to a
+ * generic timeline row so the audit never silently drops an event.
+ */
+function auditKey(action: string): string {
+  const lower = action.toLowerCase();
+  for (const key of [
+    "resubmitted",
+    "submitted",
+    "withdrawn",
+    "approved",
+    "rejected",
+    "returned",
+    "processing",
+    "paid",
+    "created",
+    "attachment.upload",
+    "attachment.delete",
+    "exception",
+  ]) {
+    if (lower.includes(key)) {
+      if (key === "attachment.upload") return "created";
+      if (key === "attachment.delete") return "withdrawn";
+      if (key === "exception") return lower.includes("override") ? "approved" : "returned";
+      return key;
+    }
+  }
+  return "default";
+}
+
+function isRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+}
+
+function prettifyAction(action: string): string {
+  return action
+    .replace(/^[a-z]+\./, "")
+    .replace(/[_\.]/g, " ")
+    .replace(/^\w/, (c) => c.toUpperCase());
+}
+
+function buildTimeline(audit: BackendAuditEntry[] | undefined): TimelineEntry[] {
+  if (!audit || audit.length === 0) return [];
+  return audit.map((entry) => {
+    const key = auditKey(entry.action);
+    const after = isRecord(entry.after);
+    const before = isRecord(entry.before);
+    const body =
+      (after && typeof after.status === "string"
+        ? before && typeof before.status === "string"
+          ? `${before.status} → ${after.status}`
+          : `Status: ${after.status}`
+        : null) ?? undefined;
+    return {
+      id: entry.id,
+      title: ACTION_LABEL[key] ?? prettifyAction(entry.action),
+      actor: getUserName(entry.actorId),
+      timestamp: formatDateTime(entry.createdAt),
+      body,
+      tone: ACTION_TONE[key] ?? "default",
+    };
+  });
+}
 
 interface DecisionMeta {
   title: string;
@@ -130,41 +204,6 @@ const DECISION_META: Record<DecisionAction, DecisionMeta> = {
   },
 };
 
-function buildTimeline(claim: Claim): TimelineEntry[] {
-  const stamped: { at: string; entry: TimelineEntry }[] = claim.approvals.map(
-    (a) => ({
-      at: a.at,
-      entry: {
-        id: a.id,
-        title: ACTION_LABEL[a.action],
-        actor: getUserName(a.actorId),
-        timestamp: formatDateTime(a.at),
-        body: a.note,
-        tone: ACTION_TONE[a.action],
-      },
-    })
-  );
-
-  if (claim.exception) {
-    stamped.push({
-      at: claim.exception.flaggedAt,
-      entry: {
-        id: claim.exception.id,
-        title:
-          claim.exception.status === "resolved"
-            ? "Policy exception resolved"
-            : "Policy exception flagged",
-        timestamp: formatDateTime(claim.exception.flaggedAt),
-        actor: "Policy engine",
-        body: claim.exception.message,
-        tone: claim.exception.status === "resolved" ? "success" : "error",
-      },
-    });
-  }
-
-  return stamped.sort((a, b) => a.at.localeCompare(b.at)).map((s) => s.entry);
-}
-
 function lineReceiptFlag(line: LineItem): string | null {
   const violations = evaluateLinePolicy(
     {
@@ -188,18 +227,13 @@ function lineMerchant(line: LineItem): string | null {
 
 function attachmentDataUrl(a: Attachment): string {
   const placeholder = [
-    "SpendFlow mock receipt placeholder",
+    "SpendFlow receipt",
     `File: ${a.fileName}`,
     `Size: ${a.sizeKb} KB`,
     "",
-    "Demo data — real receipts are delivered by the backend (BE-claims).",
+    "Download links will resolve to the backend attachment route once exposed.",
   ].join("\n");
   return `data:text/plain;charset=utf-8,${encodeURIComponent(placeholder)}`;
-}
-
-/** A claim is actionable by the approver only while it sits at their step. */
-function isActionable(claim: Claim): boolean {
-  return claim.status === "pending" && (claim.currentStepIndex ?? 0) === 0;
 }
 
 export default function ApproverReviewPage() {
@@ -266,12 +300,32 @@ export default function ApproverReviewPage() {
     );
   }
 
+  if (state.status === "denied") {
+    // 403 from the BE: the claim is not at the caller's step (cross-approver
+    // access, already-decided claim, or withdrawn). The same panel handles all
+    // three because the BE cannot distinguish them from this endpoint.
+    return (
+      <AppShell>
+        <EmptyState
+          icon={Ban}
+          title="No longer awaiting your decision"
+          body="This claim is not currently at your approval step — it may have been decided, advanced, or withdrawn. It has been removed from your inbox."
+          action={
+            <Button href="/approver" icon={ArrowLeft}>
+              Back to inbox
+            </Button>
+          }
+        />
+      </AppShell>
+    );
+  }
+
   const claim = state.claim;
-  const employee = getUser(claim.employeeId);
+  const employeeName = state.employeeName;
   const total = computeClaimTotal(claim);
-  const timeline = buildTimeline(claim);
-  const actionable = isActionable(claim);
-  const steps = routingStepsForClaim(claim);
+  const timeline = buildTimeline(state.audit);
+  const steps = state.steps;
+  const currentStep = state.currentStep;
 
   function openDecision(d: DecisionAction) {
     setDecision(d);
@@ -279,20 +333,21 @@ export default function ApproverReviewPage() {
     setNoteError(undefined);
   }
 
-  function confirmDecision() {
-    if (!decision || !claim) return;
+  async function confirmDecision() {
+    if (!decision) return;
     const meta = DECISION_META[decision];
+    // Client-side pre-check so an empty required note doesn't round-trip;
+    // the BE enforces the same rule and its 400 message is surfaced inline
+    // below on the rare path this pre-check is bypassed.
     if (meta.requireNote && note.trim().length === 0) {
       setNoteError("A comment is required so the employee knows what to do.");
       return;
     }
     setSubmitting(true);
     try {
-      const outcome = decideOnClaim({
-        claimId: claim.id,
-        approverId: user.id,
+      const outcome = await apiDecide(claim.id, {
         action: decision,
-        note,
+        comment: note.trim() ? note.trim() : undefined,
       });
       show(
         decision === "approve"
@@ -300,28 +355,37 @@ export default function ApproverReviewPage() {
             ? "Claim approved and queued for payment."
             : "Approved — advanced to the next review step."
           : decision === "reject"
-          ? "Claim rejected."
-          : "Claim returned to the employee.",
+            ? "Claim rejected."
+            : "Claim returned to the employee.",
         { tone: "success" }
       );
       setDecision(null);
-      reload();
-      if (outcome.finalised || decision !== "approve") {
-        // Approved-final, rejected, or returned → claim leaves the inbox.
-        router.push("/approver");
-      } else {
-        // Advanced past this approver's step → also leaves the inbox.
-        router.push("/approver");
-      }
+      // On any decision the claim leaves this approver's inbox: advanced to
+      // the next step, finalised, rejected, or returned. Route back so the
+      // inbox reflects the new state.
+      router.push("/approver");
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "We couldn't apply this decision. Try again.";
-      // Stale/already-decided claim: surface as a conflict, not a silent fail.
-      setConflict(message);
-      setDecision(null);
-      reload();
+      if (err instanceof ApprovalApiError) {
+        // Stale-step / already-decided claim: the typed conflict surface as
+        // the "claim has changed" panel so the approver doesn't re-act. We
+        // intentionally do NOT reload here — reloading would flip the page
+        // to loading/denied and hide the dialog before the user reads it.
+        // The dialog's "Back to inbox" button navigates to a fresh state.
+        if (err.code === "stale_decision") {
+          setConflict(err.message);
+          setDecision(null);
+        } else if (err.status === 400 && err.code === "comment_required") {
+          // The BE's required-comment 400 maps straight onto the inline note
+          // error so the dialog stays open and the user can fix the input.
+          setNoteError(err.message);
+        } else {
+          show(err.message, { tone: "error" });
+        }
+      } else {
+        show(err instanceof Error ? err.message : "We couldn't apply this decision. Try again.", {
+          tone: "error",
+        });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -334,7 +398,12 @@ export default function ApproverReviewPage() {
           Back to inbox
         </Button>
 
-        <ClaimHeader claim={claim} total={total} />
+        <ClaimHeader
+          claim={claim}
+          total={total}
+          employeeName={employeeName}
+          currentStepLabel={currentStep?.label}
+        />
 
         {claim.exception && claim.exception.status === "open" && (
           <Card className="border-error/40 bg-error-container/40">
@@ -350,31 +419,6 @@ export default function ApproverReviewPage() {
                 </p>
                 <p className="text-sm text-on-surface-variant">
                   {claim.exception.message}
-                </p>
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {!actionable && (
-          <Card className="border-warning/40 bg-warning-container/40">
-            <div className="flex items-start gap-3">
-              <Ban
-                className="mt-0.5 h-5 w-5 shrink-0 text-on-warning-container"
-                strokeWidth={1.75}
-                aria-hidden
-              />
-              <div>
-                <p className="text-sm font-semibold text-on-surface">
-                  No longer awaiting your decision
-                </p>
-                <p className="text-sm text-on-surface-variant">
-                  This claim is{" "}
-                  {claim.status === "pending"
-                    ? "now at a later approval step"
-                    : `already ${claim.status}`}
-                  . It has been removed from your inbox. See the timeline below
-                  for details.
                 </p>
               </div>
             </div>
@@ -453,7 +497,9 @@ export default function ApproverReviewPage() {
             >
               {claim.attachments.length === 0 ? (
                 <p className="text-sm text-on-surface-variant">
-                  No receipts attached.
+                  No receipts attached. The BE surfaces the per-line
+                  <span className="px-1 font-medium">hasReceipt</span> flag; a
+                  dedicated list-attachments endpoint ships in a later phase.
                 </p>
               ) : (
                 <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -504,52 +550,39 @@ export default function ApproverReviewPage() {
 
           <div className="space-y-6">
             <Card title="Decision">
-              {actionable ? (
-                <div className="space-y-3">
-                  <p className="text-sm text-on-surface-variant">
-                    {steps.length > 1
-                      ? `This claim needs ${steps.length} approvals (${steps.join(
-                          " → "
-                        )}). Your approval advances it to the next step.`
-                      : "You are the final approver for this claim."}
-                    Requesting changes or rejecting requires a comment.
-                  </p>
-                  <Button
-                    icon={CheckCircle2}
-                    fullWidth
-                    onClick={() => openDecision("approve")}
-                  >
-                    Approve
-                  </Button>
-                  <Button
-                    icon={RotateCcw}
-                    variant="tonal"
-                    fullWidth
-                    onClick={() => openDecision("request_changes")}
-                  >
-                    Request changes
-                  </Button>
-                  <Button
-                    icon={XCircle}
-                    variant="outlined"
-                    fullWidth
-                    onClick={() => openDecision("reject")}
-                  >
-                    Reject
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <StatusChip status={claim.status} />
-                  <p className="text-sm text-on-surface-variant">
-                    This claim is no longer awaiting your decision. See the
-                    timeline for details, or return to your inbox.
-                  </p>
-                  <Button href="/approver" icon={ArrowLeft} fullWidth>
-                    Back to inbox
-                  </Button>
-                </div>
-              )}
+              <div className="space-y-3">
+                <p className="text-sm text-on-surface-variant">
+                  {steps.length > 1
+                    ? `This claim needs ${steps.length} approvals (${steps
+                        .map((s) => s.label)
+                        .join(" → ")}). Your approval advances it to the next step.`
+                    : "You are the final approver for this claim."}
+                  Requesting changes or rejecting requires a comment.
+                </p>
+                <Button
+                  icon={CheckCircle2}
+                  fullWidth
+                  onClick={() => openDecision("approve")}
+                >
+                  Approve
+                </Button>
+                <Button
+                  icon={RotateCcw}
+                  variant="tonal"
+                  fullWidth
+                  onClick={() => openDecision("request_changes")}
+                >
+                  Request changes
+                </Button>
+                <Button
+                  icon={XCircle}
+                  variant="outlined"
+                  fullWidth
+                  onClick={() => openDecision("reject")}
+                >
+                  Reject
+                </Button>
+              </div>
             </Card>
 
             <Card
@@ -566,9 +599,7 @@ export default function ApproverReviewPage() {
       <DecisionDialog
         action={decision}
         claimTitle={claim.title}
-        totalLabel={`${formatCurrency(total, claim.currency)} · ${
-          employee?.name ?? ""
-        }`}
+        totalLabel={`${formatCurrency(total, claim.currency)} · ${employeeName}`}
         note={note}
         noteError={noteError}
         submitting={submitting}
@@ -610,8 +641,17 @@ export default function ApproverReviewPage() {
     </AppShell>
   );
 
-  function ClaimHeader({ claim, total }: { claim: Claim; total: number }) {
-    const employee = getUser(claim.employeeId);
+  function ClaimHeader({
+    claim,
+    total,
+    employeeName,
+    currentStepLabel,
+  }: {
+    claim: Claim;
+    total: number;
+    employeeName: string;
+    currentStepLabel?: string;
+  }) {
     return (
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
@@ -622,13 +662,10 @@ export default function ApproverReviewPage() {
             <StatusChip status={claim.status} />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-on-surface-variant">
-            <Avatar
-              name={employee?.name ?? "Unknown"}
-              size="sm"
-              color={(employee?.avatarColor as never) ?? "primary"}
-            />
+            <Avatar name={employeeName || "Unknown"} size="sm" color="primary" />
             <span>
-              {employee?.name} · {employee?.department} · {claim.reference}
+              {employeeName}
+              {currentStepLabel ? ` · ${currentStepLabel}` : ""} · {claim.reference}
             </span>
           </div>
           <p className="mt-2 max-w-2xl text-sm text-on-surface">{claim.purpose}</p>
@@ -733,22 +770,44 @@ function CommentsCard({
   approverName: string;
 }) {
   const { show } = useSnackbar();
-  // Bump `version` after posting so `commentsForClaim` re-reads the live store
-  // (where the comment was persisted) without keeping a duplicate local copy.
   const [version, setVersion] = React.useState(0);
   const [draft, setDraft] = React.useState("");
+  const [posting, setPosting] = React.useState(false);
+  const [thread, setThread] = React.useState<BackendComment[]>([]);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
 
-  const thread = React.useMemo(
-    () => commentsForClaim(claimId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [claimId, version]
-  );
+  // Best-effort thread load + reload on `version` bump (after a post).
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoadError(null);
+    apiListComments(claimId)
+      .then((rows) => {
+        if (!cancelled) setThread(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          // A 403 here means the session lost access between the page load and
+          // the comment read; surface a minimal empty thread rather than
+          // blanking the card.
+          setThread([]);
+          setLoadError(
+            err instanceof CommentApiError
+              ? err.message
+              : "Couldn't load the comment thread.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [claimId, version]);
 
-  function send() {
+  async function send() {
     const body = draft.trim();
-    if (!body) return;
+    if (!body || posting) return;
+    setPosting(true);
     try {
-      addClaimComment({ claimId, authorId: approverId, body });
+      await apiAddComment(claimId, body);
       setVersion((v) => v + 1);
       setDraft("");
       show("Comment posted.", { tone: "success" });
@@ -756,12 +815,16 @@ function CommentsCard({
       show(err instanceof Error ? err.message : "Couldn't post that comment.", {
         tone: "error",
       });
+    } finally {
+      setPosting(false);
     }
   }
 
   return (
     <Card title="Comments" padded={false}>
-      {thread.length === 0 ? (
+      {loadError ? (
+        <p className="px-5 py-4 text-sm text-on-surface-variant">{loadError}</p>
+      ) : thread.length === 0 ? (
         <p className="px-5 py-4 text-sm text-on-surface-variant">
           No comments yet. Add one below without taking a formal decision.
         </p>
@@ -790,7 +853,8 @@ function CommentsCard({
           <Button
             icon={Send}
             onClick={send}
-            disabled={!draft.trim()}
+            disabled={!draft.trim() || posting}
+            loading={posting}
             variant="tonal"
           >
             Send
@@ -805,25 +869,26 @@ function CommentsCard({
   );
 }
 
-function CommentBubble({ comment, mine }: { comment: Comment; mine: boolean }) {
-  const author = getUser(comment.authorId);
+function CommentBubble({
+  comment,
+  mine,
+}: {
+  comment: BackendComment;
+  mine: boolean;
+}) {
   return (
     <li className={cn("flex gap-3", mine && "flex-row-reverse")}>
-      <Avatar
-        name={author?.name ?? "Unknown"}
-        size="sm"
-        color={(author?.avatarColor as never) ?? "primary"}
-      />
+      <Avatar name={comment.authorName || "Unknown"} size="sm" color="primary" />
       <div className={cn("min-w-0 max-w-[80%]", mine && "text-right")}>
         <div className={cn("flex items-baseline gap-2", mine && "flex-row-reverse")}>
           <span className="text-sm font-medium text-on-surface">
-            {mine ? "You" : author?.name}
+            {mine ? "You" : comment.authorName}
           </span>
           <time
             className="text-xs text-on-surface-variant"
-            title={formatDateTime(comment.at)}
+            title={formatDateTime(comment.createdAt)}
           >
-            {formatRelativeTime(comment.at)}
+            {formatRelativeTime(comment.createdAt)}
           </time>
         </div>
         <div
