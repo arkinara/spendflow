@@ -46,7 +46,7 @@ import {
   type PolicyViolation,
 } from "@/lib/mock/policy";
 import { useSubmitClaim } from "@/lib/mock/useSubmitClaim";
-import type { ClaimInput, ClaimLineInput } from "@/lib/mock/claimStore";
+import type { ClaimInput, ClaimLineInput } from "@/lib/mock/useSubmitClaim";
 import { formatCurrency } from "@/lib/format";
 import type { CurrencyCode } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -65,6 +65,8 @@ interface DraftLine {
   rate: string; // per-km — mileage only
   attachment?: UploadedFile;
   attachmentError?: string;
+  /** Real in-session File picked by the user (uploaded on submit, #18). */
+  file?: File;
 }
 
 const STEPS = [
@@ -224,11 +226,12 @@ export default function NewClaimPage() {
     setLines((prev) => [...prev, newLine(claimCurrency)]);
   }
 
-  function addAttachment(id: string, fileName: string) {
+  function addAttachment(id: string, fileName: string, file?: File) {
     if (!ATTACHMENT_EXTENSIONS.test(fileName)) {
       updateLine(id, {
         attachmentError: "Unsupported file type. Use PDF, JPG or PNG.",
         attachment: undefined,
+        file: undefined,
       });
       return;
     }
@@ -236,15 +239,16 @@ export default function NewClaimPage() {
       attachment: {
         id: `${id}-att`,
         fileName,
-        sizeKb: 320,
-        mimeType: detectMime(fileName),
+        sizeKb: file ? Math.max(1, Math.round(file.size / 1024)) : 320,
+        mimeType: file?.type || detectMime(fileName),
       },
       attachmentError: undefined,
+      file,
     });
   }
   function removeAttachment(id: string) {
     // Only clear the attachment — manually entered merchant/amount/date stay intact.
-    updateLine(id, { attachment: undefined, attachmentError: undefined });
+    updateLine(id, { attachment: undefined, attachmentError: undefined, file: undefined });
   }
 
   function goBack() {
@@ -286,6 +290,7 @@ export default function NewClaimPage() {
           currency: l.currency,
           merchant: l.merchant.trim() || undefined,
           attachment: l.attachment,
+          file: l.file,
         };
         if (l.categoryId === "mileage") {
           base.quantity = Number(l.distance) || 0;
@@ -470,7 +475,9 @@ export default function NewClaimPage() {
           />
         )}
 
-        {submitting && <SubmitSkeleton />}
+        {submitting && (
+          <SubmitSkeleton progress={submitState.status === "submitting" ? submitState.progress : undefined} />
+        )}
 
         {/* Wizard nav */}
         {!submitting && step < STEPS.length - 1 && (
@@ -515,7 +522,7 @@ interface LineItemEditorProps {
   onChangeDistance: (id: string, v: string) => void;
   onChangeRate: (id: string, v: string) => void;
   onRemove: (id: string) => void;
-  onAddAttachment: (id: string, fileName: string) => void;
+  onAddAttachment: (id: string, fileName: string, file?: File) => void;
   onRemoveAttachment: (id: string) => void;
 }
 
@@ -649,7 +656,7 @@ function LineItemEditor({
             files={line.attachment ? [line.attachment] : []}
             label="Receipt"
             helper="PDF, JPG or PNG. Attach a receipt for this expense."
-            onAdd={(name) => onAddAttachment(line.id, name)}
+            onAdd={(name, file) => onAddAttachment(line.id, name, file)}
             onRemove={() => onRemoveAttachment(line.id)}
           />
           {line.attachmentError && (
@@ -854,7 +861,7 @@ function ReviewStep({
 
 /* ------------------------------------------------------------- submitting -- */
 
-function SubmitSkeleton() {
+function SubmitSkeleton({ progress }: { progress?: string }) {
   return (
     <div aria-busy="true" role="status" aria-label="Submitting claim" className="space-y-4">
       <Card title="Expense summary" padded={false}>
@@ -863,7 +870,9 @@ function SubmitSkeleton() {
           <Skeleton className="h-6 w-40" />
         </div>
       </Card>
-      <p className="text-center text-sm text-on-surface-variant">Submitting your claim…</p>
+      <p className="text-center text-sm text-on-surface-variant">
+        {progress || "Submitting your claim…"}
+      </p>
     </div>
   );
 }

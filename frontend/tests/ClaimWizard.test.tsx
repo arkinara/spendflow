@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within, fireEvent, waitFor } from "@testing-library/react";
 
 const navMocks = vi.hoisted(() => ({
@@ -32,11 +32,69 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-// Wrap createClaim so the simulated-failure test can force a throw without
-// affecting other tests. Default implementation is the real store mutation.
-vi.mock("@/lib/mock/claimStore", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/mock/claimStore")>();
-  return { ...actual, createClaim: vi.fn(actual.createClaim) };
+/**
+ * #18: the wizard submits through `useSubmitClaim` → `createClaim` +
+ * `submitClaim` + `uploadAttachment` in `@/lib/api/claims`. Mock the module so
+ * a submit drives a controllable create→(upload)→submit chain without hitting
+ * a backend. `createClaim` returns a claim whose line items mirror the draft
+ * count (positional matching is how the hook pairs uploads to created lines).
+ */
+vi.mock("@/lib/api/claims", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/claims")>();
+  let seq = 2000;
+  const ids = () => ({ id: `clm-${seq + 1}`, lineId: `li-${seq + 1}-1` });
+  return {
+    ...actual,
+    createClaim: vi.fn(async (draft: { lineItems?: unknown[] }) => {
+      seq += 1;
+      const { id, lineId } = ids();
+      const count = draft.lineItems?.length ?? 0;
+      return {
+        id,
+        reference: `EXP-2026-${seq}`,
+        title: "Created",
+        purpose: "",
+        employeeId: "u-emp-1",
+        status: "draft",
+        currency: "IDR",
+        createdAt: new Date().toISOString(),
+        submittedAt: undefined,
+        decidedAt: undefined,
+        tripStart: undefined,
+        tripEnd: undefined,
+        destination: undefined,
+        lineItems: Array.from({ length: count }, (_, i) => ({
+          id: `${lineId}-${i + 1}`,
+          categoryId: "flight",
+          description: "",
+          date: "2026-08-01",
+          amount: 0,
+          currency: "IDR",
+          hasReceipt: false,
+        })),
+        attachments: [],
+        approvals: [],
+        exception: undefined,
+        currentStepIndex: 0,
+      };
+    }),
+    submitClaim: vi.fn(async (id: string) => ({
+      id,
+      reference: `EXP-2026-${seq}`,
+      title: "Submitted",
+      purpose: "",
+      employeeId: "u-emp-1",
+      status: "pending",
+      currency: "IDR",
+      createdAt: new Date().toISOString(),
+      lineItems: [],
+      attachments: [],
+      approvals: [],
+      exception: undefined,
+      currentStepIndex: 0,
+    })),
+    uploadAttachment: vi.fn(async () => "att-1"),
+  };
 });
 
 import NewClaimPage from "@/app/employee/claims/new/page";
@@ -44,8 +102,7 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { getClaim, claims, type ExpenseCategoryId } from "@/lib/mock/mock_data";
-import { __removeClaim, createClaim } from "@/lib/mock/claimStore";
+import * as claimsApi from "@/lib/api/claims";
 
 function seedEmployee() {
   localStorage.setItem(
@@ -66,10 +123,8 @@ async function renderWizard() {
       </SessionProvider>
     </ThemeProvider>
   );
-  // The BE-backed SessionProvider resolves the session on a microtask
-  // (GET /api/me). Wait for the RouteGuard skeleton to clear before the sync
-  // queries that drive the wizard run — same pattern the other vertical tests
-  // already use (await findBy / waitFor).
+  // SessionProvider resolves the session on a microtask (GET /api/me). Wait
+  // for the RouteGuard skeleton to clear before the sync queries run.
   await screen.findByLabelText(/claim title/i);
 }
 
@@ -109,24 +164,18 @@ function lineContainer(n: number) {
 }
 
 function selectCategory(lineEl: HTMLElement, name: string) {
-  // The <label htmlFor> associates the "Category" label with the trigger
-  // button, so the button's accessible name is "Category" (not "Flight").
   fireEvent.click(within(lineEl).getByRole("button", { name: /category/i }));
   fireEvent.click(screen.getByRole("button", { name }));
 }
-
-const createdIds: string[] = [];
 
 beforeEach(() => {
   localStorage.clear();
   seedEmployee();
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
-  vi.mocked(createClaim).mockClear();
-});
-
-afterEach(() => {
-  createdIds.splice(0).forEach(__removeClaim);
+  vi.mocked(claimsApi.createClaim).mockClear();
+  vi.mocked(claimsApi.submitClaim).mockClear();
+  vi.mocked(claimsApi.uploadAttachment).mockClear();
 });
 
 describe("Claim wizard — stepper back/forward preserves data", () => {
@@ -141,7 +190,6 @@ describe("Claim wizard — stepper back/forward preserves data", () => {
     screen.getByText(/expense lines/i);
 
     fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
-    // step 0 remounts the trip-details form
     const titleInput = screen.getByLabelText(/claim title/i) as HTMLInputElement;
     expect(titleInput.value).toBe("My Preserved Trip");
     expect((screen.getByLabelText(/destination/i) as HTMLInputElement).value).toBe("Bali");
@@ -174,7 +222,6 @@ describe("Line Item Entry — category, mileage, add/remove", () => {
     const amountInput = within(line).getByLabelText(/amount \(computed/i) as HTMLInputElement;
     expect(amountInput.value).toBe("60000");
 
-    // editable afterward
     fireEvent.change(amountInput, { target: { value: "55000" } });
     expect(amountInput.value).toBe("55000");
   });
@@ -205,7 +252,7 @@ describe("Line Item Entry — category, mileage, add/remove", () => {
     );
     screen.getByText(/at least one line item is required/i);
 
-    // Continue is blocked — we stay on the Expenses step
+    // Continue is blocked — we stay on the Expenses step.
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
     screen.getByText(/expense lines/i);
     expect(screen.queryByText(/expense summary/i)).toBeNull();
@@ -223,7 +270,6 @@ describe("Receipt Attachment (manual) — upload, preview, remove, validation", 
     attachFile(line, "receipt.jpg", "image/jpeg");
     expect(within(line).getByText("receipt.jpg")).toBeInTheDocument();
 
-    // remove the attachment — manual field must remain intact
     fireEvent.click(within(line).getByRole("button", { name: /remove receipt\.jpg/i }));
     expect(within(line).queryByText("receipt.jpg")).toBeNull();
     expect((screen.getByLabelText(/merchant/i) as HTMLInputElement).value).toBe(
@@ -246,7 +292,6 @@ describe("Pre-Submit Policy Check — inline warnings", () => {
   it("warns when a receipt-required threshold is exceeded without an attachment", async () => {
     await renderWizard();
     goToExpenses();
-    // Flight line, amount above the 500k threshold, no receipt attached
     fillDefaultLine({ amount: "800000" });
     expect(screen.getByText(/flagged for review/i)).toBeInTheDocument();
   });
@@ -260,7 +305,7 @@ describe("Pre-Submit Policy Check — inline warnings", () => {
     expect(screen.getByText(/exceeds the meals cap/i)).toBeInTheDocument();
   });
 
-  it("still allows submission with warnings and flags the claim for review", async () => {
+  it("still allows submission with warnings and routes to the new claim", async () => {
     await renderWizard();
     goToExpenses();
     fillDefaultLine({ amount: "800000", description: "Over-threshold flight" });
@@ -272,20 +317,15 @@ describe("Pre-Submit Policy Check — inline warnings", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /submit claim/i }));
     await waitFor(() => expect(navMocks.push).toHaveBeenCalledTimes(1));
+    expect(claimsApi.createClaim).toHaveBeenCalledTimes(1);
+    expect(claimsApi.submitClaim).toHaveBeenCalledTimes(1);
     const path = navMocks.push.mock.calls[0][0] as string;
     expect(path).toMatch(/^\/employee\/claims\/clm-\d+$/);
-    const id = path.split("/").pop()!;
-    createdIds.push(id);
-    const claim = getClaim(id);
-    expect(claim).toBeTruthy();
-    expect(claim!.status).toBe("pending");
-    expect(claim!.exception).toBeDefined();
-    expect(claim!.exception!.type).toBe("missing_receipt");
   });
 });
 
-describe("Submission — success & failure paths", () => {
-  it("creates the claim in the mock store with no warnings and routes to its detail page", async () => {
+describe("Submission — success, attachments & failure paths", () => {
+  it("creates the draft then submits it and routes to its detail page", async () => {
     await renderWizard();
     goToExpenses();
     fillDefaultLine({ amount: "300000" }); // below threshold → clean
@@ -298,22 +338,43 @@ describe("Submission — success & failure paths", () => {
 
     const path = navMocks.push.mock.calls[0][0] as string;
     expect(path).toMatch(/^\/employee\/claims\/clm-\d+$/);
-    const id = path.split("/").pop()!;
-    createdIds.push(id);
 
-    const claim = getClaim(id);
-    expect(claim).toBeTruthy();
-    expect(claim!.status).toBe("pending");
-    expect(claim!.title).toBe("Test Trip");
-    expect(claim!.lineItems).toHaveLength(1);
-    expect(claim!.lineItems[0].amount).toBe(300000);
-    expect(claim!.exception).toBeUndefined();
-    expect(claims[0].id).toBe(id); // inserted at head of the live store
+    // createClaim received the draft payload; submitClaim received the created id.
+    const draft = vi.mocked(claimsApi.createClaim).mock.calls[0][0];
+    expect(draft.title).toBe("Test Trip");
+    expect(draft.lineItems).toHaveLength(1);
+    expect(draft.lineItems![0].amount).toBe(300000);
+    const submittedId = vi.mocked(claimsApi.submitClaim).mock.calls[0][0];
+    expect(submittedId).toBe(path.split("/").pop());
   });
 
-  it("preserves entered data on simulated submit failure", async () => {
-    vi.mocked(createClaim).mockImplementationOnce(() => {
-      throw new Error("mock save failed");
+  it("uploads an attached receipt against the created line id before submit", async () => {
+    await renderWizard();
+    goToExpenses();
+    const line = lineContainer(1);
+    fillDefaultLine();
+    setInput(/merchant/i, "Garuda Indonesia");
+    attachFile(line, "receipt.jpg", "image/jpeg");
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    screen.getByText(/expense summary/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /submit claim/i }));
+    await waitFor(() => expect(claimsApi.uploadAttachment).toHaveBeenCalledTimes(1));
+    // [claimId, lineItemId, file, meta]
+    const [claimId, lineItemId, file, meta] = vi.mocked(claimsApi.uploadAttachment).mock
+      .calls[0];
+    expect(claimId).toMatch(/^clm-\d+$/);
+    expect(lineItemId).toMatch(/^li-/);
+    expect((file as File).name).toBe("receipt.jpg");
+    expect((meta as { merchant?: string }).merchant).toBe("Garuda Indonesia");
+
+    // submit fired after the upload chain completed.
+    await waitFor(() => expect(claimsApi.submitClaim).toHaveBeenCalledTimes(1));
+  });
+
+  it("surfaces a BE error (e.g. 400 no line items) inline with a retry action", async () => {
+    vi.mocked(claimsApi.createClaim).mockImplementationOnce(async () => {
+      throw new claimsApi.ClaimApiError(400, "no_line_items", "At least one line item is required.");
     });
 
     await renderWizard();
@@ -323,37 +384,27 @@ describe("Submission — success & failure paths", () => {
     screen.getByText(/expense summary/i);
     fireEvent.click(screen.getByRole("button", { name: /submit claim/i }));
 
-    expect(await screen.findByText(/mock save failed/i)).toBeInTheDocument();
+    expect(await screen.findByText(/at least one line item is required/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
     // data preserved: review summary still lists the entered line description
     expect(screen.getByText("Return flight")).toBeInTheDocument();
     expect(navMocks.push).not.toHaveBeenCalled();
   });
-});
 
-describe("claim store unit", () => {
-  it("createClaim persists into the live store retrievable by getClaim", () => {
-    const before = claims.length;
-    const claim = createClaim({
-      employeeId: "u-emp-1",
-      title: "Unit Claim",
-      purpose: "x",
-      destination: "Bandung",
-      tripStart: "2026-08-01",
-      tripEnd: "2026-08-02",
-      currency: "IDR",
-      lines: [
-        {
-          categoryId: "taxi" as ExpenseCategoryId,
-          description: "Cab",
-          date: "2026-08-01",
-          amount: 88000,
-          currency: "IDR",
-        },
-      ],
+  it("preserves entered data on a simulated network failure and offers retry", async () => {
+    vi.mocked(claimsApi.createClaim).mockImplementationOnce(async () => {
+      throw new Error("failed to fetch");
     });
-    createdIds.push(claim.id);
-    expect(claims.length).toBe(before + 1);
-    expect(getClaim(claim.id)?.reference).toBe(claim.reference);
+
+    await renderWizard();
+    goToExpenses();
+    fillDefaultLine({ amount: "300000" });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    screen.getByText(/expense summary/i);
+    fireEvent.click(screen.getByRole("button", { name: /submit claim/i }));
+
+    expect(await screen.findByText(/failed to fetch/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(navMocks.push).not.toHaveBeenCalled();
   });
 });

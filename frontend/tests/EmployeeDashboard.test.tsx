@@ -30,9 +30,19 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-vi.mock("@/lib/mock/dashboard", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/mock/dashboard")>();
-  return { ...actual, loadEmployeeDashboard: vi.fn(actual.loadEmployeeDashboard) };
+/**
+ * #18: the employee dashboard reads through `useEmployeeDashboard` →
+ * `listClaims` (HTTP), then shapes via the pure `buildDashboard` selector.
+ * Mock the client so the dashboard is fed the in-memory fixtures the
+ * assertions derive their expected counts from.
+ */
+vi.mock("@/lib/api/claims", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/claims")>();
+  const { claimsForEmployee } = await import("@/lib/mock/mock_data");
+  return {
+    ...actual,
+    listClaims: vi.fn(async () => claimsForEmployee("u-emp-1")),
+  };
 });
 
 import EmployeeDashboard from "@/app/employee/page";
@@ -40,8 +50,8 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { loadEmployeeDashboard, type EmployeeDashboardData } from "@/lib/mock/dashboard";
 import { claimsForEmployee } from "@/lib/mock/mock_data";
+import * as claimsApi from "@/lib/api/claims";
 
 function seedEmployee() {
   localStorage.setItem(
@@ -68,38 +78,16 @@ function countFor(employeeId: string, status: ClaimStatus): number {
   return claimsForEmployee(employeeId).filter((c) => c.status === status).length;
 }
 
-function emptyDashboardData(employeeId = "u-emp-1"): EmployeeDashboardData {
-  const all: ClaimStatus[] = [
-    "draft",
-    "pending",
-    "action_required",
-    "approved",
-    "processing",
-    "paid",
-    "rejected",
-  ];
-  const groups = all.map((s) => ({ status: s, label: s, count: 0, amount: 0 }));
-  return {
-    employeeId,
-    groups,
-    primaryGroups: groups.filter((g) =>
-      (["draft", "pending", "action_required", "paid"] as string[]).includes(g.status)
-    ),
-    secondaryGroups: [],
-    actionRequired: [],
-    recentlyPaid: [],
-    totalReimbursed: 0,
-    paidCount: 0,
-    hasAnyClaims: false,
-  };
-}
-
 beforeEach(() => {
   localStorage.clear();
   seedEmployee();
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
-  vi.mocked(loadEmployeeDashboard).mockClear();
+  vi.mocked(claimsApi.listClaims).mockClear();
+  // Re-establish the default impl after a per-test override may have run.
+  vi.mocked(claimsApi.listClaims).mockImplementation(async () =>
+    claimsForEmployee("u-emp-1"),
+  );
 });
 
 describe("Employee dashboard — claim status summary", () => {
@@ -180,7 +168,8 @@ describe("Employee dashboard — recently paid overview", () => {
 
 describe("Employee dashboard — empty + error states", () => {
   it("renders an empty-state dashboard for a first-time employee with no claims", async () => {
-    vi.mocked(loadEmployeeDashboard).mockReturnValueOnce(emptyDashboardData());
+    // BE returns an empty claim list → buildDashboard yields hasAnyClaims=false.
+    vi.mocked(claimsApi.listClaims).mockImplementationOnce(async () => []);
 
     renderDashboard();
 
@@ -195,7 +184,7 @@ describe("Employee dashboard — empty + error states", () => {
   });
 
   it("shows a retry-capable error state instead of a blank dashboard on load failure", async () => {
-    vi.mocked(loadEmployeeDashboard).mockImplementationOnce(() => {
+    vi.mocked(claimsApi.listClaims).mockImplementationOnce(async () => {
       throw new Error("boom");
     });
 
@@ -205,7 +194,7 @@ describe("Employee dashboard — empty + error states", () => {
     const retry = screen.getByRole("button", { name: /retry/i });
     expect(retry).toBeInTheDocument();
 
-    // Retry recovers: real loader (default impl) runs again and the dashboard mounts.
+    // Retry recovers: default impl runs again and the dashboard mounts.
     await userEvent.click(retry);
     expect(await screen.findByRole("region", { name: /claim status summary/i })).toBeInTheDocument();
   });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within, fireEvent } from "@testing-library/react";
 
 const navMocks = vi.hoisted(() => ({
@@ -33,13 +33,28 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+/**
+ * #18: the list page reads through `useEmployeeClaims` → `listClaims` (HTTP).
+ * Mock the client so the page is fed the same in-memory fixtures the prior
+ * mock-store-backed tests asserted against. Default returns u-emp-1's claims;
+ * individual tests override (e.g. the pagination case) via mockImplementationOnce.
+ */
+vi.mock("@/lib/api/claims", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/claims")>();
+  const { claimsForEmployee } = await import("@/lib/mock/mock_data");
+  return {
+    ...actual,
+    listClaims: vi.fn(async () => claimsForEmployee("u-emp-1")),
+  };
+});
+
 import ClaimHistoryPage from "@/app/employee/claims/page";
 import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { claimsForEmployee } from "@/lib/mock/mock_data";
-import { createClaim, __removeClaim } from "@/lib/mock/claimStore";
+import { claimsForEmployee, type Claim } from "@/lib/mock/mock_data";
+import * as claimsApi from "@/lib/api/claims";
 
 function seedEmployee() {
   localStorage.setItem(
@@ -69,7 +84,40 @@ function claimRowLinks(): HTMLElement[] {
     .filter((a) => /\/employee\/claims\/clm-/.test(a.getAttribute("href") ?? ""));
 }
 
-const seededIds: string[] = [];
+/** Build N synthetic claims for the pagination test (BE-shaped → FE shape is
+ *  the listClaims mock's contract; we return FE-shaped rows directly). */
+function syntheticClaims(n: number): Claim[] {
+  const now = Date.parse("2026-08-01T00:00:00Z");
+  const out: Claim[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push({
+      id: `clm-seed-${i}`,
+      reference: `EXP-2026-S${i}`,
+      title: `Seed Claim ${i}`,
+      purpose: "pagination fixture",
+      employeeId: "u-emp-1",
+      status: "pending",
+      currency: "IDR",
+      createdAt: new Date(now - i * 1000).toISOString(),
+      submittedAt: new Date(now - i * 1000).toISOString(),
+      destination: "Jakarta",
+      lineItems: [
+        {
+          id: `seed-li-${i}`,
+          categoryId: "taxi",
+          description: "Cab",
+          date: "2026-08-01",
+          amount: 50_000,
+          currency: "IDR",
+          hasReceipt: false,
+        },
+      ],
+      attachments: [],
+      approvals: [],
+    });
+  }
+  return out;
+}
 
 beforeEach(() => {
   localStorage.clear();
@@ -77,10 +125,11 @@ beforeEach(() => {
   navMocks.search = "";
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
-});
-
-afterEach(() => {
-  seededIds.splice(0).forEach(__removeClaim);
+  vi.mocked(claimsApi.listClaims).mockClear();
+  // Re-establish the default impl after a per-test override may have run.
+  vi.mocked(claimsApi.listClaims).mockImplementation(async () =>
+    claimsForEmployee("u-emp-1"),
+  );
 });
 
 describe("Claim list — status filter & ?status= deep link", () => {
@@ -156,35 +205,18 @@ describe("Claim list — empty state & clear filters", () => {
 
 describe("Claim list — pagination over a large data set", () => {
   it("paginates 100+ claims, showing a bounded first page and next-page navigation", async () => {
-    // Seed 100 extra claims for the current employee to exercise pagination.
-    for (let i = 0; i < 100; i++) {
-      const claim = createClaim({
-        employeeId: "u-emp-1",
-        title: `Seed Claim ${i}`,
-        purpose: "pagination fixture",
-        destination: "Jakarta",
-        tripStart: "2026-08-01",
-        tripEnd: "2026-08-02",
-        currency: "IDR",
-        lines: [
-          {
-            categoryId: "taxi",
-            description: "Cab",
-            date: "2026-08-01",
-            amount: 50000,
-            currency: "IDR",
-          },
-        ],
-      });
-      seededIds.push(claim.id);
-    }
+    // Seed 100 synthetic claims via the mocked HTTP client.
+    vi.mocked(claimsApi.listClaims).mockImplementationOnce(async () => [
+      ...syntheticClaims(100),
+      ...claimsForEmployee("u-emp-1"),
+    ]);
 
     renderHistory();
 
     const nav = await screen.findByRole("navigation", { name: /claim pages/i });
     expect(within(nav).getByText(/page 1 of/i)).toBeInTheDocument();
 
-    // First page is bounded to the page size (10), not all 105 rows. The seeded
+    // First page is bounded to the page size (10), not all rows. The seeded
     // claims are newest, so they sort onto the first pages.
     const firstPageRows = await screen.findAllByText(/^seed claim \d+$/i);
     expect(firstPageRows).toHaveLength(10);

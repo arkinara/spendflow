@@ -34,7 +34,11 @@ import { Timeline, type TimelineEntry } from "@/components/ui/Timeline";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useClaimDetail } from "@/lib/mock/useClaimDetail";
-import { withdrawClaim, resubmitClaim } from "@/lib/mock/claimStore";
+import {
+  withdrawClaim as apiWithdrawClaim,
+  resubmitClaim as apiResubmitClaim,
+  type BackendAuditEntry,
+} from "@/lib/api/claims";
 import { evaluateLinePolicy } from "@/lib/mock/policy";
 import {
   getUserName,
@@ -43,7 +47,6 @@ import {
   type Claim,
   type LineItem,
   type Attachment,
-  type ApprovalAction,
   type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
@@ -57,77 +60,113 @@ const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {
   other: Receipt,
 };
 
-const ACTION_TONE: Record<ApprovalAction["action"], TimelineEntry["tone"]> = {
+const ACTION_TONE: Record<string, TimelineEntry["tone"]> = {
   created: "default",
   submitted: "info",
   approved: "success",
   rejected: "error",
   returned: "warning",
   resubmitted: "info",
+  withdrawn: "warning",
   processing: "info",
   paid: "success",
   commented: "default",
+  default: "default",
 };
 
-const ACTION_LABEL: Record<ApprovalAction["action"], string> = {
+const ACTION_LABEL: Record<string, string> = {
   created: "Claim created",
   submitted: "Submitted for approval",
   approved: "Approved",
   rejected: "Rejected",
   returned: "Returned for changes",
   resubmitted: "Resubmitted",
+  withdrawn: "Withdrawn",
   processing: "Payment processing",
   paid: "Payment disbursed",
   commented: "Comment added",
 };
 
 /**
- * Build the chronological status timeline from the live claim: every approval
- * transition plus any policy exception flag, sorted strictly ascending by the
- * raw ISO timestamp so the oldest event renders first. (Sorting on the raw
- * timestamp — not the formatted display string — keeps order correct across
- * months and years.)
+ * Normalise a backend audit `action` string (e.g. `claim.submitted`,
+ * `claim.approved.advance`, `attachment.upload`) into a stable key the
+ * label/tone maps understand. Unknown prefixes fall back to a generic
+ * timeline row so the audit never silently drops an event.
  */
-function buildTimeline(claim: Claim): TimelineEntry[] {
-  const stamped: { at: string; entry: TimelineEntry }[] = claim.approvals.map((a) => ({
-    at: a.at,
-    entry: {
-      id: a.id,
-      title: ACTION_LABEL[a.action],
-      actor: getUserName(a.actorId),
-      timestamp: formatDateTime(a.at),
-      body: a.note,
-      tone: ACTION_TONE[a.action],
-    },
-  }));
-
-  if (claim.exception) {
-    stamped.push({
-      at: claim.exception.flaggedAt,
-      entry: {
-        id: claim.exception.id,
-        title:
-          claim.exception.status === "resolved"
-            ? "Policy exception resolved"
-            : "Policy exception flagged",
-        timestamp: formatDateTime(claim.exception.flaggedAt),
-        actor: "Policy engine",
-        body: claim.exception.message,
-        tone: claim.exception.status === "resolved" ? "success" : "error",
-      },
-    });
+function auditKey(action: string): string {
+  const lower = action.toLowerCase();
+  for (const key of [
+    // Order matters: "resubmitted" must be tested before "submitted" (the
+    // former contains the latter as a substring, so a naive includes() on the
+    // shorter key would swallow every resubmit event).
+    "resubmitted",
+    "submitted",
+    "withdrawn",
+    "approved",
+    "rejected",
+    "returned",
+    "processing",
+    "paid",
+    "created",
+    "attachment.upload",
+    "attachment.delete",
+    "exception",
+  ]) {
+    if (lower.includes(key)) {
+      if (key === "attachment.upload") return "created";
+      if (key === "attachment.delete") return "withdrawn";
+      if (key === "exception") return lower.includes("override") ? "approved" : "returned";
+      return key;
+    }
   }
+  return "default";
+}
 
-  return stamped
-    .sort((a, b) => a.at.localeCompare(b.at))
-    .map((s) => s.entry);
+/**
+ * Build the chronological status timeline from the BE audit endpoint
+ * (oldest-first). Each audit row carries an `action` verb, an actor, and a
+ * timestamp; the optional `before`/`after` snapshots are surfaced as the
+ * entry body when they include a human-readable status transition.
+ */
+function buildTimeline(audit: BackendAuditEntry[] | undefined): TimelineEntry[] {
+  if (!audit || audit.length === 0) return [];
+  return audit.map((entry) => {
+    const key = auditKey(entry.action);
+    const after = isRecord(entry.after);
+    const before = isRecord(entry.before);
+    const body =
+      (after && typeof after.status === "string"
+        ? before && typeof before.status === "string"
+          ? `${before.status} → ${after.status}`
+          : `Status: ${after.status}`
+        : null) ?? undefined;
+    return {
+      id: entry.id,
+      title: ACTION_LABEL[key] ?? prettifyAction(entry.action),
+      actor: getUserName(entry.actorId),
+      timestamp: formatDateTime(entry.createdAt),
+      body,
+      tone: ACTION_TONE[key] ?? "default",
+    };
+  });
+}
+
+function isRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+}
+
+function prettifyAction(action: string): string {
+  return action
+    .replace(/^[a-z]+\./, "")
+    .replace(/[_\.]/g, " ")
+    .replace(/^\w/, (c) => c.toUpperCase());
 }
 
 /**
  * Per-line policy flag. Only the receipt-required rule is surfaced here so the
- * badge stays consistent with the persisted claim-level exception (over-cap and
- * currency rules are enforced pre-submit in the wizard and do not retroactively
- * flag already-submitted fixture lines).
+ * badge stays consistent with the BE's policy evaluation (over-cap and
+ * currency rules are enforced pre-submit in the wizard and re-evaluated
+ * authoritatively by the BE on submit).
  */
 function lineReceiptFlag(line: LineItem): string | null {
   const violations = evaluateLinePolicy(
@@ -151,14 +190,20 @@ function lineMerchant(line: LineItem): string | null {
   return m ? m[1].trim() : null;
 }
 
-/** A downloadable mock placeholder so the demo "download" affordance works. */
+/**
+ * Download link for an attachment. The BE has no list-attachments endpoint in
+ * Phase 1 (see `lib/api/claims.ts` header), so the detail view normally
+ * renders attachments from in-session uploads. When an attachment is present
+ * (e.g. carried over from the wizard), this yields a safe placeholder until a
+ * dedicated `GET /api/claims/:id/attachments/:attId` route ships.
+ */
 function attachmentDataUrl(a: Attachment): string {
   const placeholder = [
-    "SpendFlow mock receipt placeholder",
+    "SpendFlow receipt",
     `File: ${a.fileName}`,
     `Size: ${a.sizeKb} KB`,
     "",
-    "Demo data — real receipts are delivered by the backend (BE-claims).",
+    "Download links will resolve to the backend attachment route once exposed.",
   ].join("\n");
   return `data:text/plain;charset=utf-8,${encodeURIComponent(placeholder)}`;
 }
@@ -239,7 +284,8 @@ export default function ClaimDetailPage() {
 
   const claim = state.claim!;
   const total = computeClaimTotal(claim);
-  const timeline = buildTimeline(claim);
+  const timeline = buildTimeline(state.audit);
+  const attachedLines = claim.lineItems.filter((l) => l.hasReceipt);
 
   return (
     <AppShell>
@@ -367,9 +413,9 @@ export default function ClaimDetailPage() {
   );
 
   function ClaimHeader({ claim, total }: { claim: Claim; total: number }) {
-    const onWithdraw = () => {
+    const onWithdraw = async () => {
       try {
-        withdrawClaim(claim.id, user.id);
+        await apiWithdrawClaim(claim.id);
         show("Draft claim withdrawn.", { tone: "success" });
         router.push("/employee/claims");
       } catch (err) {
@@ -379,10 +425,10 @@ export default function ClaimDetailPage() {
       }
     };
 
-    const onResubmit = () => {
+    const onResubmit = async () => {
       try {
-        resubmitClaim(claim.id, user.id);
-        reload(); // re-read live store so the timeline re-renders immediately
+        await apiResubmitClaim(claim.id);
+        reload(); // re-read the BE so the timeline re-renders immediately
         show("Claim resubmitted for approval.", { tone: "success" });
       } catch (err) {
         show(err instanceof Error ? err.message : "Couldn't resubmit this claim.", {

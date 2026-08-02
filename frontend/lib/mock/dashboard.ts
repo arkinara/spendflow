@@ -1,8 +1,11 @@
 /* ============================================================================
-   SpendFlow — Employee Dashboard data shaping (Phase 1, mock data).
-   Pure selectors that turn raw mock fixtures into the shape the dashboard
-   renders. Kept separate from the page so it is trivially unit-testable and
-   so the page can simulate async loading + failure around a single seam.
+   SpendFlow — Employee Dashboard data shaping.
+   FALLBACK ONLY (ticket #18): the employee dashboard now reads from
+   `/api/claims` via `useEmployeeDashboard` + `buildDashboard`. This module's
+   mock-backed `loadEmployeeDashboard` is retained as a fallback / for the
+   other verticals (#19–#23) that still consume the in-memory fixtures.
+   Pure selectors that turn raw claim rows into the shape the dashboard
+   renders. Kept separate from the page so it is trivially unit-testable.
    ========================================================================== */
 
 import {
@@ -64,18 +67,23 @@ export const STATUS_LABELS: Record<ClaimStatus, string> = {
 
 /** Resolve the paid timestamp for a claim: the `paid` approval action first. */
 export function resolvePaidAt(claim: Claim): string | undefined {
-  const paid = claim.approvals.find((a) => a.action === "paid");
+  const paid = claim.approvals?.find((a) => a.action === "paid");
   if (paid) return paid.at;
   return claim.decidedAt ?? claim.submittedAt;
 }
 
 /**
- * Build the full employee dashboard payload from mock data.
- * Throws if the underlying fixtures cannot be read — the page surfaces that as
- * an explicit retry-capable error state (never a blank dashboard).
+ * Pure dashboard builder over an already-fetched claim set. Used by the
+ * HTTP-backed `useEmployeeDashboard` hook (#18) so the dashboard render path
+ * has a single shaping seam independent of the data source. Tolerant of
+ * claims whose `approvals` array is empty (BE-sourced claims carry no
+ * approval timeline inline — that lives in the audit endpoint).
  */
-export function loadEmployeeDashboard(employeeId: string): EmployeeDashboardData {
-  const all = claimsForEmployee(employeeId);
+export function buildDashboard(
+  employeeId: string,
+  allClaims: Claim[],
+): EmployeeDashboardData {
+  const all = allClaims;
 
   const buildGroup = (status: ClaimStatus): StatusGroup => {
     const inStatus = all.filter((c) => c.status === status);
@@ -91,7 +99,7 @@ export function loadEmployeeDashboard(employeeId: string): EmployeeDashboardData
   const byStatus = (s: ClaimStatus) => groups.find((g) => g.status === s)!;
   const primaryGroups = PRIMARY_STATUSES.map(byStatus);
   const secondaryGroups = SECONDARY_STATUSES.map(byStatus).filter(
-    (g) => g.count > 0
+    (g) => g.count > 0,
   );
 
   const actionRequired = all
@@ -121,4 +129,14 @@ export function loadEmployeeDashboard(employeeId: string): EmployeeDashboardData
     paidCount: paidGroup.count,
     hasAnyClaims: all.length > 0,
   };
+}
+
+/**
+ * Build the full employee dashboard payload from the in-memory mock fixtures.
+ * FALLBACK: kept for the remaining mock-backed verticals (#19–#23); the
+ * employee dashboard itself now flows through `buildDashboard` over real BE
+ * rows (see `useEmployeeDashboard`).
+ */
+export function loadEmployeeDashboard(employeeId: string): EmployeeDashboardData {
+  return buildDashboard(employeeId, claimsForEmployee(employeeId));
 }

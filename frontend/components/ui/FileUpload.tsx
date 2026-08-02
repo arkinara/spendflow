@@ -13,14 +13,28 @@ export interface UploadedFile {
 
 export interface FileUploadProps {
   files: UploadedFile[];
-  onAdd?: (fileName: string) => void;
+  /**
+   * Called when the user picks / drops a file. The filename is always passed;
+   * the real `File` (with bytes) is passed as the second argument so the
+   * HTTP-backed wizard (#18) can upload it. The second argument is optional
+   * so legacy mock callers (which only need the name) keep compiling.
+   */
+  onAdd?: (fileName: string, file?: File) => void;
   onRemove?: (id: string) => void;
   label?: string;
   helper?: string;
   className?: string;
 }
 
-// Mock-only: no real upload. Selecting a file records its metadata.
+function handleFiles(
+  list: FileList | null,
+  onAdd?: (fileName: string, file?: File) => void,
+) {
+  if (!list) return;
+  Array.from(list).forEach((f) => onAdd?.(f.name, f));
+}
+
+// Selecting a file records its metadata + (when available) the real File.
 export function FileUpload({
   files,
   onAdd,
@@ -31,11 +45,6 @@ export function FileUpload({
 }: FileUploadProps) {
   const [dragging, setDragging] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
-
-  function handleFiles(list: FileList | null) {
-    if (!list) return;
-    Array.from(list).forEach((f) => onAdd?.(f.name));
-  }
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -51,7 +60,7 @@ export function FileUpload({
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          handleFiles(e.dataTransfer.files);
+          handleFiles(e.dataTransfer.files, onAdd);
         }}
         className={cn(
           "flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-8 text-center transition-colors duration-200 ease-m3",
@@ -73,7 +82,7 @@ export function FileUpload({
           type="file"
           multiple
           className="hidden"
-          onChange={(e) => handleFiles(e.target.files)}
+          onChange={(e) => handleFiles(e.target.files, onAdd)}
         />
       </button>
 

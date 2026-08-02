@@ -33,6 +33,58 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+/**
+ * #18: the detail page + `useClaimDetail` both read through `@/lib/api/claims`.
+ * Mock the module so the page is fed controlled FE-shaped `Claim` fixtures
+ * derived from the in-memory mock_data set. Ownership is enforced here as a
+ * stand-in for the BE's session auth: claims owned by another employee throw
+ * a 403 so the hook's `denied` branch renders.
+ */
+vi.mock("@/lib/api/claims", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/claims")>();
+  const { getClaim: mockGetClaim } = await import("@/lib/mock/mock_data");
+  const VIEWER = "u-emp-1";
+
+  return {
+    ...actual,
+    getClaim: vi.fn(async (id: string): Promise<Claim> => {
+      const claim = mockGetClaim(id);
+      if (!claim) throw new actual.ClaimApiError(404, "not_found", "Claim not found.");
+      if (claim.employeeId !== VIEWER)
+        throw new actual.ClaimApiError(403, "forbidden", "This claim belongs to another employee.");
+      return claim;
+    }),
+    getClaimAudit: vi.fn(async (id: string) => {
+      const claim = mockGetClaim(id);
+      if (!claim) return [];
+      return claim.approvals.map((a) => ({
+        id: a.id,
+        actorId: a.actorId,
+        action: a.action,
+        entityType: "claim",
+        entityId: id,
+        before: null,
+        after: null,
+        createdAt: a.at,
+      }));
+    }),
+    withdrawClaim: vi.fn(async (id: string) => mockGetClaim(id)),
+    resubmitClaim: vi.fn(async (id: string): Promise<Claim> => {
+      const claim = mockGetClaim(id);
+      if (!claim) throw new actual.ClaimApiError(404, "not_found", "Claim not found.");
+      claim.status = "pending";
+      claim.approvals.push({
+        id: `${claim.id}-ap-${claim.approvals.length + 1}`,
+        actorId: "u-emp-1",
+        action: "resubmitted",
+        at: new Date().toISOString(),
+        note: "Resubmitted after addressing the reviewer's request.",
+      });
+      return claim;
+    }),
+  };
+});
+
 import ClaimDetailPage from "@/app/employee/claims/[id]/page";
 import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
@@ -44,6 +96,7 @@ import {
   type Claim,
 } from "@/lib/mock/mock_data";
 import { formatCurrency } from "@/lib/format";
+import * as claimsApi from "@/lib/api/claims";
 
 function seedEmployee() {
   localStorage.setItem(
@@ -72,6 +125,10 @@ beforeEach(() => {
   seedEmployee();
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
+  vi.mocked(claimsApi.getClaim).mockClear();
+  vi.mocked(claimsApi.getClaimAudit).mockClear();
+  vi.mocked(claimsApi.resubmitClaim).mockClear();
+  vi.mocked(claimsApi.withdrawClaim).mockClear();
 });
 
 describe("Claim detail — line items, status & totals", () => {
@@ -79,7 +136,7 @@ describe("Claim detail — line items, status & totals", () => {
     renderDetail("clm-1001");
 
     const claim = getClaim("clm-1001")!;
-    // Wait for the header to mount.
+    // Wait for the header to mount (HTTP read resolves async).
     await screen.findByText(claim.title);
 
     // Every line item description is listed.
@@ -98,6 +155,13 @@ describe("Claim detail — line items, status & totals", () => {
     );
   });
 
+  it("calls GET /api/claims/:id then /audit once on mount", async () => {
+    renderDetail("clm-1001");
+    await screen.findByText(/q2 client visit/i);
+    expect(claimsApi.getClaim).toHaveBeenCalledWith("clm-1001");
+    expect(claimsApi.getClaimAudit).toHaveBeenCalledWith("clm-1001");
+  });
+
   it("surfaces a per-line policy flag for a receipt-required expense with no receipt", async () => {
     // clm-1003 line li-8: hotel 980k, no receipt → flagged.
     renderDetail("clm-1003");
@@ -109,16 +173,25 @@ describe("Claim detail — line items, status & totals", () => {
     expect(await screen.findByRole("button", { name: /withdraw/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /edit/i })).toBeInTheDocument();
   });
+
+  it("withdraws a draft claim through the BE and routes back to the list", async () => {
+    renderDetail("clm-1002");
+    const withdraw = await screen.findByRole("button", { name: /withdraw/i });
+    fireEvent.click(withdraw);
+
+    await waitFor(() => expect(claimsApi.withdrawClaim).toHaveBeenCalledWith("clm-1002"));
+    await waitFor(() => expect(navMocks.push).toHaveBeenCalledWith("/employee/claims"));
+  });
 });
 
 describe("Claim detail — not-found & access-denied states", () => {
-  it("shows a not-found state for an unknown claim id (no crash)", async () => {
+  it("shows a not-found state when the BE returns 404 for an unknown id", async () => {
     renderDetail("clm-does-not-exist");
     expect(await screen.findByText(/claim not found/i)).toBeInTheDocument();
   });
 
-  it("blocks viewing another employee's claim with an access-denied state", async () => {
-    // clm-1004 belongs to u-emp-3.
+  it("renders the denied branch on a BE 403 for another employee's claim", async () => {
+    // clm-1004 belongs to u-emp-3; the mocked getClaim throws 403 for it.
     renderDetail("clm-1004");
     expect(await screen.findByText(/access denied/i)).toBeInTheDocument();
   });
@@ -149,7 +222,7 @@ describe("Status timeline — chronological order, actors & live re-render", () 
     expect(within(region).getByText("Ridwan Saputra")).toBeInTheDocument();
   });
 
-  it("re-renders immediately with a new event after a mock decision action", async () => {
+  it("re-renders immediately with a new event after a resubmit action", async () => {
     // Deep-clone so we can restore the shared fixture after mutating it.
     const original: Claim = JSON.parse(JSON.stringify(getClaim("clm-1003")!));
     try {
@@ -162,11 +235,12 @@ describe("Status timeline — chronological order, actors & live re-render", () 
 
       fireEvent.click(screen.getByRole("button", { name: /resubmit/i }));
 
-      // After the mock decision the timeline re-reads the live store and shows
-      // the new transition as the most recent event.
+      // After the BE call + reload, the timeline re-reads the audit endpoint
+      // and shows the new transition as the most recent event.
       await waitFor(() =>
         expect(within(region).getAllByText("Resubmitted").length).toBeGreaterThan(0)
       );
+      expect(claimsApi.resubmitClaim).toHaveBeenCalledWith("clm-1003");
     } finally {
       // Restore the shared fixture so other tests/suites see the original state.
       const current = getClaim("clm-1003")!;

@@ -1,18 +1,24 @@
 "use client";
 
-import * as React from "react";
-import { getClaim } from "@/lib/mock/mock_data";
+/* ============================================================================
+ * SpendFlow — useClaimDetail (ticket #18, FE wiring).
+ * HTTP-backed: reads `GET /api/claims/:id` and `GET /api/claims/:id/audit`.
+ * A BE 404 → `notfound`; a BE 403 (`forbidden`) → `denied` (cross-employee
+ * access); other failures → retry-capable `error`. The hook's public
+ * interface (`{ state, reload }`) is unchanged so the detail page keeps its
+ * shape. The audit timeline entries are exposed on the ready state so the
+ * page can render the BE-owned status timeline.
+ * ========================================================================== */
 
-/**
- * Simulated async fetch of a single claim for the detail view.
- *
- * The mock store is synchronous, but the view still shows a loading skeleton
- * plus explicit not-found / access-denied / error states — matching ticket
- * #4's negative acceptance criteria (no crash on a bad id, no blank screen on a
- * cross-employee URL, no infinite spinner on failure). The hook re-reads the
- * live `claims` array whenever `reload()` bumps the version, so the timeline
- * re-renders immediately after a mock decision action mutates the claim.
- */
+import * as React from "react";
+import {
+  getClaim,
+  getClaimAudit,
+  ClaimApiError,
+  type BackendAuditEntry,
+} from "@/lib/api/claims";
+import type { Claim } from "@/lib/mock/mock_data";
+
 export type ClaimDetailStatus =
   | "loading"
   | "ready"
@@ -23,7 +29,9 @@ export type ClaimDetailStatus =
 export interface ClaimDetailState {
   status: ClaimDetailStatus;
   message?: string;
-  claim?: ReturnType<typeof getClaim>;
+  claim?: Claim;
+  /** BE audit timeline (oldest-first). Present only when `status === "ready"`. */
+  audit?: BackendAuditEntry[];
 }
 
 export interface UseClaimDetail {
@@ -31,11 +39,14 @@ export interface UseClaimDetail {
   reload: () => void;
 }
 
-const SIMULATED_LATENCY_MS = 200;
-
+/**
+ * Fetch a single claim + its audit timeline. `viewerId` is accepted for
+ * signature compatibility; the BE authorises by session + ownership, and a
+ * cross-employee access returns 403 which maps to the `denied` branch.
+ */
 export function useClaimDetail(
   claimId: string,
-  viewerId: string
+  _viewerId: string,
 ): UseClaimDetail {
   const [version, setVersion] = React.useState(0);
   const [state, setState] = React.useState<ClaimDetailState>({ status: "loading" });
@@ -43,33 +54,45 @@ export function useClaimDetail(
   React.useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
-    const timer = window.setTimeout(() => {
+
+    (async () => {
       try {
-        const claim = getClaim(claimId);
+        const claim = await getClaim(claimId);
         if (cancelled) return;
-        if (!claim) {
-          setState({ status: "notfound" });
-        } else if (claim.employeeId !== viewerId) {
-          // Cross-employee access via URL manipulation → explicit block.
-          setState({ status: "denied" });
-        } else {
-          setState({ status: "ready", claim });
+        // Audit is best-effort: a participant always has access (the GET
+        // claim above already enforced ownership for employees), but a
+        // transient failure should not blank the whole page — fall back to an
+        // empty timeline and keep the claim visible.
+        let audit: BackendAuditEntry[] = [];
+        try {
+          audit = await getClaimAudit(claimId);
+        } catch {
+          audit = [];
         }
+        if (!cancelled) setState({ status: "ready", claim, audit });
       } catch (err) {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (err instanceof ClaimApiError) {
+          if (err.status === 404) {
+            setState({ status: "notfound" });
+          } else if (err.status === 403) {
+            setState({ status: "denied" });
+          } else {
+            setState({ status: "error", message: err.message });
+          }
+        } else {
           setState({
             status: "error",
             message: err instanceof Error ? err.message : "Failed to load this claim.",
           });
         }
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
-  }, [claimId, viewerId, version]);
+  }, [claimId, version]);
 
   const reload = React.useCallback(() => setVersion((v) => v + 1), []);
   return { state, reload };
