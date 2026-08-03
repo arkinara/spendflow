@@ -14,7 +14,6 @@ import {
   Wallet,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
-import { useRole } from "@/components/shell/RoleSwitcher";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Avatar } from "@/components/ui/Avatar";
@@ -25,21 +24,14 @@ import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
+import { useFinancePayments } from "@/lib/mock/useFinanceLists";
 import {
-  useFinanceReadyToPay,
-  useFinanceInFlight,
-  useFinancePaid,
-} from "@/lib/mock/useFinanceLists";
-import {
-  markClaimProcessing,
-  markClaimPaid,
-} from "@/lib/mock/claimStore";
-import {
-  computeClaimTotal,
-  getUser,
-  type Claim,
-  type ClaimPayment,
-} from "@/lib/mock/mock_data";
+  markProcessing as markProcessingApi,
+  markPaid as markPaidApi,
+  FinanceApiError,
+  type FinancePaymentItem,
+} from "@/lib/api/finance";
+import type { ClaimPayment } from "@/lib/mock/mock_data";
 import { formatCurrency, formatCurrencyCompact, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -51,19 +43,10 @@ const METHOD_OPTIONS = [
 ];
 
 export default function PaymentsBoard() {
-  const { user } = useRole();
   const { show } = useSnackbar();
-  const ready = useFinanceReadyToPay();
-  const inFlight = useFinanceInFlight();
-  const paid = useFinancePaid();
+  const { state, retry, refresh } = useFinancePayments();
 
-  const reload = React.useCallback(() => {
-    ready.refresh();
-    inFlight.refresh();
-    paid.refresh();
-  }, [ready, inFlight, paid]);
-
-  const [active, setActive] = React.useState<Claim | null>(null);
+  const [active, setActive] = React.useState<FinancePaymentItem | null>(null);
   const [action, setAction] = React.useState<PendingAction | null>(null);
   const [method, setMethod] = React.useState<ClaimPayment["method"]>("bank_transfer");
   const [reference, setReference] = React.useState("");
@@ -71,7 +54,7 @@ export default function PaymentsBoard() {
   const [submitting, setSubmitting] = React.useState(false);
   const [conflict, setConflict] = React.useState<string | null>(null);
 
-  function openProcessing(claim: Claim) {
+  function openProcessing(claim: FinancePaymentItem) {
     setActive(claim);
     setAction("processing");
     setMethod("bank_transfer");
@@ -79,7 +62,7 @@ export default function PaymentsBoard() {
     setErrors({});
   }
 
-  function openPaid(claim: Claim) {
+  function openPaid(claim: FinancePaymentItem) {
     setActive(claim);
     setAction("paid");
     setErrors({});
@@ -93,10 +76,12 @@ export default function PaymentsBoard() {
     setErrors({});
   }
 
-  function confirm() {
+  async function confirm() {
     if (!active || !action) return;
 
     if (action === "processing") {
+      // Fast-path FE guard: don't round-trip an obviously-empty reference.
+      // The BE independently enforces non-empty (400 validation_required).
       const next: typeof errors = {};
       if (!method) next.method = "Select a payment method.";
       if (!reference.trim()) next.reference = "A bank or payroll reference is required.";
@@ -107,42 +92,50 @@ export default function PaymentsBoard() {
     setSubmitting(true);
     try {
       if (action === "processing") {
-        const updated = markClaimProcessing({
-          claimId: active.id,
-          actorId: user.id,
+        const result = await markProcessingApi(active.id, {
           method,
-          reference,
+          reference: reference.trim(),
         });
-        show(`${updated.reference} moved to Processing (${reference.trim()}).`, {
+        show(`${result.claim.reference} moved to Processing (${reference.trim()}).`, {
           tone: "success",
         });
       } else {
-        const updated = markClaimPaid({ claimId: active.id, actorId: user.id });
-        show(`${updated.reference} marked Paid — employee notified.`, {
+        const result = await markPaidApi(active.id);
+        show(`${result.claim.reference} marked Paid — employee notified.`, {
           tone: "success",
         });
       }
       close();
-      reload();
+      refresh();
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "We couldn't update this payment. Try again.";
-      setConflict(message);
-      close();
-      reload();
+      if (err instanceof FinanceApiError && err.code === "stale_decision") {
+        // Concurrent transition (already processing/paid) — surface the stale
+        // panel so the Finance Admin sees the conflict rather than a silent
+        // failure or a double-transition.
+        setConflict(err.message);
+        close();
+        refresh();
+      } else {
+        // 400 (validation_required — missing reference) / 403 / 404 → inline.
+        const message =
+          err instanceof FinanceApiError
+            ? err.message
+            : "We couldn't update this payment. Try again.";
+        if (action === "processing") {
+          setErrors({ reference: message });
+        } else {
+          setConflict(message);
+          close();
+        }
+      }
     } finally {
       setSubmitting(false);
     }
   }
 
-  const isLoading = ready.state.status === "loading" && inFlight.state.status === "loading";
-  const isError = ready.state.status === "error" || inFlight.state.status === "error";
-  const errorMessage =
-    ready.state.status === "error"
-      ? ready.state.message
-      : inFlight.state.status === "error"
-      ? inFlight.state.message
-      : undefined;
+  const approved = state.status === "ready" ? state.approved : [];
+  const processing = state.status === "ready" ? state.processing : [];
+  const paid = state.status === "ready" ? state.paid : [];
 
   return (
     <AppShell>
@@ -154,36 +147,27 @@ export default function PaymentsBoard() {
               Track reimbursements from approved through disbursement.
             </p>
           </div>
-          {(ready.state.status === "ready" ||
-            inFlight.state.status === "ready" ||
-            paid.state.status === "ready") && (
+          {state.status === "ready" && (
             <BoardTotals
-              readyCount={ready.state.status === "ready" ? ready.state.claims.length : 0}
-              inFlightCount={inFlight.state.status === "ready" ? inFlight.state.claims.length : 0}
-              paidCount={paid.state.status === "ready" ? paid.state.claims.length : 0}
+              readyCount={approved.length}
+              inFlightCount={processing.length}
+              paidCount={paid.length}
             />
           )}
         </div>
 
-        {isLoading && <BoardSkeleton />}
-        {isError && (
-          <BoardError
-            message={errorMessage}
-            onRetry={() => {
-              ready.retry();
-              inFlight.retry();
-              paid.retry();
-            }}
-          />
+        {state.status === "loading" && <BoardSkeleton />}
+        {state.status === "error" && (
+          <BoardError message={state.message} onRetry={retry} />
         )}
 
-        {!isLoading && !isError && (
+        {state.status === "ready" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Column
               label="Ready to pay"
               icon={Clock}
               accent="text-on-surface-variant"
-              claims={ready.state.status === "ready" ? ready.state.claims : []}
+              claims={approved}
               onAction={(c) => openProcessing(c)}
               actionLabel="Mark Processing"
               render={(c) => <ReadyCard claim={c} onAction={() => openProcessing(c)} />}
@@ -192,7 +176,7 @@ export default function PaymentsBoard() {
               label="Processing"
               icon={Loader}
               accent="text-warning"
-              claims={inFlight.state.status === "ready" ? inFlight.state.claims : []}
+              claims={processing}
               onAction={(c) => openPaid(c)}
               actionLabel="Mark Paid"
               render={(c) => <ProcessingCard claim={c} onAction={() => openPaid(c)} />}
@@ -201,7 +185,7 @@ export default function PaymentsBoard() {
               label="Paid"
               icon={CheckCircle2}
               accent="text-success"
-              claims={paid.state.status === "ready" ? paid.state.claims : []}
+              claims={paid}
               render={(c) => <PaidCard claim={c} />}
             />
           </div>
@@ -242,7 +226,7 @@ export default function PaymentsBoard() {
             <Button variant="text" onClick={() => setConflict(null)}>
               Dismiss
             </Button>
-            <Button onClick={reload}>Refresh board</Button>
+            <Button onClick={refresh}>Refresh board</Button>
           </>
         }
       >
@@ -306,12 +290,12 @@ function Column({
   label: string;
   icon: typeof Clock;
   accent: string;
-  claims: Claim[];
+  claims: FinancePaymentItem[];
   actionLabel?: string;
-  onAction?: (c: Claim) => void;
-  render: (c: Claim) => React.ReactNode;
+  onAction?: (c: FinancePaymentItem) => void;
+  render: (c: FinancePaymentItem) => React.ReactNode;
 }) {
-  const total = claims.reduce((s, c) => s + computeClaimTotal(c), 0);
+  const total = claims.reduce((s, c) => s + c.totalAmount, 0);
   return (
     <section
       aria-label={label}
@@ -351,35 +335,34 @@ function ClaimCardShell({
   claim,
   children,
 }: {
-  claim: Claim;
+  claim: FinancePaymentItem;
   children: React.ReactNode;
 }) {
-  const employee = getUser(claim.employeeId);
   return (
     <article className="rounded-xl border border-outline-variant bg-surface-container-low p-3 shadow-sm">
       <div className="flex items-start gap-2">
         <Avatar
-          name={employee?.name ?? "Unknown"}
+          name={claim.employeeName || "Unknown"}
           size="sm"
-          color={(employee?.avatarColor as never) ?? "primary"}
+          color="primary"
         />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-on-surface">{claim.title}</p>
           <p className="truncate text-xs text-on-surface-variant">
-            {claim.reference} · {employee?.name ?? "Unknown"}
+            {claim.reference} · {claim.employeeName || "Unknown"}
           </p>
         </div>
         <StatusChip status={claim.status} size="sm" />
       </div>
       <p className="mt-2 text-base font-bold text-on-surface">
-        {formatCurrency(computeClaimTotal(claim), claim.currency)}
+        {formatCurrency(claim.totalAmount, claim.currency)}
       </p>
       {children}
     </article>
   );
 }
 
-function ReadyCard({ claim, onAction }: { claim: Claim; onAction: () => void }) {
+function ReadyCard({ claim, onAction }: { claim: FinancePaymentItem; onAction: () => void }) {
   return (
     <ClaimCardShell claim={claim}>
       <div className="mt-3">
@@ -391,7 +374,7 @@ function ReadyCard({ claim, onAction }: { claim: Claim; onAction: () => void }) 
   );
 }
 
-function ProcessingCard({ claim, onAction }: { claim: Claim; onAction: () => void }) {
+function ProcessingCard({ claim, onAction }: { claim: FinancePaymentItem; onAction: () => void }) {
   const method = claim.payment?.method;
   return (
     <ClaimCardShell claim={claim}>
@@ -418,7 +401,7 @@ function ProcessingCard({ claim, onAction }: { claim: Claim; onAction: () => voi
   );
 }
 
-function PaidCard({ claim }: { claim: Claim }) {
+function PaidCard({ claim }: { claim: FinancePaymentItem }) {
   return (
     <ClaimCardShell claim={claim}>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-on-surface-variant">
@@ -441,7 +424,7 @@ function PaymentDialog({
   onClose,
   onConfirm,
 }: {
-  claim: Claim | null;
+  claim: FinancePaymentItem | null;
   action: PendingAction | null;
   method: ClaimPayment["method"];
   reference: string;
@@ -485,9 +468,9 @@ function PaymentDialog({
       {claim && (
         <div className="space-y-4">
           <div className="rounded-xl bg-surface-container px-4 py-3 text-sm text-on-surface">
-            <p className="font-semibold">{formatCurrency(computeClaimTotal(claim), claim.currency)}</p>
+            <p className="font-semibold">{formatCurrency(claim.totalAmount, claim.currency)}</p>
             <p className="text-xs text-on-surface-variant">
-              {getUser(claim.employeeId)?.name ?? "Unknown"} · {claim.reference}
+              {claim.employeeName || "Unknown"} · {claim.reference}
             </p>
           </div>
 

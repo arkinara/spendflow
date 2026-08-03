@@ -1,28 +1,36 @@
 "use client";
 
-import * as React from "react";
-import { loadFinanceDashboard, type FinanceDashboardData } from "@/lib/mock/financeDashboard";
+/* ============================================================================
+ * SpendFlow — useFinanceDashboard (ticket #20, FE wiring).
+ * HTTP-backed: reads the composed dashboard payload from `getDashboard()`,
+ * which fans out to `GET /api/finance/exceptions` + `GET /api/finance/payments`
+ * (BE #13). A BE 401 is handled globally by `apiFetch`; 403 / network / 5xx
+ * failures surface as a retry-capable `error` state so the dashboard never
+ * shows a silent blank or an infinite spinner.
+ *
+ * The state-machine interface (`{ state, retry, refresh }`) is unchanged from
+ * the mock version so the dashboard page keeps its loading / error / ready
+ * branching shape — only the data source moves from the mock store to the BE.
+ * ========================================================================== */
 
-/**
- * Simulated async fetch of the Finance dashboard payload. Mock data is
- * synchronous, but the dashboard still shows a brief loading skeleton and an
- * explicit, retry-capable error state — matching the negative acceptance
- * criteria (no silent blank dashboard, no infinite spinner, consistent totals
- * even when no claims are Processing or Paid).
- */
+import * as React from "react";
+import {
+  getDashboard,
+  FinanceApiError,
+  type FinanceDashboardData,
+} from "@/lib/api/finance";
+
 export type FinanceDashboardState =
   | { status: "loading" }
   | { status: "ready"; data: FinanceDashboardData }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; code?: string };
 
 export interface UseFinanceDashboard {
   state: FinanceDashboardState;
   retry: () => void;
-  /** Force a fresh read of the live store (e.g. after a decision action). */
+  /** Force a fresh read of the BE (e.g. after a decision action). */
   refresh: () => void;
 }
-
-const SIMULATED_LATENCY_MS = 200;
 
 export function useFinanceDashboard(): UseFinanceDashboard {
   const [state, setState] = React.useState<FinanceDashboardState>({
@@ -32,26 +40,28 @@ export function useFinanceDashboard(): UseFinanceDashboard {
 
   React.useEffect(() => {
     let cancelled = false;
-    const timer = window.setTimeout(() => {
+    setState({ status: "loading" });
+
+    (async () => {
       try {
-        const data = loadFinanceDashboard();
+        const data = await getDashboard();
         if (!cancelled) setState({ status: "ready", data });
       } catch (err) {
-        if (!cancelled) {
-          setState({
-            status: "error",
-            message:
-              err instanceof Error
-                ? err.message
-                : "Failed to load the finance dashboard.",
-          });
-        }
+        if (cancelled) return;
+        const message =
+          err instanceof FinanceApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Failed to load the finance dashboard.";
+        const code =
+          err instanceof FinanceApiError ? err.code : undefined;
+        setState({ status: "error", message, code });
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
   }, [attempt]);
 

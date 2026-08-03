@@ -19,12 +19,10 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useFinanceDashboard } from "@/lib/mock/useFinanceDashboard";
-import type { FinanceDashboardData } from "@/lib/mock/financeDashboard";
-import {
-  computeClaimTotal,
-  getUser,
-  type Claim,
-} from "@/lib/mock/mock_data";
+import type {
+  FinanceDashboardData,
+  FinancePaymentItem,
+} from "@/lib/api/finance";
 import {
   formatCurrency,
   formatCurrencyCompact,
@@ -227,17 +225,16 @@ function QuickAction({
   );
 }
 
-function LifecycleRow({ claim }: { claim: Claim }) {
-  const employee = getUser(claim.employeeId);
+function LifecycleRow({ claim }: { claim: FinancePaymentItem }) {
   return (
     <li>
       <ListItem
         href={`/claims/${claim.id}/audit`}
         title={claim.title}
-        subtitle={`${claim.reference} · ${employee?.name ?? "Unknown"}`}
+        subtitle={`${claim.reference} · ${claim.employeeName || "Unknown"}`}
         meta={
           <p className="text-sm font-semibold text-on-surface">
-            {formatCurrency(computeClaimTotal(claim))}
+            {formatCurrency(claim.totalAmount)}
           </p>
         }
         trailing={<StatusChip status={claim.status} size="sm" />}
@@ -246,20 +243,19 @@ function LifecycleRow({ claim }: { claim: Claim }) {
   );
 }
 
-function PaidRow({ claim }: { claim: Claim }) {
-  const employee = getUser(claim.employeeId);
-  const paidAt = claim.payment?.paidAt ?? claim.decidedAt;
+function PaidRow({ claim }: { claim: FinancePaymentItem }) {
+  const paidAt = claim.payment?.paidAt;
   return (
     <li>
       <ListItem
         href={`/claims/${claim.id}/audit`}
         title={claim.title}
-        subtitle={`${claim.reference} · ${employee?.name ?? "Unknown"}${
+        subtitle={`${claim.reference} · ${claim.employeeName || "Unknown"}${
           paidAt ? ` · paid ${formatDate(paidAt)}` : ""
         }${claim.payment?.reference ? ` · ${claim.payment.reference}` : ""}`}
         meta={
           <p className="text-sm font-semibold text-on-surface">
-            {formatCurrency(computeClaimTotal(claim))}
+            {formatCurrency(claim.totalAmount)}
           </p>
         }
         trailing={<StatusChip status={claim.status} size="sm" />}

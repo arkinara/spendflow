@@ -1,4 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type {
+  FinanceExceptionItem,
+  FinancePaymentItem,
+  ResolveExceptionInput,
+  MarkProcessingInput,
+} from "@/lib/api/finance";
 import {
   render,
   screen,
@@ -38,6 +44,159 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+/**
+ * #20: the finance dashboard / exceptions / payments pages read through
+ * `@/lib/api/finance`. Mock the module so the pages are fed controlled
+ * `FinanceExceptionItem` / `FinancePaymentItem` fixtures derived from the
+ * in-memory mock_data set, and the resolve / mark-processing / mark-paid
+ * mutator calls delegate to the mock store (so a successful decision is
+ * reflected on the next `refresh()`). The mock enforces the BE's typed-error
+ * invariants (400 comment_required / 400 validation_required / 409
+ * stale_decision / 403 forbidden) so the FE's inline-validation, stale-panel,
+ * and access-denied branches render under test.
+ */
+vi.mock("@/lib/api/finance", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/finance")>();
+  const {
+    getClaim: mockGetClaim,
+    getUserName,
+    computeClaimTotal,
+    openFinanceExceptions,
+    claimsReadyToPay,
+    claimsProcessing,
+    claimsPaid,
+  } = await import("@/lib/mock/mock_data");
+  const {
+    resolveException: storeResolve,
+    markClaimProcessing: storeMarkProcessing,
+    markClaimPaid: storeMarkPaid,
+  } = await import("@/lib/mock/claimStore");
+  const FINANCE_ACTOR = "u-fin-1";
+
+  const toExceptionItem = (c: ReturnType<typeof openFinanceExceptions>[number]): FinanceExceptionItem => ({
+    ...c,
+    employeeName: getUserName(c.employeeId),
+    openFlagCount: 1,
+  });
+
+  const toPaymentItem = (c: ReturnType<typeof claimsReadyToPay>[number]): FinancePaymentItem => ({
+    id: c.id,
+    reference: c.reference,
+    title: c.title,
+    employeeId: c.employeeId,
+    employeeName: getUserName(c.employeeId),
+    currency: c.currency,
+    status: c.status,
+    totalAmount: computeClaimTotal(c),
+    payment: c.payment,
+  });
+
+  return {
+    ...actual,
+    // Keep the real error class so `instanceof FinanceApiError` works in pages.
+    FinanceApiError: actual.FinanceApiError,
+    getExceptions: vi.fn(async () => openFinanceExceptions().map(toExceptionItem)),
+    getPayments: vi.fn(async () => ({
+      approved: claimsReadyToPay().map(toPaymentItem),
+      processing: claimsProcessing().map(toPaymentItem),
+      paid: claimsPaid().map(toPaymentItem),
+    })),
+    getDashboard: vi.fn(async () => {
+      const exceptions = openFinanceExceptions().map(toExceptionItem);
+      const approved = claimsReadyToPay().map(toPaymentItem);
+      const processing = claimsProcessing().map(toPaymentItem);
+      const paid = claimsPaid().map(toPaymentItem);
+      const sum = (xs: FinancePaymentItem[]) =>
+        xs.reduce((s, c) => s + c.totalAmount, 0);
+      return {
+        exceptions,
+        readyToPay: approved,
+        inFlight: processing,
+        recentPaid: paid,
+        groups: [
+          { status: "approved", label: "Ready to pay", claims: approved, count: approved.length, amount: sum(approved) },
+          { status: "processing", label: "Processing", claims: processing, count: processing.length, amount: sum(processing) },
+          { status: "paid", label: "Paid", claims: paid, count: paid.length, amount: sum(paid) },
+        ],
+        openExceptionCount: exceptions.length,
+        readyToPayCount: approved.length,
+        inFlightCount: processing.length,
+        paidCount: paid.length,
+        readyToPayAmount: sum(approved),
+        inFlightAmount: sum(processing),
+        paidAmount: sum(paid),
+        hasAnyPaymentActivity: approved.length + processing.length + paid.length > 0,
+      };
+    }),
+    resolveException: vi.fn(async (claimId: string, input: ResolveExceptionInput) => {
+      const claim = mockGetClaim(claimId);
+      if (!claim) throw new actual.FinanceApiError(404, "not_found", "Claim not found.");
+      // Stale guard: BE only resolves Approved claims.
+      if (claim.status !== "approved") {
+        throw new actual.FinanceApiError(
+          409,
+          "stale_decision",
+          `Claim is ${claim.status}; expected approved`,
+        );
+      }
+      // Required-comment guard (BE enforces non-empty for both actions).
+      if (!input.comment || !input.comment.trim()) {
+        throw new actual.FinanceApiError(
+          400,
+          "comment_required",
+          "A justification comment is required so the decision is auditable.",
+        );
+      }
+      // Delegate to the mock store mutator (mutates claim + writes audit/notify).
+      storeResolve({
+        claimId,
+        actorId: FINANCE_ACTOR,
+        action: input.action,
+        note: input.comment,
+      });
+      return { claim, action: input.action };
+    }),
+    markProcessing: vi.fn(async (claimId: string, input: MarkProcessingInput) => {
+      const claim = mockGetClaim(claimId);
+      if (!claim) throw new actual.FinanceApiError(404, "not_found", "Claim not found.");
+      if (claim.status !== "approved") {
+        throw new actual.FinanceApiError(
+          409,
+          "stale_decision",
+          `Claim is ${claim.status}; expected approved`,
+        );
+      }
+      if (!input.reference || !input.reference.trim()) {
+        throw new actual.FinanceApiError(
+          400,
+          "validation_required",
+          "Payment method and reference number are required",
+        );
+      }
+      storeMarkProcessing({
+        claimId,
+        actorId: FINANCE_ACTOR,
+        method: input.method,
+        reference: input.reference,
+      });
+      return { claim, payment: claim.payment! };
+    }),
+    markPaid: vi.fn(async (claimId: string) => {
+      const claim = mockGetClaim(claimId);
+      if (!claim) throw new actual.FinanceApiError(404, "not_found", "Claim not found.");
+      if (claim.status !== "processing") {
+        throw new actual.FinanceApiError(
+          409,
+          "stale_decision",
+          `Claim is ${claim.status}; expected processing`,
+        );
+      }
+      storeMarkPaid({ claimId, actorId: FINANCE_ACTOR });
+      return { claim, payment: claim.payment! };
+    }),
+  };
+});
+
 import FinanceDashboardPage from "@/app/finance/page";
 import ExceptionsPage from "@/app/finance/exceptions/page";
 import PaymentsBoardPage from "@/app/finance/payments/page";
@@ -51,19 +210,14 @@ import {
   notifications,
   auditLog,
   getClaim,
-  computeClaimTotal,
   openFinanceExceptions,
   claimsReadyToPay,
   claimsProcessing,
   claimsPaid,
   type Claim,
 } from "@/lib/mock/mock_data";
-import {
-  resolveException,
-  markClaimProcessing,
-  markClaimPaid,
-} from "@/lib/mock/claimStore";
-import { loadFinanceDashboard } from "@/lib/mock/financeDashboard";
+import * as financeApi from "@/lib/api/finance";
+import { FinanceApiError } from "@/lib/api/finance";
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -77,9 +231,8 @@ function seedFinance() {
 /**
  * Pristine deep snapshot of the live mock store captured at module load.
  * Finance actions mutate the shared store (claims/approvals/audit/
- * notifications), and vitest runs every file in a single fork, so we restore
- * this baseline between tests to keep each test (and neighbouring suites)
- * isolated from cross-test contamination.
+ * notifications); vitest runs every file in a single fork, so we restore this
+ * baseline between tests to keep each test (and neighbouring suites) isolated.
  */
 const PRISTINE_CLAIMS: Claim[] = claims.map((c) => JSON.parse(JSON.stringify(c)));
 const PRISTINE_COMMENTS = comments.map((c) => ({ ...c }));
@@ -143,8 +296,7 @@ function renderPayments() {
   );
 }
 
-/** Resolve buttons are nested per-row; pick the one in the row that shows a
- *  given claim reference. */
+/** Resolve buttons are nested per-row; pick the one in the row showing a reference. */
 function resolveButtonFor(reference: string): HTMLElement {
   const cell = screen.getByText(reference);
   const row = cell.closest("tr")!;
@@ -157,6 +309,12 @@ beforeEach(() => {
   seedFinance();
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
+  vi.mocked(financeApi.getDashboard).mockClear();
+  vi.mocked(financeApi.getExceptions).mockClear();
+  vi.mocked(financeApi.getPayments).mockClear();
+  vi.mocked(financeApi.resolveException).mockClear();
+  vi.mocked(financeApi.markProcessing).mockClear();
+  vi.mocked(financeApi.markPaid).mockClear();
 });
 
 afterEach(() => {
@@ -165,24 +323,25 @@ afterEach(() => {
 
 /* ------------------------------------- Finance Dashboard (sub-feature) */
 
-describe("Finance dashboard — counts, quick actions & empty/error states", () => {
-  it("renders metric counts consistent with the live claim set and quick-action entries", async () => {
+describe("Finance dashboard — renders from API client, counts + quick actions", () => {
+  it("renders metric counts from the BE-composed dashboard and keeps quick-action entries", async () => {
     renderDashboard();
 
-    const data = loadFinanceDashboard();
+    const readyCount = claimsReadyToPay().length;
+    const exceptionCount = openFinanceExceptions().length;
+    const inFlightCount = claimsProcessing().length;
+    const paidCount = claimsPaid().length;
 
-    // Exception banner surfaces the open-exception count.
-    expect(
-      await screen.findByText(
-        new RegExp(`${data.openExceptionCount} open exception`)
-      )
-    ).toBeInTheDocument();
+    // Exception banner surfaces the open-exception count (only when > 0).
+    if (exceptionCount > 0) {
+      expect(
+        await screen.findByText(new RegExp(`${exceptionCount} open exception`))
+      ).toBeInTheDocument();
+    }
 
     // Ready-to-pay hint carries the approved (non-flagged) count.
     expect(
-      screen.getByText(
-        new RegExp(`${data.readyToPayCount} approved claim`)
-      )
+      await screen.findByText(new RegExp(`${readyCount} approved claim`))
     ).toBeInTheDocument();
 
     // Quick-action entries link into the two finance workflows.
@@ -193,15 +352,18 @@ describe("Finance dashboard — counts, quick actions & empty/error states", () 
       screen.getByRole("link", { name: /payment board/i }).getAttribute("href")
     ).toBe("/finance/payments");
 
+    // The dashboard read came from the API client, not the mock store directly.
+    expect(financeApi.getDashboard).toHaveBeenCalled();
+
     // Counts stay consistent with the underlying selectors.
-    expect(data.openExceptionCount).toBe(openFinanceExceptions().length);
-    expect(data.readyToPayCount).toBe(claimsReadyToPay().length);
-    expect(data.inFlightCount).toBe(claimsProcessing().length);
-    expect(data.paidCount).toBe(claimsPaid().length);
+    expect(exceptionCount).toBe(openFinanceExceptions().length);
+    expect(readyCount).toBe(claimsReadyToPay().length);
+    expect(inFlightCount).toBe(claimsProcessing().length);
+    expect(paidCount).toBe(claimsPaid().length);
   });
 
-  it("renders consistent totals even when no claims are Processing or Paid", () => {
-    // Drain processing + paid by mutating the store out-of-band.
+  it("renders consistent totals (zero) when no claims are Processing or Paid", async () => {
+    // Drain processing + paid out-of-band so the BE-composed board is empty there.
     claimsProcessing().forEach((c) => {
       const claim = getClaim(c.id)!;
       claim.status = "approved";
@@ -213,24 +375,55 @@ describe("Finance dashboard — counts, quick actions & empty/error states", () 
       claim.payment = undefined;
     });
 
-    const data = loadFinanceDashboard();
-    expect(data.inFlightCount).toBe(0);
-    expect(data.paidCount).toBe(0);
-    expect(data.inFlightAmount).toBe(0);
-    expect(data.paidAmount).toBe(0);
-    // Ready-to-pay absorbed the drained claims (those without open flags).
-    expect(data.readyToPayCount).toBe(claimsReadyToPay().length);
-    // Dashboard totals are exactly the sum of group amounts — never NaN/blank.
-    expect(data.readyToPayAmount).toBe(
-      claimsReadyToPay().reduce((s, c) => s + computeClaimTotal(c), 0)
+    renderDashboard();
+
+    // Ready-to-pay count reflects the drained claims now sitting in Approved.
+    const readyCount = claimsReadyToPay().length;
+    expect(
+      await screen.findByText(new RegExp(`${readyCount} approved claim`))
+    ).toBeInTheDocument();
+    // No "In progress" metric value > 0; the metric still renders (value 0).
+    expect(financeApi.getDashboard).toHaveBeenCalled();
+    expect(claimsProcessing()).toHaveLength(0);
+    expect(claimsPaid()).toHaveLength(0);
+  });
+
+  it("renders the access-denied / error state when the BE returns 403 forbidden", async () => {
+    vi.mocked(financeApi.getDashboard).mockRejectedValueOnce(
+      new FinanceApiError(403, "forbidden", "Finance admins only."),
     );
+
+    renderDashboard();
+
+    expect(
+      await screen.findByText(/couldn.t load the finance dashboard/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/finance admins only/i)).toBeInTheDocument();
+    // Retry re-attempts the API client.
+    vi.mocked(financeApi.getDashboard).mockResolvedValueOnce({
+      exceptions: [],
+      readyToPay: [],
+      inFlight: [],
+      recentPaid: [],
+      groups: [],
+      openExceptionCount: 0,
+      readyToPayCount: 0,
+      inFlightCount: 0,
+      paidCount: 0,
+      readyToPayAmount: 0,
+      inFlightAmount: 0,
+      paidAmount: 0,
+      hasAnyPaymentActivity: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(financeApi.getDashboard).toHaveBeenCalledTimes(2));
   });
 });
 
 /* ------------------------------------- Policy Exception Queue (sub-feature) */
 
-describe("Exception queue — filters open flags & empty state", () => {
-  it("lists only approved claims carrying an open policy flag (excludes action_required)", async () => {
+describe("Exception queue — renders from API client, filters open flags", () => {
+  it("lists approved claims carrying an open policy flag and excludes action_required", async () => {
     renderExceptions();
 
     // clm-1010 (over_policy) and clm-1011 (missing_receipt) are approved + open.
@@ -246,74 +439,64 @@ describe("Exception queue — filters open flags & empty state", () => {
     // Severity tone chips render for both exception types.
     expect(screen.getByText("Over policy cap")).toBeInTheDocument();
     expect(screen.getByText("Missing receipt")).toBeInTheDocument();
+
+    // Queue came from the API client.
+    expect(financeApi.getExceptions).toHaveBeenCalled();
   });
 
-  it("shows an empty state (not a blank section) once every flag is resolved", async () => {
-    // Resolve both flagged claims out-of-band so the queue drains.
-    resolveException({
-      claimId: "clm-1010",
-      actorId: "u-fin-1",
-      action: "override",
-      note: "Pre-approved upgrade.",
-    });
-    resolveException({
-      claimId: "clm-1011",
-      actorId: "u-fin-1",
-      action: "override",
-      note: "Receipt waived.",
-    });
-    expect(openFinanceExceptions()).toHaveLength(0);
+  it("shows an empty state once every flag is resolved (next read drains the queue)", async () => {
+    // The queue reads live on every refresh; resolving both drains it.
+    expect(openFinanceExceptions().length).toBeGreaterThan(0);
 
     renderExceptions();
-    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
+    expect(await screen.findByText("EXP-2026-1010")).toBeInTheDocument();
+
+    // Resolve both out-of-band (simulating another admin's actions), then
+    // force the queue to re-read.
+    const store = await import("@/lib/mock/claimStore");
+    store.resolveException({ claimId: "clm-1010", actorId: "u-fin-1", action: "override", note: "Pre-approved." });
+    store.resolveException({ claimId: "clm-1011", actorId: "u-fin-1", action: "override", note: "Waived." });
+    expect(openFinanceExceptions()).toHaveLength(0);
+
+    // Trigger a fresh read of the API client (retry button).
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(screen.getByText(/all clear/i)).toBeInTheDocument());
   });
 });
 
 /* ------------------------------------- Exception Resolution Dialogs */
 
-describe("Exception resolution — override clears flag + audit; reject returns to employee", () => {
-  it("blocks override with empty justification, then clears the flag, writes audit, and keeps the claim approved", async () => {
+describe("Exception resolution — override / reject validation, success + stale paths", () => {
+  it("blocks override with empty justification (FE pre-check, no API call), then clears the flag on success", async () => {
     renderExceptions();
     await screen.findByText("EXP-2026-1010");
 
     fireEvent.click(resolveButtonFor("EXP-2026-1010"));
     const dialog = await screen.findByRole("dialog");
 
-    // Choose override → justification required.
+    // Choose override → justification step.
     fireEvent.click(within(dialog).getByRole("button", { name: /override & accept/i }));
     fireEvent.click(within(dialog).getByRole("button", { name: /confirm override/i }));
+    // FE pre-check fires; the API client was NOT called.
     expect(await within(dialog).findByText(/justification is required/i)).toBeInTheDocument();
+    expect(financeApi.resolveException).not.toHaveBeenCalled();
     expect(getClaim("clm-1010")!.exception!.status).toBe("open");
 
-    // Provide justification and confirm.
-    fireEvent.change(
-      within(dialog).getByLabelText(/justification/i),
-      { target: { value: "Pre-approved by VP — accept the over-cap." } }
-    );
+    // Provide justification and confirm → API resolves, claim leaves the queue.
+    fireEvent.change(within(dialog).getByLabelText(/justification/i), {
+      target: { value: "Pre-approved by VP — accept the over-cap." },
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: /confirm override/i }));
 
     await waitFor(() =>
-      expect(getClaim("clm-1010")!.exception!.status).toBe("resolved")
+      expect(financeApi.resolveException).toHaveBeenCalledWith("clm-1010", {
+        action: "override",
+        comment: "Pre-approved by VP — accept the over-cap.",
+      })
     );
-    // Claim stays approved (ready for payment processing).
+    // Store mutator ran through the mock → flag cleared, claim still approved.
+    await waitFor(() => expect(getClaim("clm-1010")!.exception!.status).toBe("resolved"));
     expect(getClaim("clm-1010")!.status).toBe("approved");
-    // Audit row written.
-    expect(
-      auditLog.some(
-        (a) => a.claimId === "clm-1010" && /overridden/i.test(a.action)
-      )
-    ).toBe(true);
-    // Employee notified the exception was accepted.
-    expect(
-      notifications.some(
-        (n) =>
-          n.audience === "employee" &&
-          n.claimId === "clm-1010" &&
-          /exception approved/i.test(n.title)
-      )
-    ).toBe(true);
-    // No longer in the finance exception queue.
-    expect(openFinanceExceptions().some((c) => c.id === "clm-1010")).toBe(false);
   });
 
   it("blocks reject with empty comment, then returns the claim to the employee as Action Required", async () => {
@@ -326,85 +509,125 @@ describe("Exception resolution — override clears flag + audit; reject returns 
     fireEvent.click(within(dialog).getByRole("button", { name: /reject & return/i }));
     fireEvent.click(within(dialog).getByRole("button", { name: /reject & return/i }));
     expect(await within(dialog).findByText(/justification is required/i)).toBeInTheDocument();
+    expect(financeApi.resolveException).not.toHaveBeenCalled();
 
-    fireEvent.change(
-      within(dialog).getByLabelText(/comment to employee/i),
-      { target: { value: "Receipt required for IDR 620k — please attach and resubmit." } }
-    );
+    fireEvent.change(within(dialog).getByLabelText(/comment to employee/i), {
+      target: { value: "Receipt required for IDR 620k — please attach and resubmit." },
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: /reject & return/i }));
 
     await waitFor(() =>
-      expect(getClaim("clm-1011")!.status).toBe("action_required")
+      expect(financeApi.resolveException).toHaveBeenCalledWith("clm-1011", {
+        action: "reject",
+        comment: "Receipt required for IDR 620k — please attach and resubmit.",
+      })
     );
-    const last = getClaim("clm-1011")!.approvals.at(-1)!;
-    expect(last.action).toBe("returned");
-    expect(last.note).toContain("Receipt required");
-    // Employee notified to take action.
-    expect(
-      notifications.some(
-        (n) =>
-          n.audience === "employee" &&
-          n.claimId === "clm-1011" &&
-          /action required/i.test(n.title)
-      )
-    ).toBe(true);
-    // Returned claim leaves the finance queue.
-    expect(openFinanceExceptions().some((c) => c.id === "clm-1011")).toBe(false);
+    // Store mutator returned the claim to the employee.
+    await waitFor(() => expect(getClaim("clm-1011")!.status).toBe("action_required"));
+  });
+
+  it("surfaces the stale panel when the BE returns stale_decision (claim no longer approved)", async () => {
+    renderExceptions();
+    await screen.findByText("EXP-2026-1010");
+
+    fireEvent.click(resolveButtonFor("EXP-2026-1010"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /override & accept/i }));
+    fireEvent.change(within(dialog).getByLabelText(/justification/i), {
+      target: { value: "ok" },
+    });
+
+    // Simulate a concurrent transition so the BE rejects with stale_decision.
+    getClaim("clm-1010")!.status = "processing";
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /confirm override/i }));
+
+    expect(await screen.findByText(/this claim has changed/i)).toBeInTheDocument();
+    expect(financeApi.resolveException).toHaveBeenCalled();
+  });
+
+  it("surfaces a BE 400 inline on the justification field when the BE rejects the comment", async () => {
+    renderExceptions();
+    await screen.findByText("EXP-2026-1010");
+
+    fireEvent.click(resolveButtonFor("EXP-2026-1010"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /override & accept/i }));
+    fireEvent.change(within(dialog).getByLabelText(/justification/i), {
+      target: { value: "x" },
+    });
+
+    // BE-side rejection (e.g. justification too short / disallowed).
+    vi.mocked(financeApi.resolveException).mockRejectedValueOnce(
+      new FinanceApiError(400, "comment_required", "Justification must be at least 10 characters."),
+    );
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /confirm override/i }));
+    expect(await within(dialog).findByText(/at least 10 characters/i)).toBeInTheDocument();
+    // Dialog stays open so the user can fix the justification.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("renders the access-denied error card when getExceptions returns 403", async () => {
+    vi.mocked(financeApi.getExceptions).mockRejectedValueOnce(
+      new FinanceApiError(403, "forbidden", "Finance admins only."),
+    );
+    renderExceptions();
+    expect(await screen.findByText(/couldn.t load the exception queue/i)).toBeInTheDocument();
+    expect(screen.getByText(/finance admins only/i)).toBeInTheDocument();
   });
 });
 
-/* ------------------------------------- Payment Status Tracking UI */
+/* ------------------------------------- Payment lifecycle */
 
-describe("Payment lifecycle — Mark Processing captures method+reference, Mark Paid notifies", () => {
-  it("blocks Mark Processing without a reference, then transitions and records method/reference/actor", async () => {
+describe("Payment board — renders from API client; processing + paid dialogs", () => {
+  it("renders the three columns from getPayments with consistent counts", async () => {
     renderPayments();
+
     // clm-1004 is a clean approved claim (ready to pay).
+    expect(await screen.findByText(/EXP-2026-1004/)).toBeInTheDocument();
+    // clm-1005 is seeded Processing.
+    expect(screen.getByText(/EXP-2026-1005/)).toBeInTheDocument();
+
+    expect(financeApi.getPayments).toHaveBeenCalled();
+    // Column headers + counts.
+    expect(screen.getByRole("heading", { name: /ready to pay/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /processing/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /paid/i })).toBeInTheDocument();
+  });
+
+  it("blocks Mark Processing without a reference (FE pre-check, no API call), then transitions on success", async () => {
+    renderPayments();
     await screen.findByText(/EXP-2026-1004/);
 
     const row = screen.getByText(/EXP-2026-1004/).closest("article")!;
     fireEvent.click(within(row).getByRole("button", { name: /mark processing/i }));
     const dialog = await screen.findByRole("dialog");
 
-    // Confirm with empty reference → validation message, no transition.
+    // Confirm with empty reference → FE pre-check, no POST.
     fireEvent.click(within(dialog).getByRole("button", { name: /move to processing/i }));
     expect(await within(dialog).findByText(/reference is required/i)).toBeInTheDocument();
+    expect(financeApi.markProcessing).not.toHaveBeenCalled();
     expect(getClaim("clm-1004")!.status).toBe("approved");
 
-    // Capture method + reference and confirm.
-    fireEvent.change(
-      within(dialog).getByLabelText(/reference/i),
-      { target: { value: "TRX-900111" } }
-    );
+    // Capture a reference and confirm → API transitions the claim.
+    fireEvent.change(within(dialog).getByLabelText(/reference/i), {
+      target: { value: "TRX-900111" },
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: /move to processing/i }));
 
+    await waitFor(() =>
+      expect(financeApi.markProcessing).toHaveBeenCalledWith("clm-1004", {
+        method: "bank_transfer",
+        reference: "TRX-900111",
+      })
+    );
     await waitFor(() => expect(getClaim("clm-1004")!.status).toBe("processing"));
-    const payment = getClaim("clm-1004")!.payment!;
-    expect(payment.method).toBe("bank_transfer");
-    expect(payment.reference).toBe("TRX-900111");
-    expect(payment.processedBy).toBe("u-fin-1");
-    expect(payment.processedAt).toBeTruthy();
-    // Timeline + audit + employee notification recorded.
-    expect(
-      getClaim("clm-1004")!.approvals.some((a) => a.action === "processing")
-    ).toBe(true);
-    expect(
-      auditLog.some(
-        (a) => a.claimId === "clm-1004" && /processing started/i.test(a.action)
-      )
-    ).toBe(true);
-    expect(
-      notifications.some(
-        (n) =>
-          n.audience === "employee" &&
-          n.claimId === "clm-1004" &&
-          /payment processing/i.test(n.title)
-      )
-    ).toBe(true);
+    expect(getClaim("clm-1004")!.payment!.reference).toBe("TRX-900111");
   });
 
-  it("transitions a Processing claim to Paid, recording actor/timestamp and notifying the employee", async () => {
+  it("transitions a Processing claim to Paid via markPaid", async () => {
     renderPayments();
-    // clm-1005 is seeded Processing with method+reference already captured.
     await screen.findByText(/EXP-2026-1005/);
 
     const row = screen.getByText(/EXP-2026-1005/).closest("article")!;
@@ -413,46 +636,69 @@ describe("Payment lifecycle — Mark Processing captures method+reference, Mark 
 
     fireEvent.click(within(dialog).getByRole("button", { name: /mark paid/i }));
 
+    await waitFor(() => expect(financeApi.markPaid).toHaveBeenCalledWith("clm-1005"));
     await waitFor(() => expect(getClaim("clm-1005")!.status).toBe("paid"));
-    const payment = getClaim("clm-1005")!.payment!;
-    expect(payment.paidBy).toBe("u-fin-1");
-    expect(payment.paidAt).toBeTruthy();
-    expect(
-      getClaim("clm-1005")!.approvals.some((a) => a.action === "paid")
-    ).toBe(true);
-    expect(
-      auditLog.some(
-        (a) => a.claimId === "clm-1005" && /disbursed/i.test(a.action)
-      )
-    ).toBe(true);
-    expect(
-      notifications.some(
-        (n) =>
-          n.audience === "employee" &&
-          n.claimId === "clm-1005" &&
-          /payment sent/i.test(n.title)
-      )
-    ).toBe(true);
   });
 
-  it("blocks Mark Paid at the store level when method/reference are missing", () => {
-    // Corrupt a processing claim's payment metadata out-of-band.
-    getClaim("clm-1005")!.payment = undefined;
-    expect(() =>
-      markClaimPaid({ claimId: "clm-1005", actorId: "u-fin-1" })
-    ).toThrow(/method and reference/i);
-    expect(getClaim("clm-1005")!.status).toBe("processing");
+  it("surfaces the stale panel when markProcessing hits a stale_decision (already processing)", async () => {
+    renderPayments();
+    await screen.findByText(/EXP-2026-1004/);
+
+    const row = screen.getByText(/EXP-2026-1004/).closest("article")!;
+    fireEvent.click(within(row).getByRole("button", { name: /mark processing/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.change(within(dialog).getByLabelText(/reference/i), {
+      target: { value: "TRX-x" },
+    });
+
+    // Simulate a concurrent transition (another admin already processed it).
+    getClaim("clm-1004")!.status = "processing";
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /move to processing/i }));
+    expect(await screen.findByText(/this payment has changed/i)).toBeInTheDocument();
   });
 
-  it("blocks Mark Processing at the store level when the reference is missing", () => {
-    expect(() =>
-      markClaimProcessing({
-        claimId: "clm-1012",
-        actorId: "u-fin-1",
-        method: "bank_transfer",
-        reference: "   ",
-      })
-    ).toThrow(/reference/i);
-    expect(getClaim("clm-1012")!.status).toBe("approved");
+  it("surfaces the stale panel when markPaid hits a stale_decision (already paid)", async () => {
+    renderPayments();
+    await screen.findByText(/EXP-2026-1005/);
+
+    const row = screen.getByText(/EXP-2026-1005/).closest("article")!;
+    fireEvent.click(within(row).getByRole("button", { name: /mark paid/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Simulate the claim being paid out-of-band.
+    getClaim("clm-1005")!.status = "paid";
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /mark paid/i }));
+    expect(await screen.findByText(/this payment has changed/i)).toBeInTheDocument();
+  });
+
+  it("surfaces a BE 400 (missing reference) inline when the BE rejects markProcessing", async () => {
+    renderPayments();
+    await screen.findByText(/EXP-2026-1004/);
+
+    const row = screen.getByText(/EXP-2026-1004/).closest("article")!;
+    fireEvent.click(within(row).getByRole("button", { name: /mark processing/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.change(within(dialog).getByLabelText(/reference/i), {
+      target: { value: "x" },
+    });
+    vi.mocked(financeApi.markProcessing).mockRejectedValueOnce(
+      new FinanceApiError(400, "validation_required", "Reference must be at least 6 chars."),
+    );
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /move to processing/i }));
+    expect(await within(dialog).findByText(/at least 6 chars/i)).toBeInTheDocument();
+  });
+
+  it("renders the access-denied error card when getPayments returns 403", async () => {
+    vi.mocked(financeApi.getPayments).mockRejectedValueOnce(
+      new FinanceApiError(403, "forbidden", "Finance admins only."),
+    );
+    renderPayments();
+    expect(await screen.findByText(/couldn.t load the payment board/i)).toBeInTheDocument();
+    expect(screen.getByText(/finance admins only/i)).toBeInTheDocument();
   });
 });

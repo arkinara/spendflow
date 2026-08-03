@@ -6,6 +6,12 @@
    trivially unit-testable (the PRD requires dashboard counts to stay
    consistent with the underlying claim set even when no claims are Processing
    or Paid).
+
+   FALLBACK ONLY (ticket #20): the Finance dashboard + exception + payment
+   verticals now read from the BE via `lib/api/finance.ts`. This mock shaping
+   module is retained so the legacy mock-data test fixtures and any out-of-
+   vertical consumer (e.g. seeded demo data) still compile. It is NOT used by
+   the wired `/finance/*` pages. Removal is tracked by #24.
    ========================================================================== */
 
 import {

@@ -18,7 +18,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
-import { useRole } from "@/components/shell/RoleSwitcher";
 import { Card } from "@/components/ui/Card";
 import { DataTable, type Column } from "@/components/ui/DataTable";
 import { StatusChip } from "@/components/ui/StatusChip";
@@ -29,7 +28,12 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { useFinanceExceptions } from "@/lib/mock/useFinanceLists";
-import { resolveException, type ExceptionResolution } from "@/lib/mock/claimStore";
+import {
+  resolveException as resolveExceptionApi,
+  FinanceApiError,
+  type FinanceExceptionItem,
+  type ExceptionAction,
+} from "@/lib/api/finance";
 import {
   evaluateLinePolicy,
   violationsForLine,
@@ -37,8 +41,6 @@ import {
 import {
   computeClaimTotal,
   getCategory,
-  getUser,
-  type Claim,
   type ClaimException,
   type LineItem,
   type ExpenseCategoryId,
@@ -69,18 +71,17 @@ const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {
 };
 
 export default function ExceptionsPage() {
-  const { user } = useRole();
   const { show } = useSnackbar();
   const { state, retry, refresh } = useFinanceExceptions();
 
-  const [active, setActive] = React.useState<Claim | null>(null);
-  const [pendingAction, setPendingAction] = React.useState<ExceptionResolution | null>(null);
+  const [active, setActive] = React.useState<FinanceExceptionItem | null>(null);
+  const [pendingAction, setPendingAction] = React.useState<ExceptionAction | null>(null);
   const [note, setNote] = React.useState("");
   const [noteError, setNoteError] = React.useState<string>();
   const [submitting, setSubmitting] = React.useState(false);
   const [conflict, setConflict] = React.useState<string | null>(null);
 
-  function openResolve(claim: Claim) {
+  function openResolve(claim: FinanceExceptionItem) {
     setActive(claim);
     setPendingAction(null);
     setNote("");
@@ -95,51 +96,74 @@ export default function ExceptionsPage() {
     setNoteError(undefined);
   }
 
-  function confirmResolve() {
+  async function confirmResolve() {
     if (!active || !pendingAction) return;
+    // Fast-path FE guard: never round-trip an obviously-empty justification.
+    // The BE independently enforces non-empty (400 comment_required) and that
+    // path also surfaces inline below — defense in depth.
     if (note.trim().length === 0) {
       setNoteError("A justification is required so the decision is auditable.");
       return;
     }
     setSubmitting(true);
     try {
-      const updated = resolveException({
-        claimId: active.id,
-        actorId: user.id,
+      const result = await resolveExceptionApi(active.id, {
         action: pendingAction,
-        note,
+        comment: note,
       });
       show(
         pendingAction === "override"
-          ? `Exception overridden — ${updated.reference} is ready to pay.`
-          : `${updated.reference} returned to the employee.`,
+          ? `Exception overridden — ${result.claim.reference} is ready to pay.`
+          : `${result.claim.reference} returned to the employee.`,
         { tone: "success" }
       );
       closeResolve();
       refresh();
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "We couldn't apply this decision. Try again.";
-      setConflict(message);
-      closeResolve();
-      refresh();
+      if (err instanceof FinanceApiError && err.code === "stale_decision") {
+        // The claim moved out of Approved since the dialog opened — surface the
+        // existing stale panel so the Finance Admin isn't acting on stale state.
+        setConflict(err.message);
+        closeResolve();
+        refresh();
+      } else {
+        // 400 (comment_required / validation_required) / 403 / 404 — show the
+        // BE's message inline on the justification field.
+        const message =
+          err instanceof FinanceApiError
+            ? err.message
+            : "We couldn't apply this decision. Try again.";
+        setNoteError(message);
+      }
     } finally {
       setSubmitting(false);
     }
   }
 
+  const itemCount = state.status === "ready" ? state.items.length : 0;
+
   return (
     <AppShell>
       <div className="space-y-5">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-on-surface">Exception queue</h1>
-          <p className="mt-1 text-sm text-on-surface-variant">
-            {state.status === "ready"
-              ? `${state.claims.length} approved claim${state.claims.length === 1 ? "" : "s"} with an open policy flag awaiting your judgment.`
-              : "Approved claims with open policy flags awaiting a finance decision."}
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-on-surface">Exception queue</h1>
+            <p className="mt-1 text-sm text-on-surface-variant">
+              {state.status === "ready"
+                ? `${itemCount} approved claim${itemCount === 1 ? "" : "s"} with an open policy flag awaiting your judgment.`
+                : "Approved claims with open policy flags awaiting a finance decision."}
+            </p>
+          </div>
+          {state.status === "ready" && (
+            <Button
+              variant="outlined"
+              icon={RefreshCw}
+              onClick={refresh}
+              aria-label="Retry — refresh the queue"
+            >
+              Refresh
+            </Button>
+          )}
         </div>
 
         {state.status === "loading" && <QueueSkeleton />}
@@ -150,7 +174,7 @@ export default function ExceptionsPage() {
           <Card padded={false}>
             <DataTable
               columns={buildColumns(openResolve)}
-              data={state.claims}
+              data={state.items}
               rowKey={(c) => c.id}
               density="compact"
               caption="Open policy exceptions on approved claims"
@@ -214,7 +238,9 @@ export default function ExceptionsPage() {
   );
 }
 
-function buildColumns(onResolve: (c: Claim) => void): Column<Claim>[] {
+function buildColumns(
+  onResolve: (c: FinanceExceptionItem) => void,
+): Column<FinanceExceptionItem>[] {
   return [
     {
       key: "reference",
@@ -232,8 +258,8 @@ function buildColumns(onResolve: (c: Claim) => void): Column<Claim>[] {
       key: "employee",
       header: "Employee",
       sortable: true,
-      sortValue: (c) => getUser(c.employeeId)?.name ?? "Unknown",
-      render: (c) => getUser(c.employeeId)?.name ?? "Unknown",
+      sortValue: (c) => c.employeeName || "Unknown",
+      render: (c) => c.employeeName || "Unknown",
     },
     {
       key: "amount",
@@ -310,12 +336,12 @@ function ResolveDialog({
   onClose,
   onConfirm,
 }: {
-  claim: Claim | null;
-  pendingAction: ExceptionResolution | null;
+  claim: FinanceExceptionItem | null;
+  pendingAction: ExceptionAction | null;
   note: string;
   noteError?: string;
   submitting: boolean;
-  onChoose: (a: ExceptionResolution) => void;
+  onChoose: (a: ExceptionAction) => void;
   onNoteChange: (v: string) => void;
   onClose: () => void;
   onConfirm: () => void;
@@ -398,7 +424,7 @@ function ResolveDialog({
 }
 
 /** Render every line item, flagging the ones that violate policy with the reason. */
-function FlaggedLines({ claim }: { claim: Claim }) {
+function FlaggedLines({ claim }: { claim: FinanceExceptionItem }) {
   const violations = claim.lineItems.flatMap((l) =>
     evaluateLinePolicy(
       {
