@@ -38,6 +38,180 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+/** Resolve the seeded session (role + userId) the same way `SessionProvider`
+ *  reads it, so the mocked HTTP clients below can honour the BE's
+ *  session-scoped (not role-param) contracts. */
+async function currentSession(): Promise<{
+  userId: string;
+  role: "employee" | "approver" | "finance";
+}> {
+  const { SESSION_STORAGE_KEY } = await import("@/lib/auth/session");
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return { userId: "u-emp-1", role: "employee" };
+    const parsed = JSON.parse(raw);
+    return { userId: parsed.userId ?? "u-emp-1", role: parsed.role ?? "employee" };
+  } catch {
+    return { userId: "u-emp-1", role: "employee" };
+  }
+}
+
+/**
+ * #22: the notification center reads through `@/lib/api/notifications`.
+ * Mock the client to serve the session-scoped slice of the live
+ * `notifications` mock fixture, mirroring the BE's contract.
+ */
+vi.mock("@/lib/api/notifications", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/notifications")>();
+  const {
+    notifications: liveNotifications,
+    notificationsFor,
+    unreadCount: unreadCountForRole,
+  } = await import("@/lib/mock/mock_data");
+
+  return {
+    ...actual,
+    list: vi.fn(async () => {
+      const { role } = await currentSession();
+      return notificationsFor(role).map((n) => ({
+        id: n.id,
+        recipientId: n.audience,
+        category: n.category,
+        title: n.title,
+        body: n.body,
+        claimId: n.claimId ?? null,
+        readAt: n.read ? n.at : null,
+        createdAt: n.at,
+      }));
+    }),
+    markRead: vi.fn(async (id: string) => {
+      const row = liveNotifications.find((n) => n.id === id);
+      if (row) row.read = true;
+      return {
+        id: row?.id ?? id,
+        recipientId: row?.audience ?? "employee",
+        category: row?.category ?? "system",
+        title: row?.title ?? "",
+        body: row?.body ?? "",
+        claimId: row?.claimId ?? null,
+        readAt: new Date().toISOString(),
+        createdAt: row?.at ?? new Date().toISOString(),
+      };
+    }),
+    unreadCount: vi.fn(async () => {
+      const { role } = await currentSession();
+      return unreadCountForRole(role);
+    }),
+  };
+});
+
+/**
+ * #22: the comment thread reads/writes through `@/lib/api/comments`. Mock the
+ * client to enforce the BE's participant gate (403) and empty-body
+ * validation (400) against the live `comments` fixture.
+ */
+vi.mock("@/lib/api/comments", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/comments")>();
+  const {
+    comments: liveComments,
+    commentsForClaim,
+    getClaim,
+    getUser,
+    isClaimParticipant,
+    getUserName,
+  } = await import("@/lib/mock/mock_data");
+
+  let seq = 9900;
+
+  async function assertParticipant(claimId: string) {
+    const claim = getClaim(claimId);
+    if (!claim) throw new actual.CommentApiError(404, "not_found", "Claim not found.");
+    const { userId } = await currentSession();
+    const user = getUser(userId);
+    if (!user || !isClaimParticipant(claim, user)) {
+      throw new actual.CommentApiError(
+        403,
+        "forbidden",
+        "You are not a participant in this claim."
+      );
+    }
+    return claim;
+  }
+
+  return {
+    ...actual,
+    listComments: vi.fn(async (claimId: string) => {
+      await assertParticipant(claimId);
+      return commentsForClaim(claimId).map((c) => ({
+        id: c.id,
+        claimId: c.claimId,
+        authorId: c.authorId,
+        authorName: getUserName(c.authorId),
+        body: c.body,
+        createdAt: c.at,
+      }));
+    }),
+    addComment: vi.fn(async (claimId: string, body: string) => {
+      await assertParticipant(claimId);
+      const trimmed = body.trim();
+      if (!trimmed) {
+        throw new actual.CommentApiError(400, "invalid_body", "Comment body is required");
+      }
+      const { userId } = await currentSession();
+      const now = new Date().toISOString();
+      const entry = { id: `cm-${++seq}`, claimId, authorId: userId, body: trimmed, at: now };
+      liveComments.push(entry);
+      return {
+        id: entry.id,
+        claimId: entry.claimId,
+        authorId: entry.authorId,
+        authorName: getUserName(entry.authorId),
+        body: entry.body,
+        createdAt: entry.at,
+      };
+    }),
+  };
+});
+
+/**
+ * #22: the audit viewer reads through `@/lib/api/audit`. Mock the client to
+ * serve the live `auditLog` fixture (chronological, participant-gated),
+ * shaped as the BE's `BackendAuditEntry`.
+ */
+vi.mock("@/lib/api/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/audit")>();
+  const { auditForClaim, getClaim, getUser, isClaimParticipant } = await import(
+    "@/lib/mock/mock_data"
+  );
+
+  return {
+    ...actual,
+    getAudit: vi.fn(async (claimId: string) => {
+      const claim = getClaim(claimId);
+      if (!claim) throw new actual.AuditApiError(404, "not_found", "Claim not found.");
+      const { userId } = await currentSession();
+      const user = getUser(userId);
+      if (!user || !isClaimParticipant(claim, user)) {
+        throw new actual.AuditApiError(
+          403,
+          "forbidden",
+          "You do not have access to this claim's audit trail."
+        );
+      }
+      return auditForClaim(claimId).map((a) => ({
+        id: a.id,
+        actorId: a.actorId,
+        action: a.action,
+        entityType: "claim",
+        entityId: claimId,
+        before: null,
+        after: null,
+        createdAt: a.at,
+      }));
+    }),
+  };
+});
+
 import NotificationsPage from "@/app/notifications/page";
 import CommentsPage from "@/app/claims/[id]/comments/page";
 import AuditPage from "@/app/claims/[id]/audit/page";
@@ -216,7 +390,7 @@ describe("Claim comments — validation, append, ordering & participant gate", (
 
     // Empty submit → validation message, nothing appended.
     fireEvent.click(screen.getByRole("button", { name: /post comment/i }));
-    expect(await screen.findByText(/comment cannot be empty/i)).toBeInTheDocument();
+    expect(await screen.findByText(/comment body is required/i)).toBeInTheDocument();
 
     // Type and post → new comment appears at the end of the thread.
     fireEvent.change(screen.getByLabelText(/add a comment/i), {
@@ -324,7 +498,7 @@ describe("Audit trail viewer — read-only, role-gated & chronological", () => {
     navMocks.id = "clm-1003"; // only au-5
     renderGuarded(<AuditPage />);
 
-    expect(await screen.findByText("Returned to employee")).toBeInTheDocument();
+    expect(await screen.findByText("Returned for changes")).toBeInTheDocument();
     // Exactly one recorded event.
     expect(screen.getByText(/1 recorded event/i)).toBeInTheDocument();
   });

@@ -1,19 +1,29 @@
 "use client";
 
 import * as React from "react";
-import { notificationsFor, type Notification, type Role } from "@/lib/mock/mock_data";
-import { useNotificationVersion } from "@/lib/mock/notifyStore";
+import {
+  list as listNotifications,
+  markRead as apiMarkRead,
+  NotificationApiError,
+  type BackendNotification,
+} from "@/lib/api/notifications";
+import { refreshUnreadCount } from "@/lib/mock/notifyStore";
+import type { Notification, Role } from "@/lib/mock/mock_data";
 
-/**
- * Simulated async fetch of the current user's notifications, plus a live
- * re-read whenever a mark-read mutation bumps the shared notification version
- * (so the list and the header badge stay in sync without a manual reload).
- *
- * The initial fetch runs on a short timer to surface a loading skeleton and
- * error state (matching {@link useClaimDetail}); subsequent mark-read version
- * bumps re-read the live array synchronously to avoid a loading flash, since
- * only a `read` flag has flipped (the rows themselves are unchanged).
- */
+/* ============================================================================
+   SpendFlow — useNotifications (ticket #22, FE wiring).
+   HTTP-backed: reads `GET /api/notifications` (BE scopes the list to the
+   caller's session, so `role` is only used to stamp the FE `audience` field
+   for type compatibility — it does not gate the request). `markRead(id)`
+   optimistically flips the row locally, POSTs `/api/notifications/:id/read`,
+   and forces an immediate AppBar badge refresh via `notifyStore` so the
+   header doesn't wait up to 30s to catch up.
+
+   The hook's public interface keeps `{ state, reload }` from the mock version
+   and adds `markRead`, which the page calls instead of the old mock-store
+   mutation.
+   ========================================================================== */
+
 export type NotificationsStatus = "loading" | "ready" | "error";
 
 export interface NotificationsState {
@@ -25,61 +35,74 @@ export interface NotificationsState {
 export interface UseNotifications {
   state: NotificationsState;
   reload: () => void;
+  markRead: (id: string) => void;
 }
 
-const SIMULATED_LATENCY_MS = 200;
+function toFENotification(b: BackendNotification, role: Role): Notification {
+  return {
+    id: b.id,
+    audience: role,
+    category: b.category,
+    title: b.title,
+    body: b.body,
+    at: b.createdAt,
+    read: b.readAt !== null,
+    claimId: b.claimId ?? undefined,
+  };
+}
 
 export function useNotifications(role: Role): UseNotifications {
-  // Subscribe to mark-read mutations so the list reflects them immediately.
-  const version = useNotificationVersion();
   const [reloadToken, setReloadToken] = React.useState(0);
   const [state, setState] = React.useState<NotificationsState>({
     status: "loading",
     items: [],
   });
-  // Tracks whether the initial async fetch has completed for the current role,
-  // so version bumps (mark-read) only re-read once we actually have data.
-  const readyForRole = React.useRef<Role | null>(null);
 
-  // Initial / role-change / manual-reload fetch with a loading skeleton.
   React.useEffect(() => {
     let cancelled = false;
-    readyForRole.current = null;
     setState({ status: "loading", items: [] });
-    const timer = window.setTimeout(() => {
+
+    (async () => {
       try {
-        const items = notificationsFor(role);
+        const rows = await listNotifications();
         if (cancelled) return;
-        readyForRole.current = role;
-        setState({ status: "ready", items });
+        setState({ status: "ready", items: rows.map((r) => toFENotification(r, role)) });
       } catch (err) {
-        if (!cancelled) {
-          setState({
-            status: "error",
-            items: [],
-            message:
-              err instanceof Error ? err.message : "Failed to load notifications.",
-          });
-        }
+        if (cancelled) return;
+        setState({
+          status: "error",
+          items: [],
+          message:
+            err instanceof NotificationApiError || err instanceof Error
+              ? err.message
+              : "Failed to load notifications.",
+        });
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
   }, [role, reloadToken]);
 
-  // Synchronous re-read on a mark-read version bump (no loading flash).
-  React.useEffect(() => {
-    if (readyForRole.current !== role) return;
-    setState((prev) =>
-      prev.status === "ready"
-        ? { ...prev, items: notificationsFor(role) }
-        : prev
-    );
-  }, [version, role]);
-
   const reload = React.useCallback(() => setReloadToken((v) => v + 1), []);
-  return { state, reload };
+
+  const markRead = React.useCallback((id: string) => {
+    setState((prev) => {
+      if (prev.status !== "ready") return prev;
+      return {
+        ...prev,
+        items: prev.items.map((n) => (n.id === id ? { ...n, read: true } : n)),
+      };
+    });
+    // Best-effort: the caller (click-to-navigate) proceeds regardless of
+    // whether the mark-read round trip succeeds.
+    void apiMarkRead(id)
+      .catch(() => {})
+      .finally(() => {
+        void refreshUnreadCount();
+      });
+  }, []);
+
+  return { state, reload, markRead };
 }

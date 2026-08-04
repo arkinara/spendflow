@@ -1,23 +1,41 @@
 "use client";
 
-import * as React from "react";
-import { commentsForClaim, type Comment } from "@/lib/mock/mock_data";
-
-/**
- * Simulated async fetch of a claim's comment thread, with a `reload()` that
- * re-reads the live `comments` array so a freshly-posted comment renders at
- * the end of the thread without a full page refresh. The thread is always
- * sorted ascending by timestamp (oldest first) by {@link commentsForClaim}.
+/* ============================================================================
+ * SpendFlow — useClaimComments (ticket #22, FE wiring).
+ * HTTP-backed: reads `GET /api/claims/:id/comments`. The BE gates the route to
+ * claim participants (submitter, current/former approver, finance admin) and
+ * rejects everyone else with 403 `forbidden`; a nonexistent claim 404s. Those
+ * map to `denied` / `notfound` respectively — the page trusts the BE's
+ * participant decision rather than recomputing it from mock data. Comments
+ * are always ascending by timestamp (oldest first), per the BE's ordering.
  *
- * Mirrors {@link useClaimDetail}: a brief loading skeleton, an explicit error
- * state with retry, and a not-found signal surfaced via the page (the page
- * resolves the claim separately and renders its own not-found shell).
- */
-export type CommentsStatus = "loading" | "ready" | "error";
+ * The hook's public interface (`{ state, reload }`) is unchanged from the
+ * mock version so the page keeps its shape; the composer posts directly
+ * through `@/lib/api/comments` and calls `reload()` on success.
+ * ========================================================================== */
+
+import * as React from "react";
+import {
+  listComments,
+  CommentApiError,
+  type BackendComment,
+} from "@/lib/api/comments";
+
+export type CommentsStatus = "loading" | "ready" | "notfound" | "denied" | "error";
+
+/** A comment enriched with the BE's `authorName` (mock fixtures may not cover every seeded user). */
+export interface CommentItem {
+  id: string;
+  claimId: string;
+  authorId: string;
+  authorName: string;
+  body: string;
+  at: string;
+}
 
 export interface CommentsState {
   status: CommentsStatus;
-  items: Comment[];
+  items: CommentItem[];
   message?: string;
 }
 
@@ -26,7 +44,16 @@ export interface UseClaimComments {
   reload: () => void;
 }
 
-const SIMULATED_LATENCY_MS = 200;
+function toItem(b: BackendComment): CommentItem {
+  return {
+    id: b.id,
+    claimId: b.claimId,
+    authorId: b.authorId,
+    authorName: b.authorName,
+    body: b.body,
+    at: b.createdAt,
+  };
+}
 
 export function useClaimComments(claimId: string): UseClaimComments {
   const [version, setVersion] = React.useState(0);
@@ -38,13 +65,23 @@ export function useClaimComments(claimId: string): UseClaimComments {
   React.useEffect(() => {
     let cancelled = false;
     setState({ status: "loading", items: [] });
-    const timer = window.setTimeout(() => {
+
+    (async () => {
       try {
-        const items = commentsForClaim(claimId);
+        const rows = await listComments(claimId);
         if (cancelled) return;
-        setState({ status: "ready", items });
+        setState({ status: "ready", items: rows.map(toItem) });
       } catch (err) {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (err instanceof CommentApiError) {
+          if (err.status === 404) {
+            setState({ status: "notfound", items: [] });
+          } else if (err.status === 403) {
+            setState({ status: "denied", items: [] });
+          } else {
+            setState({ status: "error", items: [], message: err.message });
+          }
+        } else {
           setState({
             status: "error",
             items: [],
@@ -52,11 +89,10 @@ export function useClaimComments(claimId: string): UseClaimComments {
           });
         }
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
   }, [claimId, version]);
 

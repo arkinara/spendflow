@@ -22,10 +22,6 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { useNotifications } from "@/lib/mock/useNotifications";
-import {
-  markNotificationRead,
-  markAllNotificationsRead,
-} from "@/lib/mock/notifyStore";
 import { claimDetailRoute, type Notification } from "@/lib/mock/mock_data";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -50,7 +46,7 @@ export default function NotificationsPage() {
   const { role } = useRole();
   const router = useRouter();
   const { show } = useSnackbar();
-  const { state, reload } = useNotifications(role);
+  const { state, reload, markRead } = useNotifications(role);
 
   const [filter, setFilter] = React.useState<Filter>("all");
 
@@ -73,15 +69,19 @@ export default function NotificationsPage() {
   });
 
   function open(n: Notification) {
-    // Mark as read on click (mock mutation) and navigate to the claim detail.
-    if (!n.read) markNotificationRead(n.id);
+    // Mark as read on click (BE POST /read, best-effort) and navigate to the
+    // claim detail regardless of whether that call succeeds.
+    if (!n.read) markRead(n.id);
     if (n.claimId) {
       router.push(claimDetailRoute(role, n.claimId));
     }
   }
 
   function markAllRead() {
-    markAllNotificationsRead(role);
+    // No BE mark-all endpoint — mark every currently-unread row individually.
+    for (const n of sorted) {
+      if (!n.read) markRead(n.id);
+    }
     show("All notifications marked as read.", { tone: "success" });
   }
 

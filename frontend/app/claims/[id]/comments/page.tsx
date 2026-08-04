@@ -20,31 +20,57 @@ import { TextArea } from "@/components/ui/TextArea";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useClaimComments } from "@/lib/mock/useClaimComments";
-import { addClaimComment } from "@/lib/mock/claimStore";
-import {
-  getClaim,
-  getUser,
-  isClaimParticipant,
-  claimDetailRoute,
-  type Comment,
-} from "@/lib/mock/mock_data";
+import { useClaimComments, type CommentItem } from "@/lib/mock/useClaimComments";
+import { addComment, CommentApiError } from "@/lib/api/comments";
+import { getClaim } from "@/lib/api/claims";
+import { getClaimForReview } from "@/lib/api/approvals";
+import { getUser, claimDetailRoute, type Claim } from "@/lib/mock/mock_data";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-const MIN_COMMENT_LENGTH = 1;
+/**
+ * Best-effort claim summary for the header (title / reference / status).
+ * `GET /api/claims/:id` only allows the owning employee or Finance; approvers
+ * use the review endpoint instead. Try both — access to the *comments*
+ * themselves is decided solely by the BE's participant check in
+ * `useClaimComments`, so a header-fetch miss here never blocks the thread.
+ */
+async function loadClaimSummary(claimId: string): Promise<Claim | undefined> {
+  try {
+    return await getClaim(claimId);
+  } catch {
+    try {
+      const detail = await getClaimForReview(claimId);
+      return detail.claim;
+    } catch {
+      return undefined;
+    }
+  }
+}
 
 export default function CommentsPage() {
   const params = useParams<{ id: string }>();
   const { role, user } = useRole();
   const { show } = useSnackbar();
-  const claim = getClaim(params.id);
   const { state, reload } = useClaimComments(params.id);
 
+  const [claim, setClaim] = React.useState<Claim | undefined>(undefined);
   const [draft, setDraft] = React.useState("");
   const [error, setError] = React.useState<string>();
+  const [posting, setPosting] = React.useState(false);
 
-  if (!claim) {
+  React.useEffect(() => {
+    let cancelled = false;
+    setClaim(undefined);
+    void loadClaimSummary(params.id).then((c) => {
+      if (!cancelled) setClaim(c);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [params.id]);
+
+  if (state.status === "notfound") {
     return (
       <AppShell>
         <EmptyState
@@ -61,9 +87,10 @@ export default function CommentsPage() {
     );
   }
 
-  // Participant gate: only the submitter, approvers in the routing, and
-  // Finance Admin may read/post. Anyone else gets an access-denied shell.
-  if (!isClaimParticipant(claim, user)) {
+  // Participant gate: the BE rejects non-participants (not the submitter, an
+  // approver in the routing, or Finance) with a 403 — trust that decision
+  // rather than recomputing it from mock fixtures.
+  if (state.status === "denied") {
     return (
       <AppShell>
         <EmptyState
@@ -71,7 +98,7 @@ export default function CommentsPage() {
           title="Access denied"
           body="Only participants in this claim — the submitter, its approvers, and Finance — can view the conversation."
           action={
-            <Button href={claimDetailRoute(role, claim.id)} icon={ArrowLeft}>
+            <Button href={claimDetailRoute(role, params.id)} icon={ArrowLeft}>
               Back to claim
             </Button>
           }
@@ -80,27 +107,34 @@ export default function CommentsPage() {
     );
   }
 
-  function send() {
-    const body = draft.trim();
-    if (body.length < MIN_COMMENT_LENGTH) {
-      setError("Comment cannot be empty.");
-      return;
-    }
+  async function send() {
+    if (posting) return;
+    setPosting(true);
     try {
-      addClaimComment({ claimId: claim!.id, authorId: user.id, body });
+      await addComment(params.id, draft);
       setDraft("");
       setError(undefined);
-      reload(); // re-read live store → new comment renders at the end
+      reload(); // refetch → new comment renders at the end
       show("Comment posted.", { tone: "success" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't post that comment.");
+      // The BE rejects an empty/whitespace-only body with 400 `invalid_body`;
+      // its message ("Comment body is required") surfaces inline here.
+      setError(
+        err instanceof CommentApiError
+          ? err.message
+          : err instanceof Error
+          ? err.message
+          : "Couldn't post that comment."
+      );
+    } finally {
+      setPosting(false);
     }
   }
 
   return (
     <AppShell>
       <div className="mx-0 max-w-3xl space-y-5">
-        <Button href={claimDetailRoute(role, claim.id)} variant="text" size="sm" icon={ArrowLeft}>
+        <Button href={claimDetailRoute(role, params.id)} variant="text" size="sm" icon={ArrowLeft}>
           Back to claim
         </Button>
 
@@ -108,10 +142,10 @@ export default function CommentsPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-on-surface">Comments</h1>
             <p className="mt-1 text-sm text-on-surface-variant">
-              {claim.title} · {claim.reference}
+              {claim ? `${claim.title} · ${claim.reference}` : `Claim ${params.id}`}
             </p>
           </div>
-          <StatusChip status={claim.status} />
+          {claim && <StatusChip status={claim.status} />}
         </div>
 
         <Card padded={false}>
@@ -167,16 +201,12 @@ export default function CommentsPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                       e.preventDefault();
-                      send();
+                      void send();
                     }
                   }}
                 />
               </div>
-              <Button
-                icon={Send}
-                onClick={send}
-                aria-label="Post comment"
-              >
+              <Button icon={Send} onClick={() => void send()} disabled={posting} aria-label="Post comment">
                 Post
               </Button>
             </div>
@@ -190,19 +220,19 @@ export default function CommentsPage() {
   );
 }
 
-function CommentBubble({ comment, mine }: { comment: Comment; mine: boolean }) {
-  const author = getUser(comment.authorId);
+function CommentBubble({ comment, mine }: { comment: CommentItem; mine: boolean }) {
+  const avatarColor = getUser(comment.authorId)?.avatarColor;
   return (
     <li className={cn("flex gap-3", mine && "flex-row-reverse")}>
       <Avatar
-        name={author?.name ?? "Unknown"}
+        name={comment.authorName}
         size="sm"
-        color={(author?.avatarColor as never) ?? "primary"}
+        color={(avatarColor as never) ?? "primary"}
       />
       <div className={cn("min-w-0 max-w-[80%]", mine && "text-right")}>
         <div className={cn("flex items-baseline gap-2", mine && "flex-row-reverse")}>
           <span className="text-sm font-medium text-on-surface">
-            {mine ? "You" : author?.name}
+            {mine ? "You" : comment.authorName}
           </span>
           <time className="text-xs text-on-surface-variant" title={formatDateTime(comment.at)}>
             {formatRelativeTime(comment.at)}

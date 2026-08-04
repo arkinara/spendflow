@@ -1,22 +1,26 @@
 "use client";
 
-import * as React from "react";
-import { auditForClaim, type AuditEntry } from "@/lib/mock/mock_data";
-
-/**
- * Simulated async fetch of a claim's immutable audit trail. Audit rows are
- * append-only: this hook only ever reads them (never mutates), so the viewer
- * is strictly read-only. The trail is sorted ascending by timestamp
- * (oldest first) by {@link auditForClaim}.
+/* ============================================================================
+ * SpendFlow — useClaimAudit (ticket #22, FE wiring).
+ * HTTP-backed: reads `GET /api/claims/:id/audit` via `@/lib/api/audit`. The BE
+ * gates the route to claim participants and rejects everyone else with 403
+ * `forbidden`; a nonexistent claim 404s — those map to `denied` / `notfound`.
+ * The audit trail is append-only and this hook only ever reads it, so the
+ * viewer stays strictly read-only. Entries come back chronological (oldest
+ * first) from the BE.
  *
- * Mirrors {@link useClaimDetail}: a brief loading skeleton, an explicit error
- * state with retry, and a `reload()` that re-reads the live `auditLog`.
- */
-export type AuditStatus = "loading" | "ready" | "error";
+ * The hook's public interface (`{ state, reload }`) is unchanged from the
+ * mock version so the page keeps its shape.
+ * ========================================================================== */
+
+import * as React from "react";
+import { getAudit, AuditApiError, type BackendAuditEntry } from "@/lib/api/audit";
+
+export type AuditStatus = "loading" | "ready" | "notfound" | "denied" | "error";
 
 export interface AuditState {
   status: AuditStatus;
-  items: AuditEntry[];
+  items: BackendAuditEntry[];
   message?: string;
 }
 
@@ -24,8 +28,6 @@ export interface UseClaimAudit {
   state: AuditState;
   reload: () => void;
 }
-
-const SIMULATED_LATENCY_MS = 200;
 
 export function useClaimAudit(claimId: string): UseClaimAudit {
   const [version, setVersion] = React.useState(0);
@@ -37,13 +39,23 @@ export function useClaimAudit(claimId: string): UseClaimAudit {
   React.useEffect(() => {
     let cancelled = false;
     setState({ status: "loading", items: [] });
-    const timer = window.setTimeout(() => {
+
+    (async () => {
       try {
-        const items = auditForClaim(claimId);
+        const entries = await getAudit(claimId);
         if (cancelled) return;
-        setState({ status: "ready", items });
+        setState({ status: "ready", items: entries });
       } catch (err) {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (err instanceof AuditApiError) {
+          if (err.status === 404) {
+            setState({ status: "notfound", items: [] });
+          } else if (err.status === 403) {
+            setState({ status: "denied", items: [] });
+          } else {
+            setState({ status: "error", items: [], message: err.message });
+          }
+        } else {
           setState({
             status: "error",
             items: [],
@@ -51,11 +63,10 @@ export function useClaimAudit(claimId: string): UseClaimAudit {
           });
         }
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
   }, [claimId, version]);
 

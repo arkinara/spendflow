@@ -8,8 +8,7 @@ import { RoleSwitcher, useRole } from "./RoleSwitcher";
 import { useSession } from "@/lib/auth/session";
 import { getNavItems } from "@/lib/auth/nav";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
-import { unreadCount } from "@/lib/mock/mock_data";
-import { useNotificationVersion } from "@/lib/mock/notifyStore";
+import { useUnreadCount } from "@/lib/mock/notifyStore";
 
 export interface AppShellProps {
   action?: React.ReactNode;
@@ -20,12 +19,11 @@ export function AppShell({ action, children }: AppShellProps) {
   const { role, user } = useRole();
   const { signOut } = useSession();
   const router = useRouter();
-  // Subscribe to mark-read mutations so the header badge updates the moment a
-  // notification is read on the Notifications page (single source of truth:
-  // the live `notifications` array).
-  useNotificationVersion();
+  // Polls GET /api/notifications/unread-count every 30s (paused while the tab
+  // is hidden) and re-renders the badge the moment a mark-read action forces
+  // an immediate refresh.
+  const unread = useUnreadCount();
   const items: NavItem[] = getNavItems(role);
-  const unread = unreadCount(role);
 
   const handleSignOut = React.useCallback(() => {
     signOut();
