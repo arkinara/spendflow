@@ -5,12 +5,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Download,
   BarChart3,
-  Wallet,
   ReceiptText,
-  TrendingUp,
   FilterX,
   AlertTriangle,
   RefreshCw,
+  ShieldX,
+  SlidersHorizontal,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -23,32 +23,24 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { cn } from "@/lib/utils";
-import {
-  DEPARTMENTS,
-  categories,
-  computeClaimTotal,
-  getUser,
-  type Claim,
-  type ClaimStatus,
-} from "@/lib/mock/mock_data";
+import { DEPARTMENTS, categories, type ClaimStatus } from "@/lib/mock/mock_data";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useReportClaims } from "@/lib/mock/useReportClaims";
 import {
   REPORT_STATUSES,
-  buildReportCsv,
-  claimCategoryLabel,
-  claimPaymentReference,
-  claimSubmittedDate,
-  computeCurrencyTotals,
-  downloadCsv,
-  filterClaims,
   filtersFromSearchParams,
   filtersToSearchParams,
   hasActiveFilters,
-  reportCsvFilename,
   validateDateRange,
   type ReportFilters,
 } from "@/lib/mock/reportFilter";
+import {
+  exportCsv,
+  downloadBlob,
+  reportCsvFilename,
+  ReportingApiError,
+  type ReportRow,
+} from "@/lib/api/reporting";
 
 /* --------------------------------------------------------------- chips --- */
 
@@ -161,7 +153,6 @@ function ReportsPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { state, retry } = useReportClaims();
 
   // ---------------------------------------------------------------- filters
   // Initialise filter state from the URL once on mount. After mount:
@@ -228,33 +219,125 @@ function ReportsPageInner() {
     });
   }
 
-  // ---------------------------------------------------------- derived data
-  const allClaims = state.status === "ready" ? state.claims : [];
-  const dateError = validateDateRange(filters);
-
-  // Apply filters. When the date range is invalid we drop just the date
-  // constraint (so the rest of the report is still usable) and surface an
-  // inline validation error + block export — per the ticket's negative
-  // acceptance criteria.
-  const filtered = React.useMemo(() => {
-    if (dateError) {
-      const safe: ReportFilters = {
-        ...filters,
-        dateStart: undefined,
-        dateEnd: undefined,
-      };
-      return filterClaims(allClaims, safe);
-    }
-    return filterClaims(allClaims, filters);
-  }, [allClaims, filters, dateError]);
-
-  const totals = React.useMemo(() => computeCurrencyTotals(filtered), [filtered]);
-  const claimCount = filtered.length;
-  const exportDisabled = claimCount === 0 || !!dateError;
+  // ---------------------------------------------------------- report data
+  const { state, retry } = useReportClaims(filters);
   const filtersActive = hasActiveFilters(filters);
+  const rangeError = validateDateRange(filters);
 
-  // Live category options — read from the live `categories` array (mutated by
-  // the admin console) so newly-added categories appear here immediately.
+  const rows: ReportRow[] = state.status === "ready" ? state.result.rows : [];
+  const totals = state.status === "ready" ? state.result.totals : [];
+  const claimCount = state.status === "ready" ? state.result.claimCount : 0;
+
+  // Export needs both dates AND a valid (non-inverted) range — the BE's CSV
+  // route always requires start+end, unlike the JSON report.
+  const exportDisabled =
+    claimCount === 0 || !!rangeError || !filters.dateStart || !filters.dateEnd;
+
+  // ----------------------------------------------------------- CSV export
+  const [exportError, setExportError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setExportError(null);
+  }, [filters]);
+
+  const onExport = React.useCallback(async () => {
+    if (exportDisabled) return;
+    setExportError(null);
+    try {
+      const blob = await exportCsv(filters);
+      downloadBlob(reportCsvFilename(), blob);
+      show(`Exported ${claimCount} claim${claimCount === 1 ? "" : "s"} to CSV.`, {
+        tone: "success",
+      });
+    } catch (err) {
+      const message =
+        err instanceof ReportingApiError
+          ? err.message
+          : "Couldn't reach the server. Check your connection and try again.";
+      setExportError(message);
+    }
+  }, [exportDisabled, filters, claimCount, show]);
+
+  // -------------------------------------------------------------- columns
+  const columns: Column<ReportRow>[] = [
+    {
+      key: "claim",
+      header: "Claim ID",
+      sortable: true,
+      sortValue: (r) => r.reference,
+      render: (r) => (
+        <div className="min-w-[8rem]">
+          <p className="font-medium text-on-surface">{r.reference}</p>
+        </div>
+      ),
+    },
+    {
+      key: "employee",
+      header: "Employee",
+      sortable: true,
+      sortValue: (r) => r.employeeName,
+      render: (r) => (
+        <div>
+          <p className="text-on-surface">{r.employeeName}</p>
+          {r.department && (
+            <p className="text-xs text-on-surface-variant">{r.department}</p>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "category",
+      header: "Category",
+      sortable: true,
+      sortValue: (r) => r.categoryName,
+      render: (r) => <span className="text-on-surface-variant">{r.categoryName}</span>,
+    },
+    {
+      key: "amount",
+      header: "Amount",
+      align: "right",
+      sortable: true,
+      sortValue: (r) => r.amount,
+      render: (r) => (
+        <span className="font-semibold text-on-surface">
+          {formatCurrency(r.amount, r.currency as "IDR" | "USD")}
+        </span>
+      ),
+    },
+    {
+      key: "currency",
+      header: "Currency",
+      render: (r) => <span className="text-on-surface-variant">{r.currency}</span>,
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (r) => <StatusChip status={r.status} size="sm" />,
+    },
+    {
+      key: "payment",
+      header: "Payment ref",
+      render: (r) =>
+        r.paymentReference ? (
+          <span className="font-mono text-xs text-on-surface">{r.paymentReference}</span>
+        ) : (
+          <span className="text-on-surface-variant/60">—</span>
+        ),
+    },
+    {
+      key: "submitted",
+      header: "Submitted",
+      sortable: true,
+      sortValue: (r) => r.submittedAt ?? "",
+      render: (r) => (
+        <span className="text-on-surface-variant">
+          {r.submittedAt ? formatDate(r.submittedAt) : "—"}
+        </span>
+      ),
+    },
+  ];
+
+  // -------------------------------------------------------- filter options
   const categoryOptions: ChipOption[] = React.useMemo(
     () =>
       [...categories]
@@ -268,119 +351,21 @@ function ReportsPageInner() {
     []
   );
 
-  // ----------------------------------------------------------- CSV export
-  const onExport = React.useCallback(() => {
-    if (filtered.length === 0 || dateError) return;
-    const csv = buildReportCsv(filtered);
-    downloadCsv(reportCsvFilename(), csv);
-    show(`Exported ${filtered.length} claim${filtered.length === 1 ? "" : "s"} to CSV.`, {
-      tone: "success",
-    });
-  }, [filtered, dateError, show]);
-
-  // -------------------------------------------------------------- columns
-  const columns: Column<Claim>[] = [
-    {
-      key: "reference",
-      header: "Claim",
-      sortable: true,
-      sortValue: (c) => c.reference,
-      render: (c) => (
-        <div className="min-w-[10rem]">
-          <p className="font-medium text-on-surface">{c.title}</p>
-          <p className="text-xs text-on-surface-variant">{c.reference}</p>
-        </div>
-      ),
-    },
-    {
-      key: "employee",
-      header: "Employee",
-      sortable: true,
-      sortValue: (c) => getUser(c.employeeId)?.name ?? "",
-      render: (c) => {
-        const u = getUser(c.employeeId);
-        return (
-          <div>
-            <p className="text-on-surface">{u?.name ?? "Unknown"}</p>
-            {u?.department && (
-              <p className="text-xs text-on-surface-variant">{u.department}</p>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      key: "category",
-      header: "Category",
-      render: (c) => (
-        <span className="text-on-surface-variant">{claimCategoryLabel(c)}</span>
-      ),
-    },
-    {
-      key: "amount",
-      header: "Amount",
-      align: "right",
-      sortable: true,
-      sortValue: (c) => computeClaimTotal(c),
-      render: (c) => (
-        <span className="font-semibold text-on-surface">
-          {formatCurrency(computeClaimTotal(c), c.currency)}
-        </span>
-      ),
-    },
-    {
-      key: "currency",
-      header: "Currency",
-      render: (c) => <span className="text-on-surface-variant">{c.currency}</span>,
-    },
-    {
-      key: "status",
-      header: "Status",
-      render: (c) => <StatusChip status={c.status} size="sm" />,
-    },
-    {
-      key: "payment",
-      header: "Payment ref",
-      render: (c) => {
-        const ref = claimPaymentReference(c);
-        return ref ? (
-          <span className="font-mono text-xs text-on-surface">{ref}</span>
-        ) : (
-          <span className="text-on-surface-variant/60">—</span>
-        );
-      },
-    },
-    {
-      key: "submitted",
-      header: "Submitted",
-      sortable: true,
-      sortValue: (c) => claimSubmittedDate(c),
-      render: (c) => (
-        <span className="text-on-surface-variant">{formatDate(claimSubmittedDate(c))}</span>
-      ),
-    },
-  ];
-
-  // --------------------------------------------------------------- totals
-  const totalClaimCount = claimCount;
-  const totalAmountAll = totals.reduce((s, t) => s + t.total, 0);
-  const paidAmount = filtered
-    .filter((c) => c.status === "paid")
-    .reduce((s, c) => s + computeClaimTotal(c), 0);
-  const avgClaim = totalClaimCount > 0 ? totalAmountAll / totalClaimCount : 0;
-
   // ARIA live announcement string — polite, atomic, so SR users hear filter
   // result changes without losing context.
   const liveAnnouncement = React.useMemo(() => {
-    if (state.status !== "ready") return "";
-    if (dateError) return `Date range invalid: ${dateError}`;
-    const lines = totals.map(
-      (t) => `${t.count} claim${t.count === 1 ? "" : "s"} totalling ${formatCurrency(t.total, t.currency)} ${t.currency}`
-    );
-    return lines.length > 0
-      ? `Report shows ${lines.join("; ")}.`
-      : "No claims match the current filters.";
-  }, [state.status, dateError, totals]);
+    if (state.status === "ready") {
+      const lines = totals.map(
+        (t) => `${t.count} claim${t.count === 1 ? "" : "s"} totalling ${formatCurrency(t.total, t.currency as "IDR" | "USD")} ${t.currency}`
+      );
+      return lines.length > 0
+        ? `Report shows ${lines.join("; ")}.`
+        : "No claims match the current filters.";
+    }
+    if (state.status === "invalid") return `Filter error: ${state.message}`;
+    if (state.status === "unfiltered") return "Select a filter to generate a report.";
+    return "";
+  }, [state, totals]);
 
   // --------------------------------------------------------------- render
   return (
@@ -400,7 +385,7 @@ function ReportsPageInner() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-on-surface">Reports</h1>
           <p className="mt-1 text-sm text-on-surface-variant">
-            Filter all submitted claims, review spend totals per currency, and export a finance-ready CSV.
+            Filter submitted claims, review spend totals per currency, and export a finance-ready CSV.
           </p>
         </div>
 
@@ -419,10 +404,10 @@ function ReportsPageInner() {
                 label="End date"
                 value={filters.dateEnd ?? ""}
                 onChange={(e) => updateFilters({ dateEnd: e.target.value || undefined })}
-                error={dateError ?? undefined}
-                aria-invalid={!!dateError}
+                error={rangeError ?? undefined}
+                aria-invalid={!!rangeError}
                 helper={
-                  dateError
+                  rangeError
                     ? undefined
                     : "Inclusive — claims submitted on or before this date."
                 }
@@ -457,13 +442,38 @@ function ReportsPageInner() {
               onClear={() => updateFilters({ statuses: [] })}
             />
 
-            {dateError && (
+            {rangeError && (
               <div
                 role="alert"
                 className="flex items-start gap-2 rounded-xl border border-error/40 bg-error-container/40 px-4 py-3 text-sm text-error"
               >
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
-                <span>{dateError} CSV export is blocked until the range is corrected.</span>
+                <span>{rangeError} CSV export is blocked until the range is corrected.</span>
+              </div>
+            )}
+
+            {state.status === "invalid" && !rangeError && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-xl border border-error/40 bg-error-container/40 px-4 py-3 text-sm text-error"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+                <span>{state.message}</span>
+              </div>
+            )}
+
+            {exportError && (
+              <div
+                role="alert"
+                className="flex items-start justify-between gap-3 rounded-xl border border-error/40 bg-error-container/40 px-4 py-3 text-sm text-error"
+              >
+                <span className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+                  {exportError}
+                </span>
+                <Button variant="text" size="sm" icon={RefreshCw} onClick={onExport}>
+                  Retry
+                </Button>
               </div>
             )}
 
@@ -482,49 +492,35 @@ function ReportsPageInner() {
           {liveAnnouncement}
         </p>
 
-        {/* Totals ----------------------------------------------------- */}
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <MetricCard label="Claims" value={String(totalClaimCount)} icon={ReceiptText} />
-            <MetricCard
-              label="Total value"
-              value={formatCurrency(totalAmountAll)}
-              icon={BarChart3}
-              hint={totals.length > 1 ? `${totals.length} currencies` : undefined}
-            />
-            <MetricCard label="Paid" value={formatCurrency(paidAmount)} icon={Wallet} />
-            <MetricCard label="Average claim" value={formatCurrency(avgClaim)} icon={TrendingUp} />
-          </div>
-
-          {/* Per-currency subtotals — do NOT FX-convert. */}
-          <Card title="Totals by currency" subtitle="Per-currency subtotals for the current filter set">
-            {totals.length === 0 ? (
-              <p className="text-sm text-on-surface-variant">No matching claims.</p>
-            ) : (
-              <ul className="divide-y divide-outline-variant">
-                {totals.map((t) => (
-                  <li
-                    key={t.currency}
-                    className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-on-surface">{t.currency}</p>
-                      <p className="text-xs text-on-surface-variant">
-                        {t.count} claim{t.count === 1 ? "" : "s"}
-                      </p>
-                    </div>
-                    <p className="text-lg font-bold text-on-surface">
-                      {formatCurrency(t.total, t.currency)}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-
-        {/* Results table --------------------------------------------- */}
         {state.status === "loading" && <ReportsSkeleton />}
+
+        {state.status === "forbidden" && (
+          <div
+            role="alert"
+            aria-live="assertive"
+            className="mx-auto mt-6 flex max-w-md flex-col items-center gap-3 rounded-2xl border border-outline-variant bg-surface-container px-6 py-10 text-center"
+          >
+            <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-error-container text-error-container-foreground">
+              <ShieldX className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+            </span>
+            <p className="font-medium text-on-surface">You&apos;re not authorized to view reports.</p>
+            <p className="text-sm text-on-surface-variant">
+              Your session no longer has Finance Admin access. Reload the page or sign in again.
+            </p>
+          </div>
+        )}
+
+        {state.status === "unfiltered" && (
+          <Card>
+            <EmptyState
+              icon={SlidersHorizontal}
+              title="Choose a filter to generate a report"
+              body="Select a date range, department, category, or status above to see matching claims."
+              variant="compact"
+            />
+          </Card>
+        )}
+
         {state.status === "error" && (
           <Card>
             <EmptyState
@@ -539,39 +535,76 @@ function ReportsPageInner() {
             />
           </Card>
         )}
+
         {state.status === "ready" && (
-          <Card
-            title="Claims"
-            subtitle={`${filtered.length} matching`}
-            padded={false}
-          >
-            <DataTable
-              columns={columns}
-              data={filtered}
-              rowKey={(c) => c.id}
-              density="compact"
-              caption="Filtered claims report"
-              empty={
-                <EmptyState
-                  icon={filtersActive ? FilterX : ReceiptText}
-                  title={filtersActive ? "No claims match" : "No claims yet"}
-                  body={
-                    filtersActive
-                      ? "Adjust the filters above to widen the report."
-                      : "Claims will appear here once they are submitted."
-                  }
-                  action={
-                    filtersActive ? (
+          <>
+            {/* Totals ----------------------------------------------------- */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <MetricCard label="Claims" value={String(claimCount)} icon={ReceiptText} />
+                <MetricCard
+                  label="Line items"
+                  value={String(rows.length)}
+                  icon={BarChart3}
+                  hint={totals.length > 1 ? `${totals.length} currencies` : undefined}
+                />
+              </div>
+
+              {/* Per-currency subtotals — do NOT FX-convert. */}
+              <Card title="Totals by currency" subtitle="Per-currency subtotals for the current filter set">
+                {totals.length === 0 ? (
+                  <p className="text-sm text-on-surface-variant">No matching claims.</p>
+                ) : (
+                  <ul className="divide-y divide-outline-variant">
+                    {totals.map((t) => (
+                      <li
+                        key={t.currency}
+                        className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-on-surface">{t.currency}</p>
+                          <p className="text-xs text-on-surface-variant">
+                            {t.count} claim{t.count === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                        <p className="text-lg font-bold text-on-surface">
+                          {formatCurrency(t.total, t.currency as "IDR" | "USD")}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            </div>
+
+            {/* Results table --------------------------------------------- */}
+            <Card
+              title="Claims"
+              subtitle={`${rows.length} matching`}
+              padded={false}
+            >
+              <DataTable
+                columns={columns}
+                data={rows}
+                rowKey={(r) => r.lineItemId}
+                density="compact"
+                caption="Filtered claims report"
+                empty={
+                  <EmptyState
+                    icon={filtersActive ? FilterX : ReceiptText}
+                    title="No claims match"
+                    body="Adjust the filters above to widen the report."
+                    action={
                       <Button variant="outlined" onClick={clearAll}>
                         Clear all filters
                       </Button>
-                    ) : undefined
-                  }
-                  variant="compact"
-                />
-              }
-            />
-          </Card>
+                    }
+                    variant="compact"
+                  />
+                }
+              />
+            </Card>
+          </>
         )}
       </div>
     </AppShell>

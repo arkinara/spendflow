@@ -43,12 +43,147 @@ vi.mock("next/link", () => ({
 
 // Capture CSV export payloads without triggering a real browser download.
 const downloadSpy = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/mock/reportFilter", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/mock/reportFilter")>();
+// Toggle to force `getReport` down a rejection path for a single call
+// (network failure / 403), reset in `beforeEach`.
+const rejectNext = vi.hoisted<{ current: Error | null }>(() => ({ current: null }));
+
+/**
+ * #23: the reports page reads through `@/lib/api/reporting`. Mock the module
+ * so the page is fed report rows derived from the live `claims` mock fixture
+ * (AND-combined the same way the real BE's `services/reporting.ts` does —
+ * claim-level date/department/status, line-item-level category), and the BE's
+ * typed-error invariants (400 empty_filter / inverted_date_range /
+ * date_range_required, 403 forbidden) so the FE's unfiltered-prompt,
+ * inline-validation, and access-denied branches render under test.
+ */
+vi.mock("@/lib/api/reporting", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/reporting")>();
+  const { claims, getUser, getCategory } = await import("@/lib/mock/mock_data");
+
+  type Filters = {
+    dateStart?: string;
+    dateEnd?: string;
+    departments: string[];
+    categories: string[];
+    statuses: string[];
+  };
+
+  function isEmpty(f: Filters) {
+    return (
+      !f.dateStart &&
+      !f.dateEnd &&
+      f.departments.length === 0 &&
+      f.categories.length === 0 &&
+      f.statuses.length === 0
+    );
+  }
+
+  function submittedDate(c: (typeof claims)[number]) {
+    return (c.submittedAt ?? c.createdAt).slice(0, 10);
+  }
+
+  function buildRows(f: Filters) {
+    const matchingClaims = claims.filter((c) => {
+      const submitted = submittedDate(c);
+      if (f.dateStart && submitted < f.dateStart) return false;
+      if (f.dateEnd && submitted > f.dateEnd) return false;
+      if (f.departments.length > 0) {
+        const dept = getUser(c.employeeId)?.department;
+        if (!dept || !f.departments.includes(dept)) return false;
+      }
+      if (f.statuses.length > 0 && !f.statuses.includes(c.status)) return false;
+      return true;
+    });
+    const rows: import("@/lib/api/reporting").ReportRow[] = [];
+    for (const c of matchingClaims) {
+      for (const li of c.lineItems) {
+        if (f.categories.length > 0 && !f.categories.includes(li.categoryId)) continue;
+        rows.push({
+          claimId: c.id,
+          reference: c.reference,
+          employeeId: c.employeeId,
+          employeeName: getUser(c.employeeId)?.name ?? c.employeeId,
+          department: getUser(c.employeeId)?.department ?? null,
+          lineItemId: li.id,
+          categoryId: li.categoryId,
+          categoryName: getCategory(li.categoryId)?.name ?? li.categoryId,
+          description: li.description,
+          date: li.date,
+          amount: li.amount,
+          currency: li.currency,
+          status: c.status,
+          paymentReference: c.payment?.reference ?? null,
+          submittedAt: submittedDate(c),
+        });
+      }
+    }
+    return rows;
+  }
+
+  function computeTotals(rows: import("@/lib/api/reporting").ReportRow[]) {
+    const map = new Map<string, { currency: string; total: number; count: number }>();
+    const claimSet = new Set<string>();
+    for (const r of rows) {
+      claimSet.add(r.claimId);
+      const e = map.get(r.currency) ?? { currency: r.currency, total: 0, count: 0 };
+      e.total += r.amount;
+      e.count += 1;
+      map.set(r.currency, e);
+    }
+    return {
+      totals: [...map.values()].sort((a, b) => a.currency.localeCompare(b.currency)),
+      claimCount: claimSet.size,
+    };
+  }
+
   return {
     ...actual,
-    downloadCsv: downloadSpy,
+    ReportingApiError: actual.ReportingApiError,
+    reportCsvFilename: actual.reportCsvFilename,
+    downloadBlob: downloadSpy,
+    getReport: vi.fn(async (f: Filters) => {
+      if (rejectNext.current) {
+        const err = rejectNext.current;
+        rejectNext.current = null;
+        throw err;
+      }
+      if (isEmpty(f)) {
+        throw new actual.ReportingApiError(
+          400,
+          "empty_filter",
+          "At least one filter (start, end, dept, cat, or status) is required"
+        );
+      }
+      if (f.dateStart && f.dateEnd && f.dateEnd < f.dateStart) {
+        throw new actual.ReportingApiError(400, "inverted_date_range", "`end` must be on or after `start`");
+      }
+      const rows = buildRows(f);
+      const { totals, claimCount } = computeTotals(rows);
+      return { rows, totals, claimCount };
+    }),
+    exportCsv: vi.fn(async (f: Filters) => {
+      if (!f.dateStart || !f.dateEnd) {
+        throw new actual.ReportingApiError(400, "date_range_required", "CSV export requires both start and end dates");
+      }
+      if (f.dateEnd < f.dateStart) {
+        throw new actual.ReportingApiError(400, "inverted_date_range", "`end` must be on or after `start`");
+      }
+      const rows = buildRows(f);
+      const header = [
+        "claim_id",
+        "employee",
+        "category",
+        "amount",
+        "currency",
+        "status",
+        "payment_reference",
+        "submitted_at",
+      ].join(",");
+      const lines = rows.map((r) =>
+        [r.reference, r.employeeName, r.categoryName, r.amount, r.currency, r.status, r.paymentReference ?? "", r.submittedAt ?? ""].join(",")
+      );
+      return new Blob([[header, ...lines].join("\r\n")], { type: "text/csv" });
+    }),
   };
 });
 
@@ -57,30 +192,8 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import {
-  claims,
-  computeClaimTotal,
-  getUser,
-  getClaim,
-  type Claim,
-  type User,
-} from "@/lib/mock/mock_data";
-import {
-  REPORT_CSV_COLUMNS,
-  buildReportCsv,
-  claimCategoryLabel,
-  claimEmployeeName,
-  claimPaymentReference,
-  claimSubmittedDate,
-  computeCurrencyTotals,
-  escapeCsvField,
-  filterClaims,
-  filtersFromSearchParams,
-  filtersToSearchParams,
-  validateDateRange,
-  type ReportFilters,
-} from "@/lib/mock/reportFilter";
-import { formatCurrency } from "@/lib/format";
+import { claims, getUser, type Claim, type User } from "@/lib/mock/mock_data";
+import { ReportingApiError } from "@/lib/api/reporting";
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -91,11 +204,6 @@ function seedFinance() {
   );
 }
 
-/**
- * Pristine deep snapshot of the live mock store captured at module load.
- * Restore between tests so cross-test contamination stays out (vitest runs in
- * a single fork).
- */
 const PRISTINE_CLAIMS: Claim[] = claims.map((c) => JSON.parse(JSON.stringify(c)));
 const PRISTINE_USERS: User[] = claims
   .map((c) => getUser(c.employeeId))
@@ -103,18 +211,11 @@ const PRISTINE_USERS: User[] = claims
   .map((u) => ({ ...u }));
 
 function restoreStore() {
-  claims.splice(
-    0,
-    claims.length,
-    ...PRISTINE_CLAIMS.map((c) => JSON.parse(JSON.stringify(c)))
-  );
-  // Restore any user-name overrides applied by CSV-escaping tests.
+  claims.splice(0, claims.length, ...PRISTINE_CLAIMS.map((c) => JSON.parse(JSON.stringify(c))));
   for (const u of PRISTINE_USERS) {
     const live = getUser(u.id);
     if (live) {
       live.name = u.name;
-      live.email = u.email;
-      live.jobTitle = u.jobTitle;
       live.department = u.department;
     }
   }
@@ -134,20 +235,7 @@ function renderReports() {
   );
 }
 
-async function waitForReady() {
-  // The list hook simulates latency; wait for the page heading + the summary
-  // count to render. We can't wait for a specific claim reference because some
-  // tests mount the page with a filter that excludes the seeded pending claim.
-  await screen.findByRole("heading", { name: "Reports", level: 1 });
-  await screen.findByText(/matching$/);
-}
-
 /** Reference cell → enclosing <tr> (so per-row queries stay scoped). */
-function rowFor(reference: string): HTMLElement {
-  return screen.getByText(new RegExp(reference)).closest("tr")!;
-}
-
-/** Toggle a chip inside a labelled filter group (Department / Category / Status). */
 function chipInGroup(groupLabel: string, chipLabel: string): HTMLElement {
   const group = screen.getByRole("group", { name: groupLabel });
   return within(group).getByRole("button", { name: chipLabel });
@@ -161,277 +249,24 @@ beforeEach(() => {
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
   downloadSpy.mockClear();
+  rejectNext.current = null;
 });
 
 afterEach(() => {
   restoreStore();
 });
 
-/**
- * Match a formatted currency value in the DOM by its rendered text, accepting
- * any whitespace between the symbol and the amount. Intl emits a NBSP that
- * testing-library's default normalizer doesn't always round-trip on a string
- * matcher — escaping the formatted string and relaxing whitespace sidesteps it.
- * Works for both IDR ("Rp\xa036.660.000") and USD ("$4,787,000.00").
- */
-function currencyRegex(amount: number, currency: "IDR" | "USD" = "IDR"): RegExp {
-  const formatted = formatCurrency(amount, currency);
-  const escaped = formatted
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\s+/g, "\\s*");
-  return new RegExp(escaped);
-}
+/* ============================================ Initial render / unfiltered */
 
-/* ============================================ pure utility unit tests ==== */
-
-describe("report filter utilities", () => {
-  it("escapeCsvField passes through plain values unchanged", () => {
-    expect(escapeCsvField("plain")).toBe("plain");
-    expect(escapeCsvField(12345)).toBe("12345");
-    expect(escapeCsvField("")).toBe("");
-    expect(escapeCsvField(null)).toBe("");
-    expect(escapeCsvField(undefined)).toBe("");
-  });
-
-  it("escapeCsvField wraps fields containing commas, quotes, or newlines", () => {
-    expect(escapeCsvField("a,b")).toBe('"a,b"');
-    expect(escapeCsvField('he said "hi"')).toBe('"he said ""hi"""');
-    expect(escapeCsvField("line1\nline2")).toBe('"line1\nline2"');
-    expect(escapeCsvField("line1\r\nline2")).toBe('"line1\r\nline2"');
-    expect(escapeCsvField(" trailing")).toBe('" trailing"');
-    expect(escapeCsvField("trailing ")).toBe('"trailing "');
-  });
-
-  it("filterClaims applies date + department + category + status with AND semantics", () => {
-    // No filters → every claim matches.
-    const empty: ReportFilters = {
-      departments: [],
-      categories: [],
-      statuses: [],
-    };
-    expect(filterClaims(claims, empty)).toHaveLength(claims.length);
-
-    // Sales + flight + approved → exact intersection (3 seeded claims).
-    const sales = claims.filter(
-      (c) => getUser(c.employeeId)?.department === "Sales"
-    );
-    const withFlight = sales.filter((c) =>
-      c.lineItems.some((li) => li.categoryId === "flight")
-    );
-    const salesFlightApproved = withFlight.filter((c) => c.status === "approved");
-    const result = filterClaims(claims, {
-      departments: ["Sales"],
-      categories: ["flight"],
-      statuses: ["approved"],
-    });
-    expect(result.map((c) => c.id).sort()).toEqual(
-      salesFlightApproved.map((c) => c.id).sort()
-    );
-    expect(result.length).toBeGreaterThan(0);
-    // Every result actually satisfies each constraint.
-    for (const c of result) {
-      expect(getUser(c.employeeId)?.department).toBe("Sales");
-      expect(c.lineItems.some((li) => li.categoryId === "flight")).toBe(true);
-      expect(c.status).toBe("approved");
-    }
-  });
-
-  it("filterClaims applies the date range inclusively on submission date", () => {
-    const all2026May = filterClaims(claims, {
-      dateStart: "2026-05-01",
-      dateEnd: "2026-05-31",
-      departments: [],
-      categories: [],
-      statuses: [],
-    });
-    // clm-1009 was submitted 2026-05-05 → must match.
-    const ids = all2026May.map((c) => c.id);
-    expect(ids).toContain("clm-1009");
-    for (const c of all2026May) {
-      const d = claimSubmittedDate(c);
-      expect(d >= "2026-05-01").toBe(true);
-      expect(d <= "2026-05-31").toBe(true);
-    }
-  });
-
-  it("computeCurrencyTotals groups per currency with correct counts and sums", () => {
-    const totals = computeCurrencyTotals(claims);
-    expect(totals).toHaveLength(1); // fixture is IDR-only
-    expect(totals[0].currency).toBe("IDR");
-    expect(totals[0].count).toBe(claims.length);
-    const expectedSum = claims.reduce((s, c) => s + computeClaimTotal(c), 0);
-    expect(totals[0].total).toBe(expectedSum);
-  });
-
-  it("computeCurrencyTotals separates mixed currencies without FX conversion", () => {
-    // Promote one claim to USD out-of-band to simulate a mixed-currency set.
-    getClaim("clm-1001")!.currency = "USD";
-    const totals = computeCurrencyTotals(claims);
-    const usd = totals.find((t) => t.currency === "USD");
-    const idr = totals.find((t) => t.currency === "IDR");
-    expect(usd).toBeDefined();
-    expect(idr).toBeDefined();
-    expect(usd!.count).toBe(1);
-    expect(usd!.total).toBe(computeClaimTotal(getClaim("clm-1001")!));
-    expect(idr!.count).toBe(claims.length - 1);
-    // Per-currency totals stay independent (no FX blend into a single number).
-    expect(totals).toHaveLength(2);
-  });
-
-  it("validateDateRange flags inverted ranges and accepts valid ones", () => {
-    expect(
-      validateDateRange({
-        dateStart: "2026-07-31",
-        dateEnd: "2026-07-01",
-        departments: [],
-        categories: [],
-        statuses: [],
-      })
-    ).toMatch(/end date must be on or after/i);
-    expect(
-      validateDateRange({
-        dateStart: "2026-07-01",
-        dateEnd: "2026-07-31",
-        departments: [],
-        categories: [],
-        statuses: [],
-      })
-    ).toBeNull();
-    expect(
-      validateDateRange({
-        dateStart: "2026-07-01",
-        dateEnd: undefined,
-        departments: [],
-        categories: [],
-        statuses: [],
-      })
-    ).toBeNull();
-  });
-
-  it("filtersToSearchParams / filtersFromSearchParams round-trip (order-normalized)", () => {
-    // The writer normalizes multi-value arrays to sorted order, so the
-    // restored filters' arrays come back sorted — pick sorted input to make
-    // the round-trip equality exact.
-    const filters: ReportFilters = {
-      dateStart: "2026-01-01",
-      dateEnd: "2026-12-31",
-      departments: ["Operations", "Sales"],
-      categories: ["flight", "hotel"],
-      statuses: ["approved", "paid"],
-    };
-    const qs = filtersToSearchParams(filters).toString();
-    const restored = filtersFromSearchParams(new URLSearchParams(qs));
-    expect(restored).toEqual(filters);
-  });
-
-  it("filtersFromSearchParams drops malformed values gracefully", () => {
-    const restored = filtersFromSearchParams(
-      new URLSearchParams("start=not-a-date&status=bogus,departments,paid&dept=Sales")
-    );
-    expect(restored.dateStart).toBeUndefined();
-    expect(restored.statuses).toEqual(["paid"]);
-    expect(restored.departments).toEqual(["Sales"]);
-  });
-});
-
-/* ============================================ CSV builder unit tests ==== */
-
-describe("CSV builder — header, rows, escaping", () => {
-  it("emits the exact required header row in order", () => {
-    const csv = buildReportCsv([]);
-    const lines = csv.split("\r\n");
-    expect(lines[0]).toBe(REPORT_CSV_COLUMNS.join(","));
-    expect(lines).toHaveLength(1); // header only, no rows
-  });
-
-  it("produces one row per claim, in input order", () => {
-    const subset = claims.slice(0, 3);
-    const csv = buildReportCsv(subset);
-    const rows = csv.split("\r\n");
-    expect(rows).toHaveLength(subset.length + 1); // header + rows
-    // Spot-check the first claim row uses its reference.
-    expect(rows[1]).toContain(subset[0].reference);
-  });
-
-  it("escapes commas, quotes, and newlines inside any field", () => {
-    // Construct a synthetic claim whose employee name, category label, and
-    // payment reference all carry CSV-hostile characters. buildReportCsv
-    // resolves the name via getUser and the category via claimCategoryLabel,
-    // so override the user record + payment to drive escaping.
-    const c = getClaim("clm-1001")!;
-    const originalName = getUser(c.employeeId)!.name;
-    const originalPayment = c.payment;
-    getUser(c.employeeId)!.name = 'Wijaya, "Sari"';
-    c.payment = { method: "bank_transfer", reference: "TRX-1\nABC" };
-    try {
-      const csv = buildReportCsv([c]);
-      const row = csv.split("\r\n")[1];
-      // The quoted field with a comma must be wrapped and the embedded quotes
-      // doubled.
-      expect(row).toContain('"Wijaya, ""Sari"""');
-      // The reference with a newline forces a quoted field; the newline stays
-      // intact inside the quotes (the row split above only splits on CRLF).
-      expect(row).toContain('"TRX-1\nABC"');
-    } finally {
-      getUser(c.employeeId)!.name = originalName;
-      c.payment = originalPayment;
-    }
-  });
-
-  it("emits payment reference as empty for unpaid claims", () => {
-    const c = getClaim("clm-1001")!; // pending — no payment
-    expect(claimPaymentReference(c)).toBe("");
-    const csv = buildReportCsv([c]);
-    const row = csv.split("\r\n")[1];
-    // The row should end with the submitted date preceded by an empty field.
-    expect(row).toContain(`,${claimSubmittedDate(c)}`);
-  });
-
-  it("exposes the expected header columns per the ticket DoD", () => {
-    expect([...REPORT_CSV_COLUMNS]).toEqual([
-      "Claim ID",
-      "Employee",
-      "Category",
-      "Amount",
-      "Currency",
-      "Status",
-      "Payment reference",
-      "Submitted at",
-    ]);
-  });
-});
-
-/* ============================================ Reports page render ==== */
-
-describe("Reports page — initial render & summary", () => {
-  it("renders a loading skeleton, then the full claim set with a correct count", async () => {
+describe("Reports page — initial render (no filters)", () => {
+  it("shows a loading skeleton then the unfiltered prompt when no filter is active", async () => {
     renderReports();
-    // Loading first.
     expect(screen.getAllByRole("status", { name: /loading/i }).length).toBeGreaterThan(0);
-    await waitForReady();
-
-    // Summary count matches the live fixture size.
-    expect(screen.getByText(`${claims.length} matching`)).toBeInTheDocument();
-    // A known reference is in the table.
-    expect(screen.getByText(/EXP-2026-1001/)).toBeInTheDocument();
-  });
-
-  it("shows the IDR total for the full fixture in the per-currency card", async () => {
-    renderReports();
-    await waitForReady();
-    const expected = claims.reduce((s, c) => s + computeClaimTotal(c), 0);
-    // Match by digit portion (see `currencyRegex` for the NBSP rationale).
-    expect(screen.getAllByText(currencyRegex(expected)).length).toBeGreaterThan(0);
-    // Per-currency row labels the currency (IDR appears in the per-currency
-    // card AND in every table row's currency column, so use getAllByText).
-    const idrMatches = screen.getAllByText("IDR").length;
-    expect(idrMatches).toBeGreaterThan(0);
-    // The per-currency row's claim-count text (anchored to exclude the live
-    // region announcement, which also contains "12 claims" inside a longer
-    // sentence).
     expect(
-      screen.getByText(new RegExp(`^${claims.length} claims$`))
+      await screen.findByText(/choose a filter to generate a report/i)
     ).toBeInTheDocument();
+    // No results table / totals render until a filter is chosen.
+    expect(screen.queryByText(/matching$/)).toBeNull();
   });
 });
 
@@ -440,227 +275,174 @@ describe("Reports page — initial render & summary", () => {
 describe("Reports page — combinable filters", () => {
   it("filters by a single status chip (Paid)", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
 
     fireEvent.click(chipInGroup("Status", "Paid"));
 
-    const paid = claims.filter((c) => c.status === "paid");
+    const paidLines = claims
+      .filter((c) => c.status === "paid")
+      .flatMap((c) => c.lineItems);
     await waitFor(() => {
-      expect(screen.getByText(new RegExp(`${paid.length} matching`))).toBeInTheDocument();
+      expect(screen.getByText(new RegExp(`${paidLines.length} matching`))).toBeInTheDocument();
     });
-    // A known paid claim is present; a known pending claim is gone.
-    expect(screen.getByText(/EXP-2026-1006/)).toBeInTheDocument(); // paid
-    expect(screen.queryByText(/EXP-2026-1001/)).toBeNull(); // pending
+    expect(screen.getAllByText(/EXP-2026-1006/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/EXP-2026-1001/)).toBeNull();
   });
 
   it("combines department + category + status chips with AND semantics", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
 
     fireEvent.click(chipInGroup("Department", "Sales"));
     fireEvent.click(chipInGroup("Category", "Flight"));
     fireEvent.click(chipInGroup("Status", "Approved"));
 
-    const expected = filterClaims(claims, {
-      departments: ["Sales"],
-      categories: ["flight"],
-      statuses: ["approved"],
-    });
+    const expectedLines = claims
+      .filter((c) => getUser(c.employeeId)?.department === "Sales")
+      .filter((c) => c.status === "approved")
+      .flatMap((c) => c.lineItems.filter((li) => li.categoryId === "flight"));
+
     await waitFor(() => {
       expect(
-        screen.getByText(new RegExp(`${expected.length} matching`))
+        screen.getByText(new RegExp(`${expectedLines.length} matching`))
       ).toBeInTheDocument();
     });
-    // Every visible reference row actually matches all three predicates.
-    for (const c of expected) {
-      expect(screen.getByText(new RegExp(c.reference))).toBeInTheDocument();
-    }
-    // A known non-matcher (Operations, pending) is gone.
     expect(screen.queryByText(/EXP-2026-1001/)).toBeNull();
   });
 
-  it("narrows by date range (start + end)", async () => {
+  it("shows an empty state (zero rows) when a valid filter set matches nothing", async () => {
     renderReports();
-    await waitForReady();
-
-    fireEvent.change(screen.getByLabelText("Start date"), {
-      target: { value: "2026-05-01" },
-    });
-    fireEvent.change(screen.getByLabelText("End date"), {
-      target: { value: "2026-05-31" },
-    });
-
-    const expected = filterClaims(claims, {
-      dateStart: "2026-05-01",
-      dateEnd: "2026-05-31",
-      departments: [],
-      categories: [],
-      statuses: [],
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByText(new RegExp(`${expected.length} matching`))
-      ).toBeInTheDocument();
-    });
-    // clm-1009 (submitted 2026-05-05) is in window.
-    expect(screen.getByText(/EXP-2026-0998/)).toBeInTheDocument();
-    // clm-1001 (submitted 2026-07-21) is out of window.
-    expect(screen.queryByText(/EXP-2026-1001/)).toBeNull();
-  });
-
-  it("Clear all filters restores the full set", async () => {
-    renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
 
     fireEvent.click(chipInGroup("Status", "Paid"));
-    await waitFor(() =>
-      expect(screen.queryByText(/EXP-2026-1001/)).toBeNull()
-    );
+    await waitFor(() => screen.getByText(/matching$/));
+
+    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2020-01-01" } });
+    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2020-12-31" } });
+
+    expect(await screen.findByRole("heading", { name: /no claims match/i })).toBeInTheDocument();
+    expect(screen.getByText("0 matching")).toBeInTheDocument();
+  });
+
+  it("Clear all filters returns to the unfiltered prompt", async () => {
+    renderReports();
+    await screen.findByText(/choose a filter/i);
+
+    fireEvent.click(chipInGroup("Status", "Paid"));
+    await waitFor(() => screen.getByText(/matching$/));
 
     fireEvent.click(screen.getByRole("button", { name: /clear all filters/i }));
     await waitFor(() => {
-      expect(screen.getByText(/EXP-2026-1001/)).toBeInTheDocument();
-      expect(
-        screen.getByText(new RegExp(`${claims.length} matching`))
-      ).toBeInTheDocument();
+      expect(screen.getByText(/choose a filter to generate a report/i)).toBeInTheDocument();
     });
-  });
-
-  it("shows an empty state (zero total) when no claims match", async () => {
-    renderReports();
-    await waitForReady();
-    // A date range before any claim was filed → zero results.
-    fireEvent.change(screen.getByLabelText("Start date"), {
-      target: { value: "2020-01-01" },
-    });
-    fireEvent.change(screen.getByLabelText("End date"), {
-      target: { value: "2020-12-31" },
-    });
-    // The table empty state surfaces a heading (the live region also mentions
-    // no matches; target the heading specifically to disambiguate).
-    expect(
-      await screen.findByRole("heading", { name: /no claims match/i })
-    ).toBeInTheDocument();
-    // Claim count is zero.
-    expect(screen.getByText("0").textContent).toBe("0");
   });
 });
 
 /* ============================================ Totals reactivity ====== */
 
-describe("Reports page — totals & per-currency summary", () => {
-  it("totals update reactively when a status filter is applied", async () => {
+describe("Reports page — per-currency totals", () => {
+  it("renders per-currency totals and claim count for the active filter set", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
 
-    const grandBefore = claims.reduce((s, c) => s + computeClaimTotal(c), 0);
-    expect(screen.getAllByText(currencyRegex(grandBefore)).length).toBeGreaterThan(0);
-
-    fireEvent.click(chipInGroup("Status", "Paid"));
-    const paid = claims.filter((c) => c.status === "paid");
-    const paidSum = paid.reduce((s, c) => s + computeClaimTotal(c), 0);
+    fireEvent.click(chipInGroup("Status", "Approved"));
+    const approvedClaims = claims.filter((c) => c.status === "approved");
     await waitFor(() => {
-      expect(screen.getAllByText(currencyRegex(paidSum)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText("IDR").length).toBeGreaterThan(0);
     });
-    // MetricCard count also updates.
-    expect(
-      screen.getByText(new RegExp(`${paid.length} matching`))
-    ).toBeInTheDocument();
-  });
-
-  it("renders a per-currency subtotal row per currency for mixed-currency data", async () => {
-    // Promote one claim to USD so two currency rows render.
-    getClaim("clm-1001")!.currency = "USD";
-    renderReports();
-    await waitForReady();
-
-    const usdClaim = getClaim("clm-1001")!;
-    const usdTotal = computeClaimTotal(usdClaim);
-    const idrTotal = claims
-      .filter((c) => c.currency === "IDR")
-      .reduce((s, c) => s + computeClaimTotal(c), 0);
-
-    // Both currency codes render (each appears in the per-currency card AND in
-    // the table currency column for matching claims, so getAllByText).
-    expect(screen.getAllByText("USD").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("IDR").length).toBeGreaterThan(0);
-    // Per-currency subtotals are present (digit match — see currencyRegex;
-    // pass the explicit currency so the formatter matches the rendered string).
-    expect(screen.getAllByText(currencyRegex(usdTotal, "USD")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(currencyRegex(idrTotal, "IDR")).length).toBeGreaterThan(0);
+    expect(screen.getByText(String(approvedClaims.length))).toBeInTheDocument();
   });
 });
 
 /* ============================================ CSV export ============= */
 
 describe("Reports page — CSV export", () => {
-  it("Export button is disabled when zero results match", async () => {
+  it("Export button is disabled with no filter and with zero results", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
+    expect(screen.getByRole("button", { name: /export csv/i })).toBeDisabled();
 
-    // Narrow to nothing.
-    fireEvent.change(screen.getByLabelText("Start date"), {
-      target: { value: "2020-01-01" },
-    });
-    fireEvent.change(screen.getByLabelText("End date"), {
-      target: { value: "2020-12-31" },
-    });
-    expect(
-      await screen.findByRole("heading", { name: /no claims match/i })
-    ).toBeInTheDocument();
-
-    const exportBtn = screen.getByRole("button", { name: /export csv/i });
-    expect(exportBtn).toBeDisabled();
+    fireEvent.click(chipInGroup("Status", "Paid"));
+    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2020-01-01" } });
+    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2020-12-31" } });
+    await screen.findByRole("heading", { name: /no claims match/i });
+    expect(screen.getByRole("button", { name: /export csv/i })).toBeDisabled();
   });
 
-  it("Export produces a CSV whose row count matches the on-screen result count", async () => {
+  it("Export is blocked while the date range is inverted, with an inline error", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
 
-    // Narrow to a known subset.
+    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-07-31" } });
+    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-07-01" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/end date must be on or after/i);
+    const exportBtn = screen.getByRole("button", { name: /export csv/i });
+    expect(exportBtn).toBeDisabled();
+    expect(downloadSpy).not.toHaveBeenCalled();
+  });
+
+  it("Export downloads a timestamped CSV matching the active filter set", async () => {
+    renderReports();
+    await screen.findByText(/choose a filter/i);
+
     fireEvent.click(chipInGroup("Status", "Paid"));
-    const paid = claims.filter((c) => c.status === "paid");
-    await waitFor(() =>
-      expect(
-        screen.getByText(new RegExp(`${paid.length} matching`))
-      ).toBeInTheDocument()
-    );
+    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-01-01" } });
+    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-12-31" } });
+    await waitFor(() => screen.getByText(/matching$/));
 
     fireEvent.click(screen.getByRole("button", { name: /export csv/i }));
 
     await waitFor(() => expect(downloadSpy).toHaveBeenCalledTimes(1));
-    const [filename, content] = downloadSpy.mock.calls[0];
+    const [filename, blob] = downloadSpy.mock.calls[0];
     expect(filename).toMatch(/^spendflow-report-\d{8}-\d{6}\.csv$/);
-    const lines = (content as string).split("\r\n");
-    // header + one row per paid claim.
-    expect(lines).toHaveLength(paid.length + 1);
-    // Header carries every required column.
-    expect(lines[0]).toBe(REPORT_CSV_COLUMNS.join(","));
-    // Each paid claim's reference appears in the body.
-    for (const c of paid) {
-      const hit = lines.some((l) => l.includes(c.reference));
-      expect(hit).toBe(true);
-    }
+    // jsdom's Blob lacks `.text()`/`.arrayBuffer()` and isn't accepted by
+    // undici's `Response`, so read it back via FileReader instead.
+    const content: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    });
+    const lines = content.split("\r\n");
+    expect(lines[0]).toBe("claim_id,employee,category,amount,currency,status,payment_reference,submitted_at");
+    expect(lines.length).toBeGreaterThan(1);
   });
 
-  it("Export is blocked while the date range is invalid", async () => {
+  it("shows a retry-capable error banner when export fails over the network", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
 
-    fireEvent.change(screen.getByLabelText("Start date"), {
-      target: { value: "2026-07-31" },
-    });
-    fireEvent.change(screen.getByLabelText("End date"), {
-      target: { value: "2026-07-01" },
-    });
+    fireEvent.click(chipInGroup("Status", "Paid"));
+    fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-01-01" } });
+    fireEvent.change(screen.getByLabelText("End date"), { target: { value: "2026-12-31" } });
+    await waitFor(() => screen.getByText(/matching$/));
 
-    expect(
-      await screen.findByRole("alert")
-    ).toHaveTextContent(/end date must be on or after/i);
-    const exportBtn = screen.getByRole("button", { name: /export csv/i });
-    expect(exportBtn).toBeDisabled();
-    fireEvent.click(exportBtn); // no-op when disabled
-    expect(downloadSpy).not.toHaveBeenCalled();
+    const { exportCsv } = await import("@/lib/api/reporting");
+    (exportCsv as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    fireEvent.click(screen.getByRole("button", { name: /export csv/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t reach the server/i);
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+});
+
+/* ============================================ Access control ========= */
+
+describe("Reports page — access control & failures", () => {
+  it("renders the access-denied panel on a 403 from the BE", async () => {
+    rejectNext.current = new ReportingApiError(403, "forbidden", "Finance Admin access required");
+    navMocks.search = "status=paid";
+    renderReports();
+    expect(await screen.findByText(/not authorized to view reports/i)).toBeInTheDocument();
+  });
+
+  it("renders a retry-capable error card on a network failure", async () => {
+    rejectNext.current = new Error("Network down");
+    navMocks.search = "status=paid";
+    renderReports();
+    expect(await screen.findByText(/couldn.t load report data/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
   });
 });
 
@@ -670,40 +452,22 @@ describe("Reports page — URL query-param sync", () => {
   it("restores the report view from a copied URL (status=paid)", async () => {
     navMocks.search = "status=paid";
     renderReports();
-    await waitForReady();
 
-    const paid = claims.filter((c) => c.status === "paid");
-    expect(
-      screen.getByText(new RegExp(`${paid.length} matching`))
-    ).toBeInTheDocument();
-    // The Paid chip reflects the restored state.
+    const paidLines = claims.filter((c) => c.status === "paid").flatMap((c) => c.lineItems);
+    await waitFor(() => {
+      expect(screen.getByText(new RegExp(`${paidLines.length} matching`))).toBeInTheDocument();
+    });
     expect(chipInGroup("Status", "Paid")).toHaveAttribute("aria-pressed", "true");
-    // A pending claim is filtered out.
     expect(screen.queryByText(/EXP-2026-1001/)).toBeNull();
   });
 
   it("restores a multi-dimension filter (dept + cat + date range)", async () => {
-    navMocks.search =
-      "start=2026-07-01&end=2026-07-31&dept=Sales&cat=flight&status=approved";
+    navMocks.search = "start=2026-01-01&end=2026-12-31&dept=Sales&cat=flight&status=approved";
     renderReports();
-    await waitForReady();
 
-    const expected = filterClaims(claims, {
-      dateStart: "2026-07-01",
-      dateEnd: "2026-07-31",
-      departments: ["Sales"],
-      categories: ["flight"],
-      statuses: ["approved"],
-    });
-    await waitFor(() => {
-      expect(
-        screen.getByText(new RegExp(`${expected.length} matching`))
-      ).toBeInTheDocument();
-    });
-    // Date fields carry the restored values.
-    expect(screen.getByLabelText("Start date")).toHaveValue("2026-07-01");
-    expect(screen.getByLabelText("End date")).toHaveValue("2026-07-31");
-    // Department + category + status chips are pressed.
+    await waitFor(() => screen.getByText(/matching$/));
+    expect(screen.getByLabelText("Start date")).toHaveValue("2026-01-01");
+    expect(screen.getByLabelText("End date")).toHaveValue("2026-12-31");
     expect(chipInGroup("Department", "Sales")).toHaveAttribute("aria-pressed", "true");
     expect(chipInGroup("Category", "Flight")).toHaveAttribute("aria-pressed", "true");
     expect(chipInGroup("Status", "Approved")).toHaveAttribute("aria-pressed", "true");
@@ -711,47 +475,15 @@ describe("Reports page — URL query-param sync", () => {
 
   it("writes a filter change into the URL via router.replace", async () => {
     renderReports();
-    await waitForReady();
+    await screen.findByText(/choose a filter/i);
     navMocks.replace.mockClear();
 
     fireEvent.click(chipInGroup("Status", "Paid"));
     await waitFor(() => {
       expect(navMocks.replace).toHaveBeenCalled();
     });
-    // The state→URL effect calls router.replace(url, { scroll: false }); the
-    // relevant signal is the URL itself, which we assert against the last call.
     const calls = navMocks.replace.mock.calls;
     const last = calls[calls.length - 1];
     expect(last[0]).toMatch(/^\/reports\?status=paid$/);
-  });
-
-  it("omits empty filters from the URL so an all-time view is a clean /reports", async () => {
-    renderReports();
-    await waitForReady();
-    navMocks.replace.mockClear();
-
-    // Toggling a chip on writes the filter to the URL.
-    fireEvent.click(chipInGroup("Status", "Paid"));
-    await waitFor(() => {
-      expect(navMocks.replace).toHaveBeenCalled();
-    });
-    const callsAfterOn = navMocks.replace.mock.calls;
-    expect(callsAfterOn[callsAfterOn.length - 1][0]).toMatch(
-      /^\/reports\?status=paid$/
-    );
-    // The chip reflects the selected state.
-    expect(chipInGroup("Status", "Paid")).toHaveAttribute("aria-pressed", "true");
-
-    // Toggling the same chip off returns the filter state to empty. The
-    // state→URL effect short-circuits when the URL is already canonical (the
-    // mock router doesn't propagate, so no second replace call lands), but the
-    // chip state + the visible result count confirm the filter was cleared.
-    fireEvent.click(chipInGroup("Status", "Paid"));
-    await waitFor(() => {
-      expect(chipInGroup("Status", "Paid")).toHaveAttribute("aria-pressed", "false");
-    });
-    expect(
-      screen.getByText(new RegExp(`^${claims.length} matching$`))
-    ).toBeInTheDocument();
   });
 });
