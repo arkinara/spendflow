@@ -1,5 +1,9 @@
 /* ============================================================================
    SpendFlow — Finance Admin store (Phase 1, mock persistence).
+   FALLBACK ONLY as of ticket #21: `/finance/policies` now reads/writes
+   through the HTTP client `lib/api/admin.ts` (`useAdminStore.ts`). This file
+   stays for any other in-progress verticals that still import it directly —
+   do not wire new admin UI against it.
    Category, Policy, and Approval-Routing administration. Each mutator writes
    directly into the live `categories` / `policies` / `routingRules` arrays so
    every selector (and the live admin UI) reflects the change on its next

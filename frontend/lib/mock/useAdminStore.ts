@@ -1,39 +1,45 @@
 "use client";
 
+/* ============================================================================
+ * SpendFlow — useAdminStore (ticket #21, FE wiring).
+ * HTTP-backed: reads `GET /api/admin/categories|policies|routes` via
+ * `lib/api/admin.ts`. The mock `adminStore`/`mock_data` collections are no
+ * longer the data source for this vertical (kept as fallback for #22–#24).
+ *
+ * The hook's public interface (`{ state, retry, refresh }`) is unchanged so
+ * `/finance/policies` doesn't need to change shape — only the row data type
+ * moves from the FE mock `ExpenseCategory`/`Policy`/`RoutingRule` to the
+ * BE-backed `AdminCategory`/`AdminPolicy`/`AdminRoute` (`lib/api/admin.ts`).
+ * A BE 403 (caller lost Finance-Admin standing mid-session) maps to a
+ * `denied` state so the page can render the same access-denied panel
+ * `RouteGuard` shows for a role mismatch, instead of a bare error toast.
+ * ========================================================================== */
+
 import * as React from "react";
 import {
-  categories,
-  policies,
-  routingRules,
-  type ExpenseCategory,
-  type Policy,
-  type RoutingRule,
-} from "@/lib/mock/mock_data";
-import { getActiveCategories } from "@/lib/mock/adminStore";
+  listCategories,
+  listPolicies,
+  listRoutes,
+  AdminApiError,
+  type AdminCategory,
+  type AdminPolicy,
+  type AdminRoute,
+} from "@/lib/api/admin";
 
-/**
- * Shared async hook for the Finance Admin console. Mirrors the finance-list
- * hook: mock data is synchronous but the UI still shows a brief loading
- * skeleton and an explicit, retry-capable error state (never a blank section,
- * never an infinite spinner). Selectors read the live admin collections on
- * every (re)load, so an admin action that mutates the store is reflected on
- * the next `refresh()` without keeping a duplicate local copy.
- */
 export type AdminListState<T> =
   | { status: "loading" }
   | { status: "ready"; rows: T[] }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string }
+  | { status: "denied" };
 
 export interface UseAdminCollection<T> {
   state: AdminListState<T>;
   retry: () => void;
-  /** Force a fresh read of the live store (e.g. after a CRUD action). */
+  /** Force a fresh read of the BE (e.g. after a CRUD action). */
   refresh: () => void;
 }
 
-const SIMULATED_LATENCY_MS = 180;
-
-function useAdminCollection<T>(load: () => T[]): UseAdminCollection<T> {
+function useAdminCollection<T>(load: () => Promise<T[]>): UseAdminCollection<T> {
   const [state, setState] = React.useState<AdminListState<T>>({
     status: "loading",
   });
@@ -41,24 +47,26 @@ function useAdminCollection<T>(load: () => T[]): UseAdminCollection<T> {
 
   React.useEffect(() => {
     let cancelled = false;
-    const timer = window.setTimeout(() => {
+
+    (async () => {
       try {
-        const rows = load();
+        const rows = await load();
         if (!cancelled) setState({ status: "ready", rows });
       } catch (err) {
-        if (!cancelled) {
+        if (cancelled) return;
+        if (err instanceof AdminApiError && err.status === 403) {
+          setState({ status: "denied" });
+        } else {
           setState({
             status: "error",
-            message:
-              err instanceof Error ? err.message : "Failed to load admin data.",
+            message: err instanceof Error ? err.message : "Failed to load admin data.",
           });
         }
       }
-    }, SIMULATED_LATENCY_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt]);
@@ -74,18 +82,18 @@ function useAdminCollection<T>(load: () => T[]): UseAdminCollection<T> {
 }
 
 /** Every expense category (active + inactive) — the Category admin list. */
-export function useCategories(): UseAdminCollection<ExpenseCategory> {
-  return useAdminCollection(() => [...categories]);
+export function useCategories(): UseAdminCollection<AdminCategory> {
+  return useAdminCollection(() => listCategories());
 }
 
 /** Every spend policy (active + inactive) — the Policy admin list. */
-export function usePolicies(): UseAdminCollection<Policy> {
-  return useAdminCollection(() => [...policies]);
+export function usePolicies(): UseAdminCollection<AdminPolicy> {
+  return useAdminCollection(() => listPolicies());
 }
 
 /** Every approval route (active + inactive, incl. fallback) — the Routing list. */
-export function useRoutes(): UseAdminCollection<RoutingRule> {
-  return useAdminCollection(() => [...routingRules]);
+export function useRoutes(): UseAdminCollection<AdminRoute> {
+  return useAdminCollection(() => listRoutes());
 }
 
 /**
@@ -93,6 +101,6 @@ export function useRoutes(): UseAdminCollection<RoutingRule> {
  * Reflects create/deactivate mutations immediately so the Finance Admin can
  * see the employee-facing impact without leaving the console (DoD).
  */
-export function useActiveCategoriesPreview(): UseAdminCollection<ExpenseCategory> {
-  return useAdminCollection(() => [...getActiveCategories()]);
+export function useActiveCategoriesPreview(): UseAdminCollection<AdminCategory> {
+  return useAdminCollection(async () => (await listCategories()).filter((c) => c.active));
 }

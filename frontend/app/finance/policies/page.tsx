@@ -4,24 +4,23 @@ import * as React from "react";
 import {
   Plus,
   Pencil,
-  Trash2,
   GitBranch,
-  Power,
   PowerOff,
   ArrowUp,
   ArrowDown,
   X,
   Gauge as MileageIcon,
-  Receipt,
   AlertTriangle,
   RefreshCw,
   ListPlus,
   ShieldCheck,
+  ShieldX,
+  Clock,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { DataTable, type Column } from "@/components/ui/DataTable";
+import { DataTable } from "@/components/ui/DataTable";
 import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { Dialog } from "@/components/ui/Dialog";
 import { TextField } from "@/components/ui/TextField";
@@ -31,50 +30,45 @@ import { DateField } from "@/components/ui/DateField";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import {
-  categories,
-  policies as seedPolicies,
-  routingRules as seedRouting,
-  users,
-  DEPARTMENTS,
-  type ExpenseCategory,
-  type Policy,
-  type RoutingRule,
-  type RoutingStep,
-  type ApproverType,
-} from "@/lib/mock/mock_data";
-import {
-  createCategory,
-  updateCategory,
-  setCategoryActive,
-  createPolicy,
-  updatePolicy,
-  setPolicyActive,
-  createRoute,
-  updateRoute,
-  setRouteActive,
-  reorderRouteSteps,
-  summarizeMatch,
-  approverTypeLabel,
-  isSupportedPolicyCurrency,
-  type CategoryInput,
-  type PolicyInput,
-  type RouteInput,
-  type RouteStepInput,
-} from "@/lib/mock/adminStore";
+import { users, DEPARTMENTS } from "@/lib/mock/mock_data";
 import {
   useCategories,
   usePolicies,
   useRoutes,
   useActiveCategoriesPreview,
+  type UseAdminCollection,
 } from "@/lib/mock/useAdminStore";
+import {
+  addCategory,
+  editCategory,
+  deactivateCategory,
+  addPolicy,
+  editPolicy,
+  deactivatePolicy,
+  addRoute,
+  editRoute,
+  reorderRouteSteps,
+  deactivateRoute,
+  summarizeMatch,
+  approverTypeLabel,
+  AdminApiError,
+  type AdminCategory,
+  type AdminPolicy,
+  type AdminRoute,
+  type AdminRouteStep,
+  type ApproverType,
+  type CategoryInput,
+  type PolicyInput,
+  type RouteInput,
+  type RouteStepInput,
+} from "@/lib/api/admin";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { CurrencyCode } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type Tab = "policies" | "categories" | "routing";
 
-const PERIOD_LABEL: Record<Policy["period"], string> = {
+const PERIOD_LABEL: Record<AdminPolicy["period"], string> = {
   per_item: "Per item",
   per_day: "Per day",
   per_trip: "Per trip",
@@ -92,6 +86,11 @@ const APPROVER_TYPE_OPTIONS: { value: ApproverType; label: string }[] = [
   { value: "finance", label: "Finance Admin" },
 ];
 
+/** Today in the ISO date form the BE compares `effective_date` against. */
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function StatusPill({ active }: { active: boolean }) {
   return (
     <span
@@ -108,6 +107,8 @@ function StatusPill({ active }: { active: boolean }) {
 
 export default function PoliciesAdminPage() {
   const [tab, setTab] = React.useState<Tab>("policies");
+  const [denied, setDenied] = React.useState(false);
+  const onForbidden = React.useCallback(() => setDenied(true), []);
 
   return (
     <AppShell>
@@ -115,30 +116,60 @@ export default function PoliciesAdminPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-on-surface">Policy administration</h1>
           <p className="mt-1 text-sm text-on-surface-variant">
-            Manage spend policies, expense categories, and approval routing. Changes take effect in the live mock store immediately.
+            Manage spend policies, expense categories, and approval routing. Changes are read from and written to the live backend.
           </p>
         </div>
 
-        <SegmentedTabs<Tab>
-          value={tab}
-          onChange={setTab}
-          ariaLabel="Admin section"
-          options={[
-            { value: "policies", label: "Policies", count: seedPolicies.length },
-            { value: "categories", label: "Categories", count: categories.length },
-            { value: "routing", label: "Routing", count: seedRouting.length },
-          ]}
-        />
+        {denied ? (
+          <AdminForbidden />
+        ) : (
+          <>
+            <SegmentedTabs<Tab>
+              value={tab}
+              onChange={setTab}
+              ariaLabel="Admin section"
+              options={[
+                { value: "policies", label: "Policies" },
+                { value: "categories", label: "Categories" },
+                { value: "routing", label: "Routing" },
+              ]}
+            />
 
-        {tab === "policies" && <PolicyTab />}
-        {tab === "categories" && <CategoryTab />}
-        {tab === "routing" && <RoutingTab />}
+            {tab === "policies" && <PolicyTab onForbidden={onForbidden} />}
+            {tab === "categories" && <CategoryTab onForbidden={onForbidden} />}
+            {tab === "routing" && <RoutingTab onForbidden={onForbidden} />}
+          </>
+        )}
       </div>
     </AppShell>
   );
 }
 
 /* ============================================================ shared states == */
+
+/**
+ * Rendered in place of the admin console when a mutation (not just the
+ * initial list load) comes back 403 — e.g. the caller's Finance-Admin
+ * standing was revoked mid-session. Mirrors `RouteGuard`'s access-denied
+ * panel so the page never looks broken, just unauthorized.
+ */
+function AdminForbidden() {
+  return (
+    <div
+      role="alert"
+      aria-live="assertive"
+      className="mx-auto mt-6 flex max-w-md flex-col items-center gap-3 rounded-2xl border border-outline-variant bg-surface-container px-6 py-10 text-center"
+    >
+      <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-error-container text-error-container-foreground">
+        <ShieldX className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+      </span>
+      <p className="font-medium text-on-surface">You&apos;re not authorized to manage admin settings.</p>
+      <p className="text-sm text-on-surface-variant">
+        Your session no longer has Finance Admin access. Reload the page or sign in again.
+      </p>
+    </div>
+  );
+}
 
 function AdminError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
@@ -148,7 +179,7 @@ function AdminError({ message, onRetry }: { message: string; onRetry: () => void
           <AlertTriangle className="h-6 w-6" strokeWidth={1.75} aria-hidden />
         </span>
         <div>
-          <p className="font-medium text-on-surface">Couldn’t load this section</p>
+          <p className="font-medium text-on-surface">Couldn't load this section</p>
           <p className="mt-1 max-w-sm text-sm text-on-surface-variant">{message}</p>
         </div>
         <Button variant="tonal" icon={RefreshCw} size="sm" onClick={onRetry}>
@@ -188,68 +219,78 @@ function SectionEmpty({
   );
 }
 
+/** Inline banner for an unmapped/network mutation error. The dialog stays
+ *  open on failure and the Save/Deactivate button remains clickable, so this
+ *  doubles as the "retry-capable error state" the negative ACs require. */
+function FormErrorBanner({ message }: { message: string }) {
+  return (
+    <p
+      role="alert"
+      className="flex items-center gap-2 rounded-xl bg-error-container px-3 py-2 text-sm text-error-container-foreground"
+    >
+      <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+      {message}
+    </p>
+  );
+}
+
 /**
- * Soft-delete (deactivate) confirmation. Deactivate is preferred over a hard
- * delete so historical claims keep a stable label — the row stays in the list,
- * marked inactive. Works for all three sub-features via the `kind` label.
+ * Deactivate-only confirmation (the BE exposes no reactivate endpoint — DELETE
+ * is a one-way soft delete). Stays open with an inline error on failure so the
+ * Deactivate button doubles as a retry action.
  */
 function DeactivateDialog({
   open,
   name,
   kind,
-  active,
+  error,
+  pending,
   onClose,
   onConfirm,
 }: {
   open: boolean;
   name: string;
   kind: string;
-  active: boolean;
+  error: string | null;
+  pending: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const flipping = active;
   return (
     <Dialog
       open={open}
       onClose={onClose}
       size="sm"
-      title={flipping ? `Deactivate ${kind}?` : `Activate ${kind}?`}
-      description={
-        flipping
-          ? `“${name}” will be marked inactive and hidden from new submissions, but stays in the list so historical claims keep their references.`
-          : `“${name}” will be reactivated and visible to new submissions again.`
-      }
+      title={`Deactivate ${kind}?`}
+      description={`"${name}" will be marked inactive and hidden from new submissions, but stays in the list so historical claims keep their references.`}
       icon={
         <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-error-container text-error-container-foreground">
-          {flipping ? (
-            <PowerOff className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-          ) : (
-            <Power className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-          )}
+          <PowerOff className="h-6 w-6" strokeWidth={1.75} aria-hidden />
         </span>
       }
       footer={
         <>
-          <Button variant="text" onClick={onClose}>
+          <Button variant="text" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button variant={flipping ? "danger" : "filled"} onClick={onConfirm}>
-            {flipping ? `Deactivate ${kind}` : `Activate ${kind}`}
+          <Button variant="danger" onClick={onConfirm} disabled={pending}>
+            {pending ? "Deactivating…" : `Deactivate ${kind}`}
           </Button>
         </>
       }
-    />
+    >
+      {error && <FormErrorBanner message={error} />}
+    </Dialog>
   );
 }
 
 function RowActions({
   onEdit,
-  onToggle,
+  onDeactivate,
   active,
 }: {
   onEdit: () => void;
-  onToggle: () => void;
+  onDeactivate: () => void;
   active: boolean;
 }) {
   return (
@@ -262,23 +303,16 @@ function RowActions({
       >
         <Pencil className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
       </button>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-label={active ? "Deactivate" : "Activate"}
-        className={cn(
-          "inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2",
-          active
-            ? "text-error hover:bg-error-container focus-visible:ring-error"
-            : "text-success hover:bg-success-container focus-visible:ring-success"
-        )}
-      >
-        {active ? (
+      {active && (
+        <button
+          type="button"
+          onClick={onDeactivate}
+          aria-label="Deactivate"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-error transition-colors hover:bg-error-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error"
+        >
           <PowerOff className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
-        ) : (
-          <Power className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
-        )}
-      </button>
+        </button>
+      )}
     </div>
   );
 }
@@ -323,54 +357,64 @@ function Switch({
   );
 }
 
+/** Read the ready rows out of a collection hook, or `[]` while loading/errored. */
+function readyRows<T>(collection: UseAdminCollection<T>): T[] {
+  return collection.state.status === "ready" ? collection.state.rows : [];
+}
+
 /* ============================================================ CATEGORIES ==== */
 
-function CategoryTab() {
+function CategoryTab({ onForbidden }: { onForbidden: () => void }) {
   const { show } = useSnackbar();
   const { state, retry, refresh } = useCategories();
   const preview = useActiveCategoriesPreview();
-  const [editing, setEditing] = React.useState<ExpenseCategory | null>(null);
+  const [editing, setEditing] = React.useState<AdminCategory | null>(null);
   const [creating, setCreating] = React.useState(false);
-  const [confirm, setConfirm] = React.useState<ExpenseCategory | null>(null);
+  const [confirm, setConfirm] = React.useState<AdminCategory | null>(null);
+  const [confirmError, setConfirmError] = React.useState<string | null>(null);
+  const [confirmPending, setConfirmPending] = React.useState(false);
+
+  React.useEffect(() => {
+    if (state.status === "denied") onForbidden();
+  }, [state.status, onForbidden]);
 
   function refreshAll() {
     refresh();
     preview.refresh();
   }
 
-  function handleSave(input: CategoryInput) {
-    try {
-      if (editing) {
-        updateCategory(editing.id, input);
-        show(`Category “${input.name}” updated.`, { tone: "success" });
-      } else {
-        createCategory(input);
-        show(`Category “${input.name}” created.`, { tone: "success" });
-      }
-      setEditing(null);
-      setCreating(false);
-      refreshAll();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Could not save the category.", {
-        tone: "error",
-      });
+  async function handleSave(input: CategoryInput) {
+    if (editing) {
+      await editCategory(editing.id, input);
+      show(`Category "${input.name}" updated.`, { tone: "success" });
+    } else {
+      await addCategory(input);
+      show(`Category "${input.name}" created.`, { tone: "success" });
     }
+    setEditing(null);
+    setCreating(false);
+    refreshAll();
   }
 
-  function handleToggle() {
+  async function handleDeactivate() {
     if (!confirm) return;
+    setConfirmPending(true);
+    setConfirmError(null);
     try {
-      const next = !confirm.active;
-      setCategoryActive(confirm.id, next);
-      show(`“${confirm.name}” ${next ? "activated" : "deactivated"}.`, {
-        tone: "success",
-      });
+      await deactivateCategory(confirm.id);
+      show(`"${confirm.name}" deactivated.`, { tone: "success" });
       setConfirm(null);
       refreshAll();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Could not change status.", {
-        tone: "error",
-      });
+      if (err instanceof AdminApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setConfirmError(
+        err instanceof Error ? err.message : "Could not deactivate the category."
+      );
+    } finally {
+      setConfirmPending(false);
     }
   }
 
@@ -455,7 +499,10 @@ function CategoryTab() {
                   <RowActions
                     active={c.active}
                     onEdit={() => setEditing(c)}
-                    onToggle={() => setConfirm(c)}
+                    onDeactivate={() => {
+                      setConfirm(c);
+                      setConfirmError(null);
+                    }}
                   />
                 ),
               },
@@ -471,7 +518,7 @@ function CategoryTab() {
       {/* Live preview of the employee claim-builder category list (DoD). */}
       <CategoryPreview
         status={preview.state.status}
-        rows={preview.state.status === "ready" ? preview.state.rows : []}
+        rows={readyRows(preview)}
         onRetry={preview.retry}
       />
 
@@ -483,15 +530,20 @@ function CategoryTab() {
           setCreating(false);
         }}
         onSave={handleSave}
+        onForbidden={onForbidden}
       />
 
       <DeactivateDialog
         open={confirm !== null}
         name={confirm?.name ?? ""}
         kind="category"
-        active={confirm?.active ?? true}
-        onClose={() => setConfirm(null)}
-        onConfirm={handleToggle}
+        error={confirmError}
+        pending={confirmPending}
+        onClose={() => {
+          setConfirm(null);
+          setConfirmError(null);
+        }}
+        onConfirm={handleDeactivate}
       />
     </div>
   );
@@ -502,8 +554,8 @@ function CategoryPreview({
   rows,
   onRetry,
 }: {
-  status: "loading" | "ready" | "error";
-  rows: ExpenseCategory[];
+  status: "loading" | "ready" | "error" | "denied";
+  rows: AdminCategory[];
   onRetry: () => void;
 }) {
   return (
@@ -515,6 +567,8 @@ function CategoryPreview({
         <Skeleton variant="list" lines={3} />
       ) : status === "error" ? (
         <AdminError message="Preview could not be loaded." onRetry={onRetry} />
+      ) : status === "denied" ? (
+        <p className="py-6 text-center text-sm text-on-surface-variant">Preview unavailable.</p>
       ) : rows.length === 0 ? (
         <p className="py-6 text-center text-sm text-on-surface-variant">
           No active categories — employees have nothing to choose from yet.
@@ -541,16 +595,25 @@ function CategoryPreview({
   );
 }
 
+interface CategoryFieldErrors {
+  name?: string;
+  code?: string;
+  receiptThreshold?: string;
+  perItemCap?: string;
+}
+
 function CategoryDialog({
   open,
   initial,
   onClose,
   onSave,
+  onForbidden,
 }: {
   open: boolean;
-  initial: ExpenseCategory | null;
+  initial: AdminCategory | null;
   onClose: () => void;
-  onSave: (input: CategoryInput) => void;
+  onSave: (input: CategoryInput) => Promise<void>;
+  onForbidden: () => void;
 }) {
   const [name, setName] = React.useState("");
   const [code, setCode] = React.useState("");
@@ -558,12 +621,9 @@ function CategoryDialog({
   const [requiresReceipt, setRequiresReceipt] = React.useState(true);
   const [receiptThreshold, setReceiptThreshold] = React.useState("");
   const [perItemCap, setPerItemCap] = React.useState("");
-  const [errors, setErrors] = React.useState<{
-    name?: string;
-    code?: string;
-    receiptThreshold?: string;
-    perItemCap?: string;
-  }>({});
+  const [errors, setErrors] = React.useState<CategoryFieldErrors>({});
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -574,11 +634,13 @@ function CategoryDialog({
       setReceiptThreshold(initial ? String(initial.receiptThreshold) : "");
       setPerItemCap(initial?.perItemCap != null ? String(initial.perItemCap) : "");
       setErrors({});
+      setFormError(null);
+      setSubmitting(false);
     }
   }, [open, initial]);
 
-  function submit() {
-    const next: typeof errors = {};
+  async function submit() {
+    const next: CategoryFieldErrors = {};
     if (!name.trim()) next.name = "Category name is required.";
     if (!code.trim()) next.code = "Category code is required.";
     const thresholdNum = Number(receiptThreshold);
@@ -592,17 +654,38 @@ function CategoryDialog({
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
-    onSave({
-      id: initial?.id,
-      name,
-      code,
-      requiresMileage,
-      requiresReceipt,
-      receiptThreshold: thresholdNum,
-      perItemCap: capNum,
-      icon: initial?.icon,
-      active: initial?.active,
-    });
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await onSave({
+        name,
+        code,
+        requiresMileage,
+        requiresReceipt,
+        receiptThreshold: thresholdNum,
+        perItemCap: capNum,
+      });
+    } catch (err) {
+      if (err instanceof AdminApiError) {
+        if (err.status === 403) {
+          onForbidden();
+          return;
+        }
+        const mapped: CategoryFieldErrors = {};
+        if (/code/i.test(err.message)) mapped.code = err.message;
+        else if (/name/i.test(err.message)) mapped.name = err.message;
+        else setFormError(err.message);
+        setErrors((cur) => ({ ...cur, ...mapped }));
+      } else {
+        setFormError(
+          err instanceof Error
+            ? err.message
+            : "Could not save the category. Check your connection and try again."
+        );
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -613,14 +696,17 @@ function CategoryDialog({
       description="Name, code, and the mileage flag drive how employees enter expenses for this category."
       footer={
         <>
-          <Button variant="text" onClick={onClose}>
+          <Button variant="text" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={submit}>{initial ? "Save changes" : "Create category"}</Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? "Saving…" : initial ? "Save changes" : "Create category"}
+          </Button>
         </>
       }
     >
       <div className="space-y-4">
+        {formError && <FormErrorBanner message={formError} />}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_120px]">
           <TextField
             label="Name"
@@ -682,43 +768,56 @@ function CategoryDialog({
 
 /* ============================================================== POLICIES === */
 
-function PolicyTab() {
+function PolicyTab({ onForbidden }: { onForbidden: () => void }) {
   const { show } = useSnackbar();
   const { state, retry, refresh } = usePolicies();
-  const [editing, setEditing] = React.useState<Policy | null>(null);
+  const categoryState = useCategories();
+  const [editing, setEditing] = React.useState<AdminPolicy | null>(null);
   const [creating, setCreating] = React.useState(false);
-  const [confirm, setConfirm] = React.useState<Policy | null>(null);
+  const [confirm, setConfirm] = React.useState<AdminPolicy | null>(null);
+  const [confirmError, setConfirmError] = React.useState<string | null>(null);
+  const [confirmPending, setConfirmPending] = React.useState(false);
 
-  function handleSave(input: PolicyInput) {
-    // Store validation errors (currency allowlist, threshold vs. max, etc.)
-    // intentionally propagate to the dialog, which maps them to inline field
-    // errors. Success path keeps the confirmation snackbar + live refresh.
+  React.useEffect(() => {
+    if (state.status === "denied") onForbidden();
+  }, [state.status, onForbidden]);
+
+  const categories = readyRows(categoryState);
+  const categoryName = React.useCallback(
+    (id?: string) => categories.find((c) => c.id === id)?.name,
+    [categories]
+  );
+
+  async function handleSave(input: PolicyInput) {
     if (editing) {
-      updatePolicy(editing.id, input);
-      show(`Policy “${input.name}” updated.`, { tone: "success" });
+      await editPolicy(editing.id, input);
+      show(`Policy "${input.name}" updated.`, { tone: "success" });
     } else {
-      createPolicy(input);
-      show(`Policy “${input.name}” created.`, { tone: "success" });
+      await addPolicy(input);
+      show(`Policy "${input.name}" created.`, { tone: "success" });
     }
     setEditing(null);
     setCreating(false);
     refresh();
   }
 
-  function handleToggle() {
+  async function handleDeactivate() {
     if (!confirm) return;
+    setConfirmPending(true);
+    setConfirmError(null);
     try {
-      const next = !confirm.active;
-      setPolicyActive(confirm.id, next);
-      show(`“${confirm.name}” ${next ? "activated" : "deactivated"}.`, {
-        tone: "success",
-      });
+      await deactivatePolicy(confirm.id);
+      show(`"${confirm.name}" deactivated.`, { tone: "success" });
       setConfirm(null);
       refresh();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Could not change status.", {
-        tone: "error",
-      });
+      if (err instanceof AdminApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setConfirmError(err instanceof Error ? err.message : "Could not deactivate the policy.");
+    } finally {
+      setConfirmPending(false);
     }
   }
 
@@ -762,7 +861,9 @@ function PolicyTab() {
                 render: (p) => (
                   <div>
                     <p className="font-medium text-on-surface">{p.name}</p>
-                    <p className="max-w-md text-xs text-on-surface-variant">{p.description}</p>
+                    <p className="max-w-md text-xs text-on-surface-variant">
+                      {p.description || categoryName(p.categoryId) || "—"}
+                    </p>
                   </div>
                 ),
               },
@@ -795,7 +896,20 @@ function PolicyTab() {
               {
                 key: "effective",
                 header: "Effective",
-                render: (p) => formatDate(p.effectiveDate),
+                render: (p) => (
+                  <div className="flex items-center gap-1.5">
+                    <span>{formatDate(p.effectiveDate)}</span>
+                    {p.effectiveDate > todayIso() && (
+                      <span
+                        title="Effective date is in the future — not yet applied to new claims"
+                        className="inline-flex items-center gap-1 rounded-full bg-secondary-container px-2 py-0.5 text-[11px] font-medium text-secondary-container-foreground"
+                      >
+                        <Clock className="h-3 w-3" strokeWidth={1.75} aria-hidden />
+                        Scheduled
+                      </span>
+                    )}
+                  </div>
+                ),
               },
               { key: "status", header: "Status", render: (p) => <StatusPill active={p.active} /> },
               {
@@ -806,7 +920,10 @@ function PolicyTab() {
                   <RowActions
                     active={p.active}
                     onEdit={() => setEditing(p)}
-                    onToggle={() => setConfirm(p)}
+                    onDeactivate={() => {
+                      setConfirm(p);
+                      setConfirmError(null);
+                    }}
                   />
                 ),
               },
@@ -822,60 +939,75 @@ function PolicyTab() {
       <PolicyDialog
         open={creating || editing !== null}
         initial={editing}
+        categories={categories}
         onClose={() => {
           setEditing(null);
           setCreating(false);
         }}
         onSave={handleSave}
+        onForbidden={onForbidden}
       />
 
       <DeactivateDialog
         open={confirm !== null}
         name={confirm?.name ?? ""}
         kind="policy"
-        active={confirm?.active ?? true}
-        onClose={() => setConfirm(null)}
-        onConfirm={handleToggle}
+        error={confirmError}
+        pending={confirmPending}
+        onClose={() => {
+          setConfirm(null);
+          setConfirmError(null);
+        }}
+        onConfirm={handleDeactivate}
       />
     </div>
   );
 }
 
+interface PolicyFieldErrors {
+  name?: string;
+  categoryId?: string;
+  limit?: string;
+  currency?: string;
+  receiptRequiredAbove?: string;
+  justificationRequiredAbove?: string;
+  effectiveDate?: string;
+}
+
 function PolicyDialog({
   open,
   initial,
+  categories,
   onClose,
   onSave,
+  onForbidden,
 }: {
   open: boolean;
-  initial: Policy | null;
+  initial: AdminPolicy | null;
+  categories: AdminCategory[];
   onClose: () => void;
-  onSave: (input: PolicyInput) => void;
+  onSave: (input: PolicyInput) => Promise<void>;
+  onForbidden: () => void;
 }) {
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [categoryId, setCategoryId] = React.useState<string>("");
   const [limit, setLimit] = React.useState("");
-  const [period, setPeriod] = React.useState<Policy["period"]>("per_item");
+  const [period, setPeriod] = React.useState<AdminPolicy["period"]>("per_item");
   const [currency, setCurrency] = React.useState<CurrencyCode>("IDR");
   const [receiptRequired, setReceiptRequired] = React.useState(true);
   const [receiptRequiredAbove, setReceiptRequiredAbove] = React.useState("");
   const [justificationRequiredAbove, setJustificationRequiredAbove] = React.useState("");
   const [effectiveDate, setEffectiveDate] = React.useState("");
-  const [errors, setErrors] = React.useState<{
-    name?: string;
-    limit?: string;
-    currency?: string;
-    receiptRequiredAbove?: string;
-    justificationRequiredAbove?: string;
-    effectiveDate?: string;
-  }>({});
+  const [errors, setErrors] = React.useState<PolicyFieldErrors>({});
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
       setName(initial?.name ?? "");
       setDescription(initial?.description ?? "");
-      setCategoryId(initial?.categoryId ?? "");
+      setCategoryId(initial?.categoryId ?? categories[0]?.id ?? "");
       setLimit(initial ? String(initial.limit) : "");
       setPeriod(initial?.period ?? "per_item");
       setCurrency(initial?.currency ?? "IDR");
@@ -884,42 +1016,31 @@ function PolicyDialog({
       setJustificationRequiredAbove(
         initial ? String(initial.justificationRequiredAbove) : ""
       );
-      setEffectiveDate(
-        initial?.effectiveDate ?? new Date().toISOString().slice(0, 10)
-      );
+      setEffectiveDate(initial?.effectiveDate ?? todayIso());
       setErrors({});
+      setFormError(null);
+      setSubmitting(false);
     }
-  }, [open, initial]);
+  }, [open, initial, categories]);
 
-  function submit() {
-    const next: typeof errors = {};
+  async function submit() {
+    const next: PolicyFieldErrors = {};
     if (!name.trim()) next.name = "Policy name is required.";
+    if (!categoryId) next.categoryId = "Select a category.";
     const limitNum = Number(limit);
     if (!limit || Number.isNaN(limitNum) || limitNum <= 0) {
       next.limit = "Enter a positive max amount.";
     }
     const rra = Number(receiptRequiredAbove);
-    if (
-      receiptRequiredAbove === "" ||
-      Number.isNaN(rra) ||
-      rra < 0
-    ) {
+    if (receiptRequiredAbove === "" || Number.isNaN(rra) || rra < 0) {
       next.receiptRequiredAbove = "Enter zero or a positive amount.";
     }
     const jra = Number(justificationRequiredAbove);
-    if (
-      justificationRequiredAbove === "" ||
-      Number.isNaN(jra) ||
-      jra < 0
-    ) {
+    if (justificationRequiredAbove === "" || Number.isNaN(jra) || jra < 0) {
       next.justificationRequiredAbove = "Enter zero or a positive amount.";
     }
-    // Currency allowlist (mirrors the store boundary so an unsupported code is
-    // flagged inline before it reaches createPolicy/updatePolicy).
-    if (!isSupportedPolicyCurrency(currency)) {
-      next.currency = "Choose a supported currency.";
-    }
-    // Cross-field guard: a trigger threshold must not exceed the max amount.
+    // Cross-field guard (mirrors the BE's min<max check): a trigger threshold
+    // must not exceed the max reimbursable amount.
     if (!next.limit && !next.receiptRequiredAbove && rra > limitNum) {
       next.receiptRequiredAbove = "Receipt threshold cannot exceed the max amount.";
     }
@@ -933,12 +1054,13 @@ function PolicyDialog({
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
+    setFormError(null);
+    setSubmitting(true);
     try {
-      onSave({
-        id: initial?.id,
+      await onSave({
         name,
         description,
-        categoryId: (categoryId || undefined) as PolicyInput["categoryId"],
+        categoryId,
         limit: limitNum,
         period,
         currency,
@@ -946,27 +1068,37 @@ function PolicyDialog({
         receiptRequiredAbove: rra,
         justificationRequiredAbove: jra,
         effectiveDate,
-        active: initial?.active,
       });
     } catch (err) {
-      // Surface store-boundary errors (currency allowlist, threshold vs. max)
-      // as inline field errors instead of a transient toast.
-      const msg = err instanceof Error ? err.message : "Could not save the policy.";
-      const mapped: typeof errors = {};
-      if (/currency/i.test(msg)) mapped.currency = msg;
-      else if (/receipt-required threshold/i.test(msg))
-        mapped.receiptRequiredAbove = msg;
-      else if (/justification-required threshold/i.test(msg))
-        mapped.justificationRequiredAbove = msg;
-      else mapped.name = msg;
-      setErrors((cur) => ({ ...cur, ...mapped }));
+      if (err instanceof AdminApiError) {
+        if (err.status === 403) {
+          onForbidden();
+          return;
+        }
+        const msg = err.message;
+        const mapped: PolicyFieldErrors = {};
+        if (/categor/i.test(msg)) mapped.categoryId = msg;
+        else if (/currency/i.test(msg)) mapped.currency = msg;
+        else if (/receipt.*exceed|receipt_required_above/i.test(msg))
+          mapped.receiptRequiredAbove = msg;
+        else if (/justification/i.test(msg)) mapped.justificationRequiredAbove = msg;
+        else if (/effective.date/i.test(msg)) mapped.effectiveDate = msg;
+        else if (/limit amount/i.test(msg)) mapped.limit = msg;
+        else mapped.name = msg;
+        setErrors((cur) => ({ ...cur, ...mapped }));
+      } else {
+        setFormError(
+          err instanceof Error
+            ? err.message
+            : "Could not save the policy. Check your connection and try again."
+        );
+      }
+    } finally {
+      setSubmitting(false);
     }
   }
 
-  const categoryOptions = [
-    { value: "", label: "All categories" },
-    ...categories.map((c) => ({ value: c.id, label: c.name })),
-  ];
+  const categoryOptions = categories.map((c) => ({ value: c.id, label: c.name }));
 
   return (
     <Dialog
@@ -977,14 +1109,17 @@ function PolicyDialog({
       description="Set the spending limit, receipt/justification thresholds, and when the change takes effect."
       footer={
         <>
-          <Button variant="text" onClick={onClose}>
+          <Button variant="text" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={submit}>{initial ? "Save changes" : "Create policy"}</Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? "Saving…" : initial ? "Save changes" : "Create policy"}
+          </Button>
         </>
       }
     >
       <div className="space-y-4">
+        {formError && <FormErrorBanner message={formError} />}
         <TextField
           label="Name"
           required
@@ -1003,9 +1138,12 @@ function PolicyDialog({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Select
             label="Category"
+            required
             options={categoryOptions}
             value={categoryId}
+            error={errors.categoryId}
             onChange={setCategoryId}
+            placeholder={categories.length ? "Select…" : "Create a category first"}
           />
           <Select
             label="Period"
@@ -1016,7 +1154,7 @@ function PolicyDialog({
               { value: "per_month", label: "Per month" },
             ]}
             value={period}
-            onChange={(v) => setPeriod(v as Policy["period"])}
+            onChange={(v) => setPeriod(v as AdminPolicy["period"])}
           />
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -1082,54 +1220,76 @@ function PolicyDialog({
 
 /* =============================================================== ROUTING === */
 
-function RoutingTab() {
+function RoutingTab({ onForbidden }: { onForbidden: () => void }) {
   const { show } = useSnackbar();
   const { state, retry, refresh } = useRoutes();
-  const [editing, setEditing] = React.useState<RoutingRule | null>(null);
+  const categoryState = useCategories();
+  const [editing, setEditing] = React.useState<AdminRoute | null>(null);
   const [creating, setCreating] = React.useState(false);
-  const [confirm, setConfirm] = React.useState<RoutingRule | null>(null);
+  const [confirm, setConfirm] = React.useState<AdminRoute | null>(null);
+  const [confirmError, setConfirmError] = React.useState<string | null>(null);
+  const [confirmPending, setConfirmPending] = React.useState(false);
 
-  function handleSave(input: RouteInput) {
+  React.useEffect(() => {
+    if (state.status === "denied") onForbidden();
+  }, [state.status, onForbidden]);
+
+  const categories = readyRows(categoryState);
+  const categoryName = React.useCallback(
+    (id?: string) => categories.find((c) => c.id === id)?.name,
+    [categories]
+  );
+
+  async function handleSave(input: RouteInput) {
     try {
       if (editing) {
-        updateRoute(editing.id, input);
-        show(`Route “${input.name}” updated.`, { tone: "success" });
+        await editRoute(editing.id, input);
+        show(`Route "${input.name}" updated.`, { tone: "success" });
       } else {
-        createRoute(input);
-        show(`Route “${input.name}” created.`, { tone: "success" });
+        await addRoute(input);
+        show(`Route "${input.name}" created.`, { tone: "success" });
       }
       setEditing(null);
       setCreating(false);
       refresh();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Could not save the route.", {
-        tone: "error",
-      });
+      if (err instanceof AdminApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      throw err;
     }
   }
 
-  function handleToggle() {
+  async function handleDeactivate() {
     if (!confirm) return;
+    setConfirmPending(true);
+    setConfirmError(null);
     try {
-      const next = !confirm.active;
-      setRouteActive(confirm.id, next);
-      show(`Route “${confirm.name}” ${next ? "activated" : "deactivated"}.`, {
-        tone: "success",
-      });
+      await deactivateRoute(confirm.id);
+      show(`Route "${confirm.name}" deactivated.`, { tone: "success" });
       setConfirm(null);
       refresh();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Could not change status.", {
-        tone: "error",
-      });
+      if (err instanceof AdminApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setConfirmError(err instanceof Error ? err.message : "Could not deactivate the route.");
+    } finally {
+      setConfirmPending(false);
     }
   }
 
-  function handleReorder(routeId: string, orderedStepIds: string[]) {
+  async function handleReorder(routeId: string, orderedStepIds: string[]) {
     try {
-      reorderRouteSteps(routeId, orderedStepIds);
+      await reorderRouteSteps(routeId, orderedStepIds);
       refresh();
     } catch (err) {
+      if (err instanceof AdminApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
       show(err instanceof Error ? err.message : "Could not reorder steps.", {
         tone: "error",
       });
@@ -1169,8 +1329,12 @@ function RoutingTab() {
             <RouteCard
               key={rule.id}
               rule={rule}
+              categoryName={categoryName}
               onEdit={() => setEditing(rule)}
-              onToggle={() => setConfirm(rule)}
+              onDeactivate={() => {
+                setConfirm(rule);
+                setConfirmError(null);
+              }}
               onReorder={(ids) => handleReorder(rule.id, ids)}
             />
           ))}
@@ -1180,6 +1344,7 @@ function RoutingTab() {
       <RouteDialog
         open={creating || editing !== null}
         initial={editing}
+        categories={categories}
         onClose={() => {
           setEditing(null);
           setCreating(false);
@@ -1191,9 +1356,13 @@ function RoutingTab() {
         open={confirm !== null}
         name={confirm?.name ?? ""}
         kind="route"
-        active={confirm?.active ?? true}
-        onClose={() => setConfirm(null)}
-        onConfirm={handleToggle}
+        error={confirmError}
+        pending={confirmPending}
+        onClose={() => {
+          setConfirm(null);
+          setConfirmError(null);
+        }}
+        onConfirm={handleDeactivate}
       />
     </div>
   );
@@ -1201,16 +1370,18 @@ function RoutingTab() {
 
 function RouteCard({
   rule,
+  categoryName,
   onEdit,
-  onToggle,
+  onDeactivate,
   onReorder,
 }: {
-  rule: RoutingRule;
+  rule: AdminRoute;
+  categoryName: (id?: string) => string | undefined;
   onEdit: () => void;
-  onToggle: () => void;
+  onDeactivate: () => void;
   onReorder: (orderedStepIds: string[]) => void;
 }) {
-  const condition = rule.condition || summarizeMatch(rule.match);
+  const condition = summarizeMatch(rule.match, categoryName(rule.match.categoryId));
   return (
     <Card>
       <div className="flex items-start justify-between gap-3">
@@ -1265,14 +1436,14 @@ function RouteCard({
         ))}
       </ol>
       <div className="mt-4 flex justify-end">
-        <RowActions active={rule.active} onEdit={onEdit} onToggle={onToggle} />
+        <RowActions active={rule.active} onEdit={onEdit} onDeactivate={onDeactivate} />
       </div>
     </Card>
   );
 }
 
 /** Return step ids with positions i and j swapped (for up/down reorder). */
-function swap(steps: RoutingStep[], i: number, j: number): string[] {
+function swap(steps: AdminRouteStep[], i: number, j: number): string[] {
   if (j < 0 || j >= steps.length) return steps.map((s) => s.id);
   const ids = steps.map((s) => s.id);
   [ids[i], ids[j]] = [ids[j], ids[i]];
@@ -1282,13 +1453,15 @@ function swap(steps: RoutingStep[], i: number, j: number): string[] {
 function RouteDialog({
   open,
   initial,
+  categories,
   onClose,
   onSave,
 }: {
   open: boolean;
-  initial: RoutingRule | null;
+  initial: AdminRoute | null;
+  categories: AdminCategory[];
   onClose: () => void;
-  onSave: (input: RouteInput) => void;
+  onSave: (input: RouteInput) => Promise<void>;
 }) {
   const [name, setName] = React.useState("");
   const [minAmount, setMinAmount] = React.useState("");
@@ -1297,6 +1470,7 @@ function RouteDialog({
   const [department, setDepartment] = React.useState("");
   const [steps, setSteps] = React.useState<RouteStepInput[]>([]);
   const [error, setError] = React.useState<string | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -1308,7 +1482,6 @@ function RouteDialog({
       setSteps(
         initial
           ? initial.steps.map((s) => ({
-              id: s.id,
               approverType: s.approverType,
               approverId: s.approverId,
               label: s.label,
@@ -1321,13 +1494,12 @@ function RouteDialog({
             ]
       );
       setError(null);
+      setSubmitting(false);
     }
   }, [open, initial]);
 
   function updateStep(idx: number, patch: Partial<RouteStepInput>) {
-    setSteps((arr) =>
-      arr.map((s, i) => (i === idx ? { ...s, ...patch } : s))
-    );
+    setSteps((arr) => arr.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
   }
 
   function moveStep(idx: number, dir: -1 | 1) {
@@ -1348,7 +1520,7 @@ function RouteDialog({
     setSteps((arr) => arr.filter((_, i) => i !== idx));
   }
 
-  function submit() {
+  async function submit() {
     if (!name.trim()) {
       setError("Route name is required.");
       return;
@@ -1376,19 +1548,28 @@ function RouteDialog({
       return;
     }
     setError(null);
-    onSave({
-      id: initial?.id,
-      name,
-      match: {
-        minAmount: minNum,
-        maxAmount: maxNum,
-        categoryId: (categoryId || undefined) as RouteInput["match"]["categoryId"],
-        department: department || undefined,
-      },
-      steps,
-      isFallback: initial?.isFallback,
-      active: initial?.active,
-    });
+    setSubmitting(true);
+    try {
+      await onSave({
+        name,
+        match: {
+          minAmount: minNum,
+          maxAmount: maxNum,
+          categoryId: categoryId || undefined,
+          department: department || undefined,
+        },
+        steps,
+        isFallback: initial?.isFallback,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not save the route. Check your connection and try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const categoryOptions = [
@@ -1412,10 +1593,12 @@ function RouteDialog({
       description="Match claims by amount, category, or department, then define the ordered approval chain."
       footer={
         <>
-          <Button variant="text" onClick={onClose}>
+          <Button variant="text" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={submit}>{initial ? "Save changes" : "Create route"}</Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? "Saving…" : initial ? "Save changes" : "Create route"}
+          </Button>
         </>
       }
     >
@@ -1531,15 +1714,7 @@ function RouteDialog({
           </Button>
         </fieldset>
 
-        {error && (
-          <p
-            role="alert"
-            className="flex items-center gap-2 rounded-xl bg-error-container px-3 py-2 text-sm text-error-container-foreground"
-          >
-            <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
-            {error}
-          </p>
-        )}
+        {error && <FormErrorBanner message={error} />}
       </div>
     </Dialog>
   );
