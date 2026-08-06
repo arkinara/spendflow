@@ -10,8 +10,8 @@ BE-reporting) depends on for identity and authorization.
 - **Architecture choice:** a **separate `backend/` TypeScript workspace**
   (its own `package.json`, `tsconfig`, Drizzle config, Vitest config) so the
   DB/auth tooling stays isolated from the Next.js build in `frontend/`.
-  The Next.js web app is **not** wired to this backend yet — that is BE-#11,
-  which depends on this ticket.
+  The Next.js frontend is fully wired to this backend — every vertical talks
+  HTTP to it (see `../frontend/README.md`).
 
 ## Quick start
 
@@ -26,12 +26,14 @@ npm run dev                     # start Hono on http://localhost:8787
 
 ### Two-server dev workflow (with the frontend)
 
-The Next.js frontend (`../frontend`) talks to this backend over HTTP. Run both
-in dev:
+The Next.js frontend (`../frontend`) talks to this backend over HTTP. The FE
+has no mock mode — it needs this server running **and** the DB migrated +
+seeded, otherwise there is nothing to log in against. Run both in dev:
 
 ```bash
 # terminal A — backend (this repo)
-cd backend && npm run dev         # http://localhost:8787
+cd backend && npm run db:migrate && npm run seed && npm run dev
+#                                                          http://localhost:8787
 
 # terminal B — frontend
 cd frontend && npm run dev        # http://localhost:3000
@@ -40,13 +42,15 @@ cd frontend && npm run dev        # http://localhost:3000
 The frontend targets this server via `NEXT_PUBLIC_BE_URL`
 (default `http://localhost:8787`); this server must allow the FE origin via
 `FRONTEND_ORIGIN` (default `http://localhost:3000`) so the browser can send the
-httpOnly session cookie cross-origin. See `../frontend/README.md` for the full
-flow and the demo credentials.
+httpOnly session cookie cross-origin. If the browser shows a CORS preflight
+error, check `FRONTEND_ORIGIN` in `backend/.env` matches the exact origin the
+FE is served from. See `../frontend/README.md` for the full flow and the demo
+credentials.
 
 Verify everything passes:
 
 ```bash
-npm test                        # 19 integration tests (in-memory DBs)
+npm test                        # integration tests (in-memory DBs)
 npm run typecheck               # tsc --noEmit, exit 0
 npm run build                   # compile to dist/, exit 0
 ```

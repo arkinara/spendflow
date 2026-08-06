@@ -42,7 +42,7 @@ vi.mock("next/link", () => ({
  * #21: `/finance/policies` and `useAdminStore` read/write exclusively through
  * `@/lib/api/admin`. Mock that module so the page is fed controlled
  * `AdminCategory`/`AdminPolicy`/`AdminRoute` fixtures derived from the
- * fallback `lib/mock/adminStore` collections (still the FE's shared seed
+ * fallback `lib/store/adminStore` collections (still the FE's shared seed
  * data), and mutators delegate to the store's real validation so the BE's
  * invariants (duplicate code, min>=max thresholds, unsupported currency, zero
  * steps) are exercised through the same typed `AdminApiError` the real HTTP

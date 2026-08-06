@@ -14,8 +14,8 @@
  *   - `forbidden`            (403) — caller is not a Finance Admin
  *
  * `ReportFilters` / the URL-state helpers are reused as-is from
- * `lib/mock/reportFilter` (pure, no dependency on the mock claims fixture) so
- * the query-string shape stays identical between the FE URL and the BE's
+ * `lib/utils/reportFilter` (pure, no HTTP dependency) so the query-string
+ * shape stays identical between the FE URL and the BE's
  * `start/end/dept/cat/status` params.
  * ========================================================================== */
 

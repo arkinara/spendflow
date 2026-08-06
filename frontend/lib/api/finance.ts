@@ -124,10 +124,10 @@ export interface FinanceGroup {
 
 /**
  * Dashboard payload composed client-side from the exceptions + payments
- * endpoints. Structurally identical to the legacy mock
- * `FinanceDashboardData` (`lib/mock/financeDashboard.ts`) so the dashboard
- * page's `DashboardBody` keeps its render contract — only the array element
- * types widen to carry the BE-provided `employeeName` / `totalAmount`.
+ * endpoints. Structurally identical to the `FinanceDashboardData` consumed by
+ * `lib/hooks/useFinanceDashboard.ts` so the dashboard page's `DashboardBody`
+ * keeps its render contract — only the array element types widen to carry the
+ * BE-provided `employeeName` / `totalAmount`.
  */
 export interface FinanceDashboardData {
   exceptions: FinanceExceptionItem[];

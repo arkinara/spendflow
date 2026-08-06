@@ -1,9 +1,8 @@
 /* ============================================================================
    SpendFlow — seeded fixtures (Phase 1, web).
-   Data moved out of the legacy lib/mock mock module in cleanup-2 (split from #24).
-   These constants are the seeded fixture set for the Phase 1 dev environment:
-   NO backend, NO API, NO OCR. Every screen consumes these fixtures.
-   Pure data — no imports from lib/mock/*.
+   Seed data extracted from the legacy lib/mock module in cleanup-2 (split from #24).
+   These constants are the shared fixture set that backs the FE stores, seed
+   data, and tests. Pure data — no imports from lib/api/*, no BE dependency.
    ========================================================================== */
 
 import type {

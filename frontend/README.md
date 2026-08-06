@@ -3,11 +3,12 @@
 Responsive spend-management, reimbursement, and approval app for travel expenses.
 Built with **Next.js (App Router) + TypeScript + Tailwind CSS + Material Design 3**.
 
-> **Phase 1.** Authentication + sessions are backed by the real Better Auth +
-> Drizzle backend (`../backend`). The other verticals (claims, approvals,
-> finance, admin, notifications, reporting) still render from mock fixtures in
-> `lib/mock/` and will be wired to the backend in tickets #18–#24. Receipt
-> upload is manual (file metadata only). OCR is Phase 2.
+> **Phase 1.** All verticals — auth + sessions, claims, approvals, finance,
+> admin, notifications, reporting — are HTTP-backed against the real Better
+> Auth + Drizzle backend (`../backend`). There is **no mock mode**: if the
+> backend is unreachable, screens render an error state rather than falling
+> back to fixtures. Receipt upload is manual (file metadata only). OCR is
+> Phase 2.
 
 ## Requirements
 
@@ -103,7 +104,7 @@ remembered in `localStorage` (`spendflow.theme`).
 
 ```
 /                         Landing + role picker
-/login                    Mock login with role presets
+/login                    Login with role presets
 /employee                 Employee dashboard
 /employee/claims          Claim history (search + status filters)
 /employee/claims/new      Multi-step claim wizard (Trip → Expenses → Receipts)
@@ -148,8 +149,11 @@ frontend/
 │  ├─ utils.ts              # cn() class merger
 │  ├─ format.ts             # currency / date / relative-time helpers
 │  ├─ auth/                 # apiClient (Better Auth HTTP) + SessionProvider + routeAccess
-│  ├─ api/fetch.ts          # apiFetch() wrapper + global 401 handler
-│  └─ mock/mock_data.ts     # fixtures (users, claims, payments, policies, …) — retired in #24
+│  ├─ api/                  # apiFetch() wrapper + typed HTTP clients (all BE calls)
+│  ├─ hooks/                # useFinanceDashboard, useAdminStore, … (BE-backed)
+│  ├─ store/                # fallback stores (claimStore, adminStore, notifyStore)
+│  ├─ fixtures.ts           # seeded fixture data (tests, stores)
+│  └─ seed-data.ts          # shared seed data
 ├─ tailwind.config.ts       # M3 tokens, radius, spacing, motion
 └─ app/globals.css          # CSS variables (light + dark)
 ```
@@ -164,6 +168,6 @@ queue. IDR is the primary currency; USD is supported as secondary.
 
 ## Shareable prototype
 
-A self-contained, dependency-free HTML mock of every key screen lives at
+A self-contained, dependency-free HTML prototype of every key screen lives at
 `/tmp/ux-prototype.html` (Tailwind via CDN, same M3 tokens). Open it directly in a
 browser to click through or print — no build step required.
