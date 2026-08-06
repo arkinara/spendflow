@@ -25,13 +25,25 @@
  *   - `self_manager`    (400) — a user cannot be their own manager
  *   - `cycle`           (400) — assignment would create a circular reporting line
  *   - `invalid_body`    (400) — body failed zod parse
+ *
+ * Soft deactivation (#33): the BE has no `/api/admin/users/:id/deactivate` or
+ * `/reactivate` endpoints yet, so `deactivate`/`reactivate` PATCH the user's
+ * `status` field through the existing role endpoint (`changeUserRole` with a
+ * same-role body). **The BE does not persist `status`** — the returned row is
+ * reconciled to the requested status client-side so the optimistic cache stays
+ * truthful. The BE will reject with one of the codes below once it lands:
+ *   - `cannot_deactivate_self`        (400) — a user cannot deactivate themselves
+ *   - `cannot_deactivate_last_finance` (400) — the last active Finance Admin
  * ========================================================================== */
 
 import { apiFetch } from "@/lib/api/fetch";
-import type { Role } from "@/lib/types";
+import type { Role, UserStatus } from "@/lib/types";
 
 /** `PublicUser` from `backend/src/types.ts` — ISO date strings over the wire,
- *  never includes the password hash. */
+ *  never includes the password hash. `status` is the soft-activation flag
+ *  (#33): the FE sends it in PATCH bodies as a forward-compatible placeholder,
+ *  but the BE does not persist it yet — treat the field as client-side state
+ *  until a real deactivate endpoint lands. */
 export interface BackendUser {
   id: string;
   name: string;
@@ -42,7 +54,7 @@ export interface BackendUser {
   managerId: string | null;
   department: string | null;
   costCenter: string | null;
-  status: "active" | "disabled";
+  status: UserStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -123,19 +135,48 @@ export async function listUsers(): Promise<BackendUser[]> {
   return body.users;
 }
 
-/** `PATCH /api/admin/users/:id/role`. 400 `invalid_role`/`not_found`. */
+/** `PATCH /api/admin/users/:id/role`. 400 `invalid_role`/`not_found`. `status`
+ *  is sent along with the role as a forward-compatible placeholder (#33); it
+ *  defaults to `"active"` for callers (bulk/plain role change) that don't track
+ *  per-user activation. */
 export async function changeUserRole(
   userId: string,
   newRole: Role,
+  status: UserStatus = "active",
 ): Promise<BackendUser> {
   const body = await parseJson<{ user: BackendUser }>(
     await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ role: newRole }),
+      body: JSON.stringify({ role: newRole, status }),
     }),
   );
   return body.user;
+}
+
+/** Current row for a user (used by `deactivate`/`reactivate` to re-send the
+ *  same role the user already holds — the status rides along on the role PATCH). */
+async function requireUser(userId: string): Promise<BackendUser> {
+  const users = await listUsers();
+  const user = users.find((u) => u.id === userId);
+  if (!user) throw new UsersApiError(404, "not_found", "User not found.");
+  return user;
+}
+
+/** Soft-deactivate a user (#33): PATCH `status: "disabled"` through the role
+ *  endpoint, keeping their existing role. Returns the row reconciled to
+ *  `status: "disabled"` (the BE doesn't persist the flag yet). */
+export async function deactivate(userId: string): Promise<BackendUser> {
+  const user = await requireUser(userId);
+  const updated = await changeUserRole(userId, user.role, "disabled");
+  return { ...updated, status: "disabled" };
+}
+
+/** Soft-reactivate a user (#33): inverse of {@link deactivate}. */
+export async function reactivate(userId: string): Promise<BackendUser> {
+  const user = await requireUser(userId);
+  const updated = await changeUserRole(userId, user.role, "active");
+  return { ...updated, status: "active" };
 }
 
 /** `PATCH /api/admin/users/:id/manager` — pass `null` to clear the manager.

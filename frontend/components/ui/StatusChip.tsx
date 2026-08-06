@@ -9,7 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ClaimStatus, PaymentStatus } from "@/lib/types";
+import type { ClaimStatus, PaymentStatus, UserStatus } from "@/lib/types";
 
 type Tone = "success" | "warning" | "error" | "info" | "neutral";
 
@@ -37,6 +37,12 @@ const PAYMENT_SPECS: Record<PaymentStatus, ChipSpec> = {
   failed: { label: "Failed", tone: "error", icon: XCircle },
 };
 
+/** Soft-activation chip (#33): green "Active" / grey "Inactive". */
+const USER_SPECS: Record<UserStatus, ChipSpec> = {
+  active: { label: "Active", tone: "success", icon: CheckCircle2 },
+  disabled: { label: "Inactive", tone: "neutral", icon: XCircle },
+};
+
 const TONE_CLASSES: Record<Tone, string> = {
   success: "bg-success-container text-success-container-foreground",
   warning: "bg-warning-container text-warning-container-foreground",
@@ -51,7 +57,7 @@ const SIZE_CLASSES = {
 } as const;
 
 export interface StatusChipProps {
-  status?: ClaimStatus;
+  status?: ClaimStatus | UserStatus;
   paymentStatus?: PaymentStatus;
   size?: keyof typeof SIZE_CLASSES;
   className?: string;
@@ -63,8 +69,11 @@ export function StatusChip({
   size = "md",
   className,
 }: StatusChipProps) {
+  const isUserStatus = status === "active" || status === "disabled";
   const spec: ChipSpec = paymentStatus
     ? PAYMENT_SPECS[paymentStatus]
+    : isUserStatus
+    ? USER_SPECS[status as UserStatus]
     : status
     ? CLAIM_SPECS[status]
     : CLAIM_SPECS.draft;

@@ -4,6 +4,8 @@ import {
   changeUserRole,
   setUserManager,
   bulkChangeRole,
+  deactivate,
+  reactivate,
   UsersApiError,
   BulkPartialFailureError,
   type BackendUser,
@@ -99,7 +101,10 @@ describe("changeUserRole", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
     expect(init).toMatchObject({ method: "PATCH", credentials: "include" });
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ role: "approver" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      role: "approver",
+      status: "active",
+    });
     expect(result.role).toBe("approver");
   });
 
@@ -230,5 +235,106 @@ describe("bulkChangeRole", () => {
     const result = await bulkChangeRole([], "approver");
     expect(result).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("deactivate / reactivate (#33)", () => {
+  it("deactivate reads the role, PATCHes status disabled, and returns an inactive row", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { users: [backendUser()] }))
+      .mockResolvedValueOnce(jsonResponse(200, { user: backendUser(), audit: {} }));
+
+    const result = await deactivate("u-emp-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // First the directory is read to learn the user's current role…
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/users`);
+    // …then the role PATCH carries the status placeholder.
+    const [patchUrl, init] = fetchMock.mock.calls[1];
+    expect(patchUrl).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      role: "employee",
+      status: "disabled",
+    });
+    expect(result.status).toBe("disabled");
+  });
+
+  it("reactivate PATCHes status active and returns an active row", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { users: [backendUser({ status: "disabled" })] }))
+      .mockResolvedValueOnce(jsonResponse(200, { user: backendUser({ status: "disabled" }) }));
+
+    const result = await reactivate("u-emp-1");
+
+    const [patchUrl, init] = fetchMock.mock.calls[1];
+    expect(patchUrl).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      role: "employee",
+      status: "active",
+    });
+    // The BE doesn't persist the flag; the client reconciles the response.
+    expect(result.status).toBe("active");
+  });
+
+  it("deactivate keeps a finance user's role in the body", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          users: [backendUser({ id: "u-fin-1", role: "finance", managerId: null })],
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, { user: backendUser({ id: "u-fin-1", role: "finance" }) })
+      );
+
+    const result = await deactivate("u-fin-1");
+
+    const [, init] = fetchMock.mock.calls[1];
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      role: "finance",
+      status: "disabled",
+    });
+    expect(result.role).toBe("finance");
+    expect(result.status).toBe("disabled");
+  });
+
+  it("throws cannot_deactivate_self when the BE rejects a self-deactivation", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { users: [backendUser()] }))
+      .mockResolvedValueOnce(
+        jsonResponse(400, {
+          error: { code: "cannot_deactivate_self", message: "You cannot deactivate your own account" },
+        })
+      );
+
+    const err = await deactivate("u-emp-1").catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect((err as UsersApiError)).toMatchObject({ status: 400, code: "cannot_deactivate_self" });
+  });
+
+  it("throws cannot_deactivate_last_finance when deactivating the only finance user", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, { users: [backendUser({ id: "u-fin-1", role: "finance" })] })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(400, {
+          error: { code: "cannot_deactivate_last_finance", message: "Cannot deactivate the last Finance Admin" },
+        })
+      );
+
+    const err = await deactivate("u-fin-1").catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect((err as UsersApiError).code).toBe("cannot_deactivate_last_finance");
+  });
+
+  it("throws a 404 not_found without any PATCH when the target is missing", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { users: [] }));
+
+    const err = await deactivate("nope").catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 404, code: "not_found" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

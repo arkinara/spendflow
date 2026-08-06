@@ -33,6 +33,7 @@ export const users: User[] = [
     department: "Operations",
     managerId: "u-mgr-1",
     avatarColor: "primary",
+    status: "active",
   },
   {
     id: "u-mgr-1",
@@ -42,6 +43,7 @@ export const users: User[] = [
     jobTitle: "Operations Manager",
     department: "Operations",
     avatarColor: "tertiary",
+    status: "active",
   },
   {
     id: "u-fin-1",
@@ -51,6 +53,7 @@ export const users: User[] = [
     jobTitle: "Finance Administrator",
     department: "Finance",
     avatarColor: "secondary",
+    status: "active",
   },
   {
     id: "u-emp-2",
@@ -61,6 +64,7 @@ export const users: User[] = [
     department: "Operations",
     managerId: "u-mgr-1",
     avatarColor: "info",
+    status: "active",
   },
   {
     id: "u-emp-3",
@@ -71,6 +75,7 @@ export const users: User[] = [
     department: "Sales",
     managerId: "u-mgr-1",
     avatarColor: "warning",
+    status: "active",
   },
 ];
 

@@ -13,6 +13,13 @@
  * users and bulk-change their role in one action. The bulk action loops
  * `changeUserRole` sequentially (no BE bulk endpoint yet) and surfaces a
  * partial failure inline with the failing user ids.
+ *
+ * #33: adds a per-row Deactivate/Reactivate action + a status chip (green
+ * Active / grey Inactive). Deactivation is a soft flag (`status: "disabled"`)
+ * flipped optimistically in the `useUsers` cache — the BE has no deactivate
+ * endpoint yet, so the status rides the role PATCH and isn't persisted server
+ * side. Self-deactivation and deactivating the last active Finance Admin are
+ * blocked client-side (defense in depth; the BE rejects too once it lands).
  * ========================================================================== */
 
 import * as React from "react";
@@ -31,9 +38,12 @@ import { DataTable } from "@/components/ui/DataTable";
 import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { Dialog } from "@/components/ui/Dialog";
 import { Select } from "@/components/ui/Select";
+import { TextArea } from "@/components/ui/TextArea";
+import { StatusChip } from "@/components/ui/StatusChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
+import { useRole } from "@/lib/auth/session";
 import { useUsers } from "@/lib/hooks/useUsers";
 import {
   changeUserRole,
@@ -55,6 +65,13 @@ const ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "approver", label: "Approver" },
   { value: "finance", label: "Finance Admin" },
 ];
+
+/** Target of the deactivate/reactivate confirm dialog (#33). */
+export type StatusAction = "deactivate" | "reactivate";
+export interface StatusTarget {
+  user: BackendUser;
+  action: StatusAction;
+}
 
 export default function UsersAdminPage() {
   const [roleTarget, setRoleTarget] = React.useState<BackendUser | null>(null);
@@ -178,7 +195,8 @@ function UsersTab({
   setManagerTarget: (u: BackendUser | null) => void;
 }) {
   const { show } = useSnackbar();
-  const { state, retry, refresh, bulkChangeRole } = useUsers();
+  const { user: currentUser } = useRole();
+  const { state, retry, refresh, bulkChangeRole, deactivate, reactivate } = useUsers();
 
   React.useEffect(() => {
     if (state.status === "denied") onForbidden();
@@ -189,6 +207,32 @@ function UsersTab({
     () => new Map(rows.map((u) => [u.id, u.name])),
     [rows]
   );
+
+  // #33: per-row deactivate/reactivate target + guard rails.
+  const [statusTarget, setStatusTarget] = React.useState<StatusTarget | null>(null);
+
+  const activeFinanceCount = React.useMemo(
+    () => rows.filter((u) => u.role === "finance" && u.status === "active").length,
+    [rows]
+  );
+
+  /** True when `u` must keep its Deactivate button disabled: the signed-in
+   *  Finance Admin (can't disable yourself) or the last active Finance Admin
+   *  (would lock the company out of Finance). */
+  const canDeactivate = (u: BackendUser) =>
+    u.id !== currentUser.id &&
+    !(u.role === "finance" && u.status === "active" && activeFinanceCount <= 1);
+
+  async function handleStatusSaved(target: BackendUser, action: StatusAction) {
+    if (action === "deactivate") {
+      await deactivate(target.id);
+      show(`${target.name} deactivated.`, { tone: "success" });
+    } else {
+      await reactivate(target.id);
+      show(`${target.name} reactivated.`, { tone: "success" });
+    }
+    setStatusTarget(null);
+  }
 
   /* ---------------------------------------------- bulk selection (select all) */
 
@@ -337,6 +381,13 @@ function UsersTab({
                 render: (u) => <RolePill role={u.role} />,
               },
               {
+                key: "status",
+                header: "Status",
+                sortable: true,
+                sortValue: (u) => u.status,
+                render: (u) => <StatusChip status={u.status} size="sm" />,
+              },
+              {
                 key: "manager",
                 header: "Manager",
                 sortable: true,
@@ -362,6 +413,26 @@ function UsersTab({
                 align: "right",
                 render: (u) => (
                   <div className="flex justify-end gap-2">
+                    {u.status === "active" ? (
+                      <Button
+                        variant="text"
+                        size="sm"
+                        icon={ShieldX}
+                        disabled={!canDeactivate(u)}
+                        onClick={() => setStatusTarget({ user: u, action: "deactivate" })}
+                      >
+                        Deactivate
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="text"
+                        size="sm"
+                        icon={ShieldCheck}
+                        onClick={() => setStatusTarget({ user: u, action: "reactivate" })}
+                      >
+                        Reactivate
+                      </Button>
+                    )}
                     <Button
                       variant="text"
                       size="sm"
@@ -414,7 +485,123 @@ function UsersTab({
         onSaved={handleBulkSaved}
         onForbidden={onForbidden}
       />
+
+      <StatusChangeDialog
+        open={statusTarget !== null}
+        target={statusTarget?.user ?? null}
+        action={statusTarget?.action ?? "deactivate"}
+        onClose={() => setStatusTarget(null)}
+        onSaved={handleStatusSaved}
+        onForbidden={onForbidden}
+      />
     </div>
+  );
+}
+
+/* ==================================================== deactivate/reactivate == */
+
+function StatusChangeDialog({
+  open,
+  target,
+  action,
+  onClose,
+  onSaved,
+  onForbidden,
+}: {
+  open: boolean;
+  target: BackendUser | null;
+  action: StatusAction;
+  onClose: () => void;
+  onSaved: (target: BackendUser, action: StatusAction) => Promise<void>;
+  onForbidden: () => void;
+}) {
+  const [reason, setReason] = React.useState("");
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setReason("");
+      setFormError(null);
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  const verb = action === "deactivate" ? "Deactivate" : "Reactivate";
+  const impact = target
+    ? action === "deactivate"
+      ? `${target.name} can no longer sign in. Their claims and approvals are preserved.`
+      : `${target.name} can sign in again. Their claims and approvals are preserved.`
+    : "";
+
+  async function submit() {
+    if (!target) return;
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await onSaved(target, action);
+    } catch (err) {
+      if (err instanceof UsersApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : `Could not ${verb.toLowerCase()} this user. Check your connection and try again.`
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={target ? `${verb} ${target.name}` : verb}
+      description={impact}
+      icon={
+        <span
+          className={`inline-flex h-11 w-11 items-center justify-center rounded-full ${
+            action === "deactivate"
+              ? "bg-error-container text-error-container-foreground"
+              : "bg-primary/15 text-primary"
+          }`}
+        >
+          {action === "deactivate" ? (
+            <ShieldX className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+          ) : (
+            <ShieldCheck className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+          )}
+        </span>
+      }
+      footer={
+        <>
+          <Button variant="text" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? `${verb}ing…` : target ? `${verb} ${target.name}` : verb}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {formError && <FormErrorBanner message={formError} />}
+        <TextArea
+          label="Reason (optional)"
+          placeholder={
+            action === "deactivate"
+              ? "Why is this user being deactivated?"
+              : "Why is this user being reactivated?"
+          }
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          helper="Not sent to the backend yet — captured here for the audit trail in a future release."
+        />
+      </div>
+    </Dialog>
   );
 }
 

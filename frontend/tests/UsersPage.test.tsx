@@ -49,6 +49,8 @@ const usersMocks = vi.hoisted(() => ({
   changeUserRole: vi.fn(),
   setUserManager: vi.fn(),
   bulkChangeRole: vi.fn(),
+  deactivate: vi.fn(),
+  reactivate: vi.fn(),
 }));
 
 vi.mock("@/lib/api/users", async (importOriginal) => {
@@ -61,6 +63,8 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     changeUserRole: usersMocks.changeUserRole,
     setUserManager: usersMocks.setUserManager,
     bulkChangeRole: usersMocks.bulkChangeRole,
+    deactivate: usersMocks.deactivate,
+    reactivate: usersMocks.reactivate,
   };
 });
 
@@ -163,6 +167,8 @@ beforeEach(() => {
   usersMocks.changeUserRole.mockReset();
   usersMocks.setUserManager.mockReset();
   usersMocks.bulkChangeRole.mockReset();
+  usersMocks.deactivate.mockReset();
+  usersMocks.reactivate.mockReset();
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
   usersMocks.bulkChangeRole.mockResolvedValue(SEED_USERS);
 });
@@ -321,6 +327,162 @@ describe("User directory — set manager dialog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /set manager/i }));
 
     expect(await within(dialog).findByText(/circular reporting line/i)).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------- status chip + deactivate (#33) */
+
+describe("User directory — status chip + deactivate/reactivate", () => {
+  it("renders a green Active chip for active users and a grey Inactive chip for disabled users", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      FINANCE,
+      backendUser(),
+      backendUser({
+        id: "u-dis",
+        name: "Gadis Purnama",
+        email: "gadis.purnama@spendflow.example",
+        role: "employee",
+        status: "disabled",
+      }),
+    ]);
+    renderPage();
+    await waitForReady(/Gadis Purnama/);
+
+    const activeChip = within(rowFor("Aulia Pratiwi")).getByText("Active");
+    expect(activeChip.className).toMatch(/bg-success-container/);
+
+    const disabledChip = within(rowFor("Gadis Purnama")).getByText("Inactive");
+    expect(disabledChip.className).toMatch(/bg-surface-container-high/);
+  });
+
+  it("deactivates a user with a verb-named confirm, flips the chip, and toasts", async () => {
+    usersMocks.deactivate.mockResolvedValue(backendUser({ status: "disabled" }));
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const row = rowFor("Aulia Pratiwi");
+    fireEvent.click(within(row).getByRole("button", { name: /^deactivate$/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: /deactivate aulia pratiwi/i })
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/can no longer sign in/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/claims and approvals are preserved/i)).toBeInTheDocument();
+    // Optional free-text reason is captured (not sent to the BE yet).
+    expect(within(dialog).getByLabelText(/reason \(optional\)/i)).toBeInTheDocument();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /deactivate aulia pratiwi/i })
+    );
+
+    await waitFor(() => expect(usersMocks.deactivate).toHaveBeenCalledWith("u-emp-1"));
+    // Success → dialog closes + success toast.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText(/aulia pratiwi deactivated/i)).toBeInTheDocument();
+    // The optimistic chip stays flipped WITHOUT a directory re-read.
+    await waitFor(() =>
+      expect(within(rowFor("Aulia Pratiwi")).getByText("Inactive")).toBeInTheDocument()
+    );
+    expect(usersMocks.listUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a Reactivate button for a disabled user and reactivates on confirm", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, backendUser({ status: "disabled" })]);
+    usersMocks.reactivate.mockResolvedValue(backendUser({ status: "active" }));
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const row = rowFor("Aulia Pratiwi");
+    expect(within(row).getByRole("button", { name: /^reactivate$/i })).toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", { name: /^deactivate$/i })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(row).getByRole("button", { name: /^reactivate$/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: /reactivate aulia pratiwi/i })
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/can sign in again/i)).toBeInTheDocument();
+
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /reactivate aulia pratiwi/i })
+    );
+
+    await waitFor(() => expect(usersMocks.reactivate).toHaveBeenCalledWith("u-emp-1"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText(/aulia pratiwi reactivated/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(rowFor("Aulia Pratiwi")).getByText("Active")).toBeInTheDocument()
+    );
+  });
+
+  it("disables Deactivate for the signed-in user (self-protection)", async () => {
+    renderPage();
+    await waitForReady(/Ridwan Saputra/);
+
+    const row = rowFor("Ridwan Saputra"); // u-fin-1 = the current session
+    expect(within(row).getByRole("button", { name: /^deactivate$/i })).toBeDisabled();
+  });
+
+  it("disables Deactivate when the target is the only active finance admin", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, backendUser()]);
+    renderPage();
+    await waitForReady(/Ridwan Saputra/);
+
+    expect(
+      within(rowFor("Ridwan Saputra")).getByRole("button", { name: /^deactivate$/i })
+    ).toBeDisabled();
+  });
+
+  it("allows deactivating a finance user when another active finance admin exists", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      FINANCE,
+      backendUser({
+        id: "u-fin-2",
+        name: "Candra Wijaya",
+        email: "candra.wijaya@spendflow.example",
+        role: "finance",
+        managerId: null,
+      }),
+      backendUser(),
+    ]);
+    renderPage();
+    await waitForReady(/Candra Wijaya/);
+
+    expect(
+      within(rowFor("Candra Wijaya")).getByRole("button", { name: /^deactivate$/i })
+    ).toBeEnabled();
+  });
+
+  it("keeps the dialog open, surfaces the BE error inline, and rolls the chip back", async () => {
+    usersMocks.deactivate.mockRejectedValue(
+      new UsersApiError(
+        400,
+        "cannot_deactivate_last_finance",
+        "Cannot deactivate the last Finance Admin"
+      )
+    );
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const row = rowFor("Aulia Pratiwi");
+    fireEvent.click(within(row).getByRole("button", { name: /^deactivate$/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /deactivate aulia pratiwi/i }));
+
+    // Inline BE error + dialog stays open (save button is the retry).
+    expect(
+      await within(dialog).findByText(/cannot deactivate the last finance admin/i)
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("heading", { name: /deactivate aulia pratiwi/i })
+    ).toBeInTheDocument();
+    // Chip rolled back to Active after the failure.
+    await waitFor(() =>
+      expect(within(rowFor("Aulia Pratiwi")).getByText("Active")).toBeInTheDocument()
+    );
   });
 });
 

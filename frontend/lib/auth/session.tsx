@@ -92,6 +92,7 @@ function toDisplayUser(authUser: AuthUser): User {
     department: authUser.department || "",
     managerId: authUser.managerId || undefined,
     avatarColor: "primary",
+    status: "active",
   };
 }
 
