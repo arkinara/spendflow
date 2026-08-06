@@ -81,8 +81,8 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   // handler (which covers ClaimError + AuthError + a generic 500).
   app.onError((err, c) => {
     if (err instanceof UserServiceError) {
-      const status: ContentfulStatusCode =
-        err.code === "not_found" ? 404 : 400;
+      const status: ContentfulStatusCode = (err.status ??
+        (err.code === "not_found" ? 404 : 400)) as ContentfulStatusCode;
       return jsonError(c, status, err.code, err.message);
     }
     if (err instanceof AttachmentError) {

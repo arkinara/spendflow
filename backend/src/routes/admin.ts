@@ -38,7 +38,12 @@ import {
   listRoutes,
   reorderRouteSteps,
 } from "../services/admin.js";
+import { hardDeleteUser } from "../services/users.js";
 import { jsonError } from "./claims.js";
+
+const userDeleteSchema = z.object({
+  password: z.string(),
+});
 
 const categoryCreateSchema = z.object({
   name: z.string().min(1),
@@ -186,6 +191,24 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const route = deactivateRoute(deps.db, ctx.user.id, c.req.param("id"));
     return c.json({ route });
+  });
+
+  /* ------------------------------------------------- user hard delete (#42) */
+
+  router.post("/api/admin/users/:id/delete", async (c) => {
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = userDeleteSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonError(c, 400, "invalid_body", "Body must be { password: string }");
+    }
+    await hardDeleteUser(
+      deps.db,
+      c.req.param("id"),
+      parsed.data.password,
+      ctx.user.id
+    );
+    return c.body(null, 204);
   });
 
   return router;

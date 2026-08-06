@@ -1,5 +1,11 @@
 import { eq } from "drizzle-orm";
-import { usersTable } from "../db/schema.js";
+import { verifyPassword } from "better-auth/crypto";
+import {
+  accountsTable,
+  sessionsTable,
+  userInvitationsTable,
+  usersTable,
+} from "../db/schema.js";
 import type { DB } from "../db/index.js";
 import { ROLES, type PublicUser, type Role, type UserStatus } from "../types.js";
 import { writeAudit } from "./audit.js";
@@ -11,8 +17,12 @@ export class UserServiceError extends Error {
       | "invalid_role"
       | "invalid_manager"
       | "self_manager"
-      | "cycle",
-    message: string
+      | "cycle"
+      | "cannot_delete_active_user"
+      | "invalid_password",
+    message: string,
+    /** Optional explicit HTTP status; defaults per-code otherwise (400/404). */
+    public status?: number
   ) {
     super(message);
     this.name = "UserServiceError";
@@ -200,4 +210,62 @@ export function asRole(value: unknown): Role | null {
 export function asUserStatus(value: unknown): UserStatus | null {
   if (value === "active" || value === "disabled" || value === "pending") return value;
   return null;
+}
+
+/**
+ * Hard-delete a user (pending or disabled only) after re-authenticating the
+ * actor via their own password (#42). Active users are protected; the actor's
+ * stored hash is verified with better-auth's verifyPassword (never logged,
+ * never echoed). The cascade delete (invitations → sessions → accounts →
+ * user) and the audit entry commit or roll back together.
+ */
+export async function hardDeleteUser(
+  db: DB,
+  targetId: string,
+  password: string,
+  actorId: string
+): Promise<{ deletedUserId: string }> {
+  const target = loadOrFail(db, targetId);
+  if (target.status === "active") {
+    throw new UserServiceError(
+      "cannot_delete_active_user",
+      "Active users cannot be deleted",
+      409
+    );
+  }
+
+  const actor = db
+    .select({ passwordHash: usersTable.passwordHash })
+    .from(usersTable)
+    .where(eq(usersTable.id, actorId))
+    .get();
+  const hash = actor?.passwordHash ?? null;
+  const verified = hash !== null && (await verifyPassword({ hash, password }));
+  if (!verified) {
+    throw new UserServiceError("invalid_password", "Invalid password", 401);
+  }
+
+  const before = {
+    id: target.id,
+    email: target.email,
+    name: target.name,
+    role: target.role,
+    status: target.status,
+  };
+  db.transaction((tx) => {
+    tx.delete(userInvitationsTable)
+      .where(eq(userInvitationsTable.userId, targetId))
+      .run();
+    tx.delete(sessionsTable).where(eq(sessionsTable.userId, targetId)).run();
+    tx.delete(accountsTable).where(eq(accountsTable.userId, targetId)).run();
+    tx.delete(usersTable).where(eq(usersTable.id, targetId)).run();
+    writeAudit(tx, {
+      actorId,
+      action: "user.delete",
+      entityType: "user",
+      entityId: targetId,
+      before,
+    });
+  });
+  return { deletedUserId: targetId };
 }
