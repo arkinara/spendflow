@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   ReceiptText,
   SlidersHorizontal,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -58,6 +59,7 @@ export function getNavItems(role: Role): NavDef[] {
         },
         { label: "Payments", href: "/finance/payments", icon: CreditCard },
         { label: "Policies", href: "/finance/policies", icon: SlidersHorizontal },
+        { label: "Users", href: "/finance/users", icon: Users },
         { label: "Reports", href: "/reports", icon: BarChart3 },
       ];
   }

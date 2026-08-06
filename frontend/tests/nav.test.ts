@@ -25,6 +25,7 @@ describe("getNavItems (role-based nav filtering)", () => {
     expect(hrefs).toContain("/finance/exceptions");
     expect(hrefs).toContain("/finance/payments");
     expect(hrefs).toContain("/finance/policies");
+    expect(hrefs).toContain("/finance/users");
   });
 
   it("Employee has no finance or approver routes", () => {
