@@ -12,6 +12,12 @@
  * responses are thrown as `UsersApiError` carrying the backend's `code` +
  * `message` so the UI can branch on the typed error code. Actual codes the BE
  * emits (see `services/users.ts` + `app.ts`):
+ *
+ * Bulk role change (#32): the BE has no `/api/admin/users/bulk/role` endpoint
+ * yet, so `bulkChangeRole` falls back to a sequential loop over
+ * `changeUserRole` — one `PATCH` per user, one audit entry each (N entries,
+ * not one batch). Any failure surfaces as `BulkPartialFailureError` with a
+ * `details` list of the failing user ids.
  *   - `forbidden`       (403) — caller is not a Finance Admin
  *   - `not_found`       (404) — unknown user id
  *   - `invalid_role`    (400) — role is not one of employee/approver/finance
@@ -50,6 +56,26 @@ export class UsersApiError extends Error {
     this.name = "UsersApiError";
     this.status = status;
     this.code = code;
+  }
+}
+
+/** One failing user inside a `BulkPartialFailureError` (code `partial_failure`). */
+export interface BulkFailureDetail {
+  userId: string;
+  error: UsersApiError;
+}
+
+/** Thrown by `bulkChangeRole` when at least one user in the batch fails. */
+export class BulkPartialFailureError extends UsersApiError {
+  readonly details: BulkFailureDetail[];
+  constructor(details: BulkFailureDetail[], succeeded: number, total: number) {
+    super(
+      0,
+      "partial_failure",
+      `${succeeded} of ${total} users updated; ${details.length} failed.`,
+    );
+    this.name = "BulkPartialFailureError";
+    this.details = details;
   }
 }
 
@@ -126,4 +152,36 @@ export async function setUserManager(
     }),
   );
   return body.user;
+}
+
+/** Bulk role change (#32) — sequential `PATCH /api/admin/users/:id/role` per
+ *  user (the BE has no bulk endpoint yet). Returns every updated user on a
+ *  fully-clean run; throws `BulkPartialFailureError` (`code:
+ *  "partial_failure"`) as soon as any user fails, with `details` listing each
+ *  failing user id + error so the UI can show them inline. An empty input
+ *  short-circuits to `[]` with no network calls. */
+export async function bulkChangeRole(
+  userIds: string[],
+  newRole: Role,
+): Promise<BackendUser[]> {
+  if (userIds.length === 0) return [];
+  const updated: BackendUser[] = [];
+  const details: BulkFailureDetail[] = [];
+  for (const userId of userIds) {
+    try {
+      updated.push(await changeUserRole(userId, newRole));
+    } catch (err) {
+      details.push({
+        userId,
+        error:
+          err instanceof UsersApiError
+            ? err
+            : new UsersApiError(0, "network", err instanceof Error ? err.message : String(err)),
+      });
+    }
+  }
+  if (details.length > 0) {
+    throw new BulkPartialFailureError(details, updated.length, userIds.length);
+  }
+  return updated;
 }

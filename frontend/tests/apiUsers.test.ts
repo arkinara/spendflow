@@ -3,7 +3,9 @@ import {
   listUsers,
   changeUserRole,
   setUserManager,
+  bulkChangeRole,
   UsersApiError,
+  BulkPartialFailureError,
   type BackendUser,
 } from "@/lib/api/users";
 import { BE_URL } from "@/lib/auth/apiClient";
@@ -183,5 +185,50 @@ describe("setUserManager", () => {
       status: 403,
       code: "forbidden",
     });
+  });
+});
+
+describe("bulkChangeRole", () => {
+  it("loops changeUserRole and returns every updated user on a clean run", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { user: backendUser({ id: "u-emp-1", role: "approver" }) }))
+      .mockResolvedValueOnce(jsonResponse(200, { user: backendUser({ id: "u-mgr-1", role: "approver" }) }));
+
+    const result = await bulkChangeRole(["u-emp-1", "u-mgr-1"], "approver");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(2);
+    expect(result.every((u) => u.role === "approver")).toBe(true);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
+    expect(fetchMock.mock.calls[1][0]).toBe(`${BE_URL}/api/admin/users/u-mgr-1/role`);
+  });
+
+  it("throws BulkPartialFailureError with details when some users fail", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { user: backendUser({ id: "u-emp-1", role: "finance" }) }))
+      .mockResolvedValueOnce(
+        jsonResponse(404, { error: { code: "not_found", message: "User gone" } }),
+      );
+
+    const err = await bulkChangeRole(["u-emp-1", "nope"], "finance").catch((e) => e);
+
+    expect(err).toBeInstanceOf(BulkPartialFailureError);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect((err as BulkPartialFailureError).code).toBe("partial_failure");
+    expect((err as BulkPartialFailureError).details).toHaveLength(1);
+    expect((err as BulkPartialFailureError).details[0]).toMatchObject({
+      userId: "nope",
+    });
+    expect((err as BulkPartialFailureError).details[0].error).toMatchObject({
+      status: 404,
+      code: "not_found",
+      message: "User gone",
+    });
+  });
+
+  it("returns an empty array without any network calls for empty input", async () => {
+    const result = await bulkChangeRole([], "approver");
+    expect(result).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -48,6 +48,7 @@ const usersMocks = vi.hoisted(() => ({
   listUsers: vi.fn(),
   changeUserRole: vi.fn(),
   setUserManager: vi.fn(),
+  bulkChangeRole: vi.fn(),
 }));
 
 vi.mock("@/lib/api/users", async (importOriginal) => {
@@ -55,9 +56,11 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
   return {
     ...actual,
     UsersApiError: actual.UsersApiError,
+    BulkPartialFailureError: actual.BulkPartialFailureError,
     listUsers: usersMocks.listUsers,
     changeUserRole: usersMocks.changeUserRole,
     setUserManager: usersMocks.setUserManager,
+    bulkChangeRole: usersMocks.bulkChangeRole,
   };
 });
 
@@ -66,7 +69,7 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { UsersApiError, type BackendUser } from "@/lib/api/users";
+import { UsersApiError, BulkPartialFailureError, type BackendUser } from "@/lib/api/users";
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -159,7 +162,9 @@ beforeEach(() => {
   usersMocks.listUsers.mockReset();
   usersMocks.changeUserRole.mockReset();
   usersMocks.setUserManager.mockReset();
+  usersMocks.bulkChangeRole.mockReset();
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
+  usersMocks.bulkChangeRole.mockResolvedValue(SEED_USERS);
 });
 
 afterEach(() => {
@@ -203,7 +208,7 @@ describe("User directory — role change dialog", () => {
   it("changes a role, closes the dialog, and refreshes the list", async () => {
     renderPage();
     await waitForReady(/Aulia Pratiwi/);
-    const rows = screen.getAllByRole("button", { name: /change role/i });
+    const rows = screen.getAllByRole("button", { name: /^change role/i });
     fireEvent.click(rows[0]);
 
     const dialog = await screen.findByRole("dialog");
@@ -316,6 +321,96 @@ describe("User directory — set manager dialog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /set manager/i }));
 
     expect(await within(dialog).findByText(/circular reporting line/i)).toBeInTheDocument();
+  });
+});
+
+/* ---------------------------------------------------- bulk role change (#32) */
+
+describe("User directory — bulk role change", () => {
+  it("disables the bulk button until 2+ users are selected", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const button = screen.getByRole("button", { name: /bulk change role/i });
+    expect(button).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select aulia pratiwi/i }));
+    expect(
+      screen.getByRole("button", { name: /bulk change role \(1\)/i })
+    ).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select ridwan saputra/i }));
+    expect(
+      screen.getByRole("button", { name: /bulk change role \(2\)/i })
+    ).toBeEnabled();
+  });
+
+  it("changes all selected users, closes the dialog, toasts, and clears selection", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    // Select all visible rows via the header checkbox.
+    fireEvent.click(screen.getByRole("checkbox", { name: /select all users/i }));
+    fireEvent.click(screen.getByRole("button", { name: /bulk change role \(3\)/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: /bulk change role/i })
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/change the role of 3 selected users/i)
+    ).toBeInTheDocument();
+
+    await pickOption(dialog, /new role/i, /approver/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: /change role for 3 users/i }));
+
+    await waitFor(() =>
+      expect(usersMocks.bulkChangeRole).toHaveBeenCalledWith(
+        expect.arrayContaining(["u-fin-1", "u-mgr-1", "u-emp-1"]),
+        "approver"
+      )
+    );
+    // Success → dialog closes + success toast + list refreshed.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText(/3 users changed to approver/i)).toBeInTheDocument();
+    await waitFor(() => expect(usersMocks.listUsers).toHaveBeenCalledTimes(2));
+
+    // Selection cleared after the successful action.
+    expect(screen.getByRole("button", { name: /^bulk change role$/i })).toBeDisabled();
+  });
+
+  it("keeps the dialog open and shows failing ids on a partial failure", async () => {
+    usersMocks.bulkChangeRole.mockRejectedValue(
+      new BulkPartialFailureError(
+        [
+          {
+            userId: "u-mgr-1",
+            error: new UsersApiError(404, "not_found", "User gone"),
+          },
+        ],
+        2,
+        3
+      )
+    );
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select all users/i }));
+    fireEvent.click(screen.getByRole("button", { name: /bulk change role \(3\)/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    await pickOption(dialog, /new role/i, /approver/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: /change role for 3 users/i }));
+
+    expect(
+      await within(dialog).findByText(/1 of 3 users could not be updated/i)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("u-mgr-1")).toBeInTheDocument();
+    expect(within(dialog).getByText(/user gone/i)).toBeInTheDocument();
+    // Dialog stays open (no silent close on failure).
+    expect(
+      within(dialog).getByRole("heading", { name: /bulk change role/i })
+    ).toBeInTheDocument();
   });
 });
 

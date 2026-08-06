@@ -10,10 +10,22 @@
  * same access-denied panel `RouteGuard` shows for a role mismatch, instead of
  * a bare error toast. 401 is handled globally by `apiFetch` — not re-handled
  * here.
+ *
+ * `bulkChangeRole` (#32) wraps the sequential `lib/api/users.ts` loop: on
+ * success it re-reads the directory via `refresh()`; on a partial failure it
+ * rethrows `BulkPartialFailureError` untouched so the dialog can show the
+ * failing user ids, and leaves the local cache as-is (the partially-updated
+ * list stays visible until the user retries or refreshes).
  * ========================================================================== */
 
 import * as React from "react";
-import { listUsers, UsersApiError, type BackendUser } from "@/lib/api/users";
+import {
+  bulkChangeRole as bulkChangeRoleApi,
+  listUsers,
+  UsersApiError,
+  type BackendUser,
+} from "@/lib/api/users";
+import type { Role } from "@/lib/types";
 
 export type UsersListState =
   | { status: "loading" }
@@ -26,6 +38,10 @@ export interface UseUsers {
   retry: () => void;
   /** Force a fresh read of the BE (e.g. after a role/manager mutation). */
   refresh: () => void;
+  /** Bulk-change the role of many users (#32). Re-reads the directory on
+   *  success; rethrows `BulkPartialFailureError` on a partial failure without
+   *  touching the cache. */
+  bulkChangeRole: (userIds: string[], newRole: Role) => Promise<BackendUser[]>;
 }
 
 export function useUsers(): UseUsers {
@@ -65,5 +81,14 @@ export function useUsers(): UseUsers {
 
   const refresh = React.useCallback(() => setAttempt((n) => n + 1), []);
 
-  return { state, retry, refresh };
+  const bulkChangeRole = React.useCallback(
+    async (userIds: string[], newRole: Role): Promise<BackendUser[]> => {
+      const rows = await bulkChangeRoleApi(userIds, newRole);
+      refresh();
+      return rows;
+    },
+    [refresh],
+  );
+
+  return { state, retry, refresh, bulkChangeRole };
 }

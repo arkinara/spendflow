@@ -26,6 +26,15 @@ export interface DataTableProps<T> {
   density?: "compact" | "comfortable";
   className?: string;
   caption?: string;
+  /** Optional leading "select all" checkbox in the header row (#32). */
+  headerCheckbox?: {
+    label: string;
+    checked: boolean;
+    indeterminate?: boolean;
+    onChange: () => void;
+  };
+  /** Optional leading per-row checkbox cell, keyed by row id (#32). */
+  rowCheckbox?: (row: T) => React.ReactNode;
 }
 
 export function DataTable<T>({
@@ -38,9 +47,21 @@ export function DataTable<T>({
   density = "comfortable",
   className,
   caption,
+  headerCheckbox,
+  rowCheckbox,
 }: DataTableProps<T>) {
   const [sortKey, setSortKey] = React.useState<string | null>(null);
   const [sortDir, setSortDir] = React.useState<"asc" | "desc">("asc");
+  const headerCheckboxRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (headerCheckboxRef.current && headerCheckbox) {
+      headerCheckboxRef.current.indeterminate = !!headerCheckbox.indeterminate;
+    }
+  }, [headerCheckbox?.checked, headerCheckbox?.indeterminate]);
+
+  const leadingCols = headerCheckbox || rowCheckbox ? 1 : 0;
+  const colCount = columns.length + leadingCols;
 
   const sorted = React.useMemo(() => {
     if (!sortKey) return data;
@@ -81,6 +102,18 @@ export function DataTable<T>({
           {caption && <caption className="sr-only">{caption}</caption>}
           <thead className="sticky top-0 z-10 bg-surface-container-high">
             <tr>
+              {headerCheckbox && (
+                <th scope="col" className={cn("border-b border-outline-variant", cellPad)}>
+                  <input
+                    ref={headerCheckboxRef}
+                    type="checkbox"
+                    aria-label={headerCheckbox.label}
+                    checked={headerCheckbox.checked}
+                    onChange={headerCheckbox.onChange}
+                    className="h-4 w-4 cursor-pointer accent-primary"
+                  />
+                </th>
+              )}
               {columns.map((col) => (
                 <th
                   key={col.key}
@@ -123,13 +156,13 @@ export function DataTable<T>({
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={columns.length} className="p-4">
+                <td colSpan={colCount} className="p-4">
                   <Skeleton variant="list" lines={4} />
                 </td>
               </tr>
             ) : sorted.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} className="p-0">
+                <td colSpan={colCount} className="p-0">
                   {empty ?? (
                     <div className="py-12 text-center text-sm text-on-surface-variant">
                       No records to display.
@@ -148,6 +181,9 @@ export function DataTable<T>({
                       "cursor-pointer hover:bg-surface-container focus-within:bg-surface-container"
                   )}
                 >
+                  {rowCheckbox && (
+                    <td className={cn(cellPad, "text-on-surface")}>{rowCheckbox(row)}</td>
+                  )}
                   {columns.map((col) => (
                     <td
                       key={col.key}

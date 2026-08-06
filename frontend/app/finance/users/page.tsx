@@ -8,6 +8,11 @@
  * dialogs. Reads/writes exclusively through `lib/api/users.ts` (BE #14). A BE
  * 403 maps to the same access-denied panel `RouteGuard` shows for a role
  * mismatch (the `denied` state of `useUsers`).
+ *
+ * #32: adds a checkbox column + top toolbar so a Finance Admin can pick 2+
+ * users and bulk-change their role in one action. The bulk action loops
+ * `changeUserRole` sequentially (no BE bulk endpoint yet) and surfaces a
+ * partial failure inline with the failing user ids.
  * ========================================================================== */
 
 import * as React from "react";
@@ -34,6 +39,7 @@ import {
   changeUserRole,
   setUserManager,
   UsersApiError,
+  BulkPartialFailureError,
   type BackendUser,
 } from "@/lib/api/users";
 import type { Role } from "@/lib/types";
@@ -129,15 +135,15 @@ function UsersError({ message, onRetry }: { message: string; onRetry: () => void
   );
 }
 
-function FormErrorBanner({ message }: { message: string }) {
+function FormErrorBanner({ message }: { message: React.ReactNode }) {
   return (
-    <p
+    <div
       role="alert"
-      className="flex items-center gap-2 rounded-xl bg-error-container px-3 py-2 text-sm text-error-container-foreground"
+      className="flex items-start gap-2 rounded-xl bg-error-container px-3 py-2 text-sm text-error-container-foreground"
     >
-      <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
-      {message}
-    </p>
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+      <div className="min-w-0 flex-1 space-y-1.5">{message}</div>
+    </div>
   );
 }
 
@@ -172,7 +178,7 @@ function UsersTab({
   setManagerTarget: (u: BackendUser | null) => void;
 }) {
   const { show } = useSnackbar();
-  const { state, retry, refresh } = useUsers();
+  const { state, retry, refresh, bulkChangeRole } = useUsers();
 
   React.useEffect(() => {
     if (state.status === "denied") onForbidden();
@@ -183,6 +189,50 @@ function UsersTab({
     () => new Map(rows.map((u) => [u.id, u.name])),
     [rows]
   );
+
+  /* ---------------------------------------------- bulk selection (select all) */
+
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = React.useState(false);
+
+  const toggleSelected = React.useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = React.useCallback(() => setSelectedIds(new Set()), []);
+
+  // "Select all" only ever selects the currently-filtered rows.
+  const allVisibleSelected =
+    rows.length > 0 && rows.every((u) => selectedIds.has(u.id));
+  const someVisibleSelected =
+    rows.some((u) => selectedIds.has(u.id)) && !allVisibleSelected;
+
+  const toggleSelectVisible = React.useCallback(() => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        rows.forEach((u) => next.delete(u.id));
+      } else {
+        rows.forEach((u) => next.add(u.id));
+      }
+      return next;
+    });
+  }, [rows, allVisibleSelected]);
+
+  const selectedCount = selectedIds.size;
+
+  async function handleBulkSaved(newRole: Role) {
+    const ids = Array.from(selectedIds);
+    await bulkChangeRole(ids, newRole);
+    show(`${ids.length} users changed to ${ROLE_LABEL[newRole]}`, { tone: "success" });
+    setBulkOpen(false);
+    clearSelection();
+  }
 
   async function handleRoleSaved(target: BackendUser, newRole: Role) {
     await changeUserRole(target.id, newRole);
@@ -228,7 +278,42 @@ function UsersTab({
       )}
       {state.status === "ready" && rows.length > 0 && (
         <Card padded={false}>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant px-5 py-3">
+            <p className="text-sm text-on-surface-variant">
+              {selectedCount > 0 ? (
+                <>
+                  <span className="font-medium text-on-surface">{selectedCount}</span> selected
+                </>
+              ) : (
+                "Pick users below to bulk-change their role."
+              )}
+            </p>
+            <Button
+              variant="tonal"
+              size="sm"
+              icon={ShieldCheck}
+              disabled={selectedCount < 2}
+              onClick={() => setBulkOpen(true)}
+            >
+              {selectedCount > 0 ? `Bulk change role (${selectedCount})` : "Bulk change role"}
+            </Button>
+          </div>
           <DataTable
+            headerCheckbox={{
+              label: "Select all users",
+              checked: allVisibleSelected,
+              indeterminate: someVisibleSelected,
+              onChange: toggleSelectVisible,
+            }}
+            rowCheckbox={(u) => (
+              <input
+                type="checkbox"
+                aria-label={`Select ${u.name}`}
+                checked={selectedIds.has(u.id)}
+                onChange={() => toggleSelected(u.id)}
+                className="h-4 w-4 cursor-pointer accent-primary"
+              />
+            )}
             columns={[
               {
                 key: "name",
@@ -321,7 +406,125 @@ function UsersTab({
         onSaved={handleManagerSaved}
         onForbidden={onForbidden}
       />
+
+      <BulkChangeRoleDialog
+        open={bulkOpen}
+        count={selectedCount}
+        onClose={() => setBulkOpen(false)}
+        onSaved={handleBulkSaved}
+        onForbidden={onForbidden}
+      />
     </div>
+  );
+}
+
+/* ====================================================== bulk role dialog == */
+
+function BulkChangeRoleDialog({
+  open,
+  count,
+  onClose,
+  onSaved,
+  onForbidden,
+}: {
+  open: boolean;
+  count: number;
+  onClose: () => void;
+  onSaved: (newRole: Role) => Promise<void>;
+  onForbidden: () => void;
+}) {
+  const [role, setRole] = React.useState<Role>("employee");
+  const [formError, setFormError] = React.useState<React.ReactNode>(null);
+  const [submitting, setSubmitting] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setRole("employee");
+      setFormError(null);
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  async function submit() {
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await onSaved(role);
+    } catch (err) {
+      if (err instanceof BulkPartialFailureError) {
+        if (err.details.some((d) => d.error.status === 403)) {
+          onForbidden();
+          return;
+        }
+        const failed = err.details;
+        setFormError(
+          <div className="space-y-1.5">
+            <p className="font-medium">
+              {failed.length} of {count} users could not be updated.
+            </p>
+            <ul className="space-y-1">
+              {failed.map((d) => (
+                <li key={d.userId} className="flex items-start gap-2 text-xs">
+                  <span className="font-mono">{d.userId}</span>
+                  <span className="min-w-0 break-words text-error-container-foreground/80">
+                    — {d.error.message}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+        return;
+      }
+      if (err instanceof UsersApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : "Could not change roles. Check your connection and try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Bulk change role"
+      description={`Change the role of ${count} selected users to ${ROLE_LABEL[role]}?`}
+      icon={
+        <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-primary">
+          <ShieldCheck className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+        </span>
+      }
+      footer={
+        <>
+          <Button variant="text" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting || count === 0}>
+            {submitting
+              ? "Changing roles…"
+              : `Change role for ${count} user${count === 1 ? "" : "s"}`}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {formError && <FormErrorBanner message={formError} />}
+        <Select
+          label="New role"
+          required
+          options={ROLE_OPTIONS}
+          value={role}
+          onChange={(v) => setRole(v as Role)}
+        />
+      </div>
+    </Dialog>
   );
 }
 
