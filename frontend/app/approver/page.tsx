@@ -19,7 +19,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useApproverInbox } from "@/lib/mock/useApproverInbox";
+import { useApproverInbox } from "@/lib/hooks/useApproverInbox";
 import type { BackendInboxItem } from "@/lib/api/approvals";
 import type { CurrencyCode } from "@/lib/format";
 import {

@@ -24,7 +24,7 @@ import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import { useFinancePayments } from "@/lib/mock/useFinanceLists";
+import { useFinancePayments } from "@/lib/hooks/useFinanceLists";
 import {
   markProcessing as markProcessingApi,
   markPaid as markPaidApi,

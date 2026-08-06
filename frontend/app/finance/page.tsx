@@ -18,7 +18,7 @@ import { ListItem } from "@/components/ui/ListItem";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useFinanceDashboard } from "@/lib/mock/useFinanceDashboard";
+import { useFinanceDashboard } from "@/lib/hooks/useFinanceDashboard";
 import type {
   FinanceDashboardData,
   FinancePaymentItem,

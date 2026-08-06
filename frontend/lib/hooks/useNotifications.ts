@@ -7,7 +7,7 @@ import {
   NotificationApiError,
   type BackendNotification,
 } from "@/lib/api/notifications";
-import { refreshUnreadCount } from "@/lib/mock/notifyStore";
+import { refreshUnreadCount } from "@/lib/store/notifyStore";
 import type { Notification, Role } from "@/lib/types";
 
 /* ============================================================================

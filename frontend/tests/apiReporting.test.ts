@@ -7,7 +7,7 @@ import {
   type ReportRow,
   type ReportResult,
 } from "@/lib/api/reporting";
-import { EMPTY_FILTERS, type ReportFilters } from "@/lib/mock/reportFilter";
+import { EMPTY_FILTERS, type ReportFilters } from "@/lib/utils/reportFilter";
 import { BE_URL } from "@/lib/auth/apiClient";
 
 /**

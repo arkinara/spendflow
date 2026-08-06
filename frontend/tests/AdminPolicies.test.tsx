@@ -57,7 +57,7 @@ const adminMocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/api/admin", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/admin")>();
-  const store = await import("@/lib/mock/adminStore");
+  const store = await import("@/lib/store/adminStore");
   const { AdminApiError } = actual;
 
   const STUB_TS = "2026-01-01T00:00:00Z";
@@ -247,7 +247,7 @@ import type {
   Policy,
   RoutingRule,
 } from "@/lib/types";
-import { createCategory } from "@/lib/mock/adminStore";
+import { createCategory } from "@/lib/store/adminStore";
 
 /* ----------------------------------------------------------------- helpers */
 

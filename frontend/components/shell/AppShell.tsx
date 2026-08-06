@@ -8,7 +8,7 @@ import { RoleSwitcher, useRole } from "./RoleSwitcher";
 import { useSession } from "@/lib/auth/session";
 import { getNavItems } from "@/lib/auth/nav";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
-import { useUnreadCount } from "@/lib/mock/notifyStore";
+import { useUnreadCount } from "@/lib/store/notifyStore";
 
 export interface AppShellProps {
   action?: React.ReactNode;

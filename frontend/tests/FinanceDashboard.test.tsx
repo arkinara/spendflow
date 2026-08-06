@@ -70,7 +70,7 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     resolveException: storeResolve,
     markClaimProcessing: storeMarkProcessing,
     markClaimPaid: storeMarkPaid,
-  } = await import("@/lib/mock/claimStore");
+  } = await import("@/lib/store/claimStore");
   const FINANCE_ACTOR = "u-fin-1";
 
   const toExceptionItem = (c: ReturnType<typeof openFinanceExceptions>[number]): FinanceExceptionItem => ({
@@ -455,7 +455,7 @@ describe("Exception queue — renders from API client, filters open flags", () =
 
     // Resolve both out-of-band (simulating another admin's actions), then
     // force the queue to re-read.
-    const store = await import("@/lib/mock/claimStore");
+    const store = await import("@/lib/store/claimStore");
     store.resolveException({ claimId: "clm-1010", actorId: "u-fin-1", action: "override", note: "Pre-approved." });
     store.resolveException({ claimId: "clm-1011", actorId: "u-fin-1", action: "override", note: "Waived." });
     expect(openFinanceExceptions()).toHaveLength(0);

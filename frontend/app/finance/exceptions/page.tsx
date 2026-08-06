@@ -27,7 +27,7 @@ import { TextArea } from "@/components/ui/TextArea";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import { useFinanceExceptions } from "@/lib/mock/useFinanceLists";
+import { useFinanceExceptions } from "@/lib/hooks/useFinanceLists";
 import {
   resolveException as resolveExceptionApi,
   FinanceApiError,
@@ -37,7 +37,7 @@ import {
 import {
   evaluateLinePolicy,
   violationsForLine,
-} from "@/lib/mock/policy";
+} from "@/lib/utils/policy";
 import {
   computeClaimTotal,
   getCategory,

@@ -23,11 +23,11 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { ListItem } from "@/components/ui/ListItem";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useEmployeeDashboard } from "@/lib/mock/useEmployeeDashboard";
+import { useEmployeeDashboard } from "@/lib/hooks/useEmployeeDashboard";
 import {
   type EmployeeDashboardData,
   type StatusGroup,
-} from "@/lib/mock/dashboard";
+} from "@/lib/utils/dashboard";
 import type { ClaimStatus } from "@/lib/types";
 import { formatCurrency, formatCurrencyCompact, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";

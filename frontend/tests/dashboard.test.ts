@@ -3,7 +3,7 @@ import {
   loadEmployeeDashboard,
   resolvePaidAt,
   PRIMARY_STATUSES,
-} from "@/lib/mock/dashboard";
+} from "@/lib/utils/dashboard";
 import { claimsForEmployee } from "@/lib/seed-data";
 
 describe("loadEmployeeDashboard — status summary counts", () => {

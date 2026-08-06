@@ -20,7 +20,7 @@ import { TextArea } from "@/components/ui/TextArea";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useClaimComments, type CommentItem } from "@/lib/mock/useClaimComments";
+import { useClaimComments, type CommentItem } from "@/lib/hooks/useClaimComments";
 import { addComment, CommentApiError } from "@/lib/api/comments";
 import { getClaim } from "@/lib/api/claims";
 import { getClaimForReview } from "@/lib/api/approvals";

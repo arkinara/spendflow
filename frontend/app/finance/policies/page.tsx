@@ -37,7 +37,7 @@ import {
   useRoutes,
   useActiveCategoriesPreview,
   type UseAdminCollection,
-} from "@/lib/mock/useAdminStore";
+} from "@/lib/hooks/useAdminStore";
 import {
   addCategory,
   editCategory,

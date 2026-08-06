@@ -21,7 +21,7 @@
 
 import { apiFetch } from "@/lib/api/fetch";
 import type { ClaimStatus } from "@/lib/types";
-import { filtersToSearchParams, type ReportFilters } from "@/lib/mock/reportFilter";
+import { filtersToSearchParams, type ReportFilters } from "@/lib/utils/reportFilter";
 
 /** Typed error carrying the backend's status + code + message. */
 export class ReportingApiError extends Error {

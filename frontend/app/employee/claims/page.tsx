@@ -23,7 +23,7 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { ListItem } from "@/components/ui/ListItem";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useEmployeeClaims } from "@/lib/mock/useEmployeeClaims";
+import { useEmployeeClaims } from "@/lib/hooks/useEmployeeClaims";
 import {
   computeClaimTotal,
 } from "@/lib/seed-data";

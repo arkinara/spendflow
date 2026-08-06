@@ -11,7 +11,7 @@
 
 import * as React from "react";
 import { listClaims, ClaimApiError } from "@/lib/api/claims";
-import { buildDashboard, type EmployeeDashboardData } from "@/lib/mock/dashboard";
+import { buildDashboard, type EmployeeDashboardData } from "@/lib/utils/dashboard";
 
 export type DashboardState =
   | { status: "loading" }

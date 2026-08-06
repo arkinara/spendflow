@@ -44,9 +44,9 @@ import {
   violationsForLine,
   deriveException,
   type PolicyViolation,
-} from "@/lib/mock/policy";
-import { useSubmitClaim } from "@/lib/mock/useSubmitClaim";
-import type { ClaimInput, ClaimLineInput } from "@/lib/mock/useSubmitClaim";
+} from "@/lib/utils/policy";
+import { useSubmitClaim } from "@/lib/hooks/useSubmitClaim";
+import type { ClaimInput, ClaimLineInput } from "@/lib/hooks/useSubmitClaim";
 import { formatCurrency } from "@/lib/format";
 import type { CurrencyCode } from "@/lib/format";
 import { cn } from "@/lib/utils";

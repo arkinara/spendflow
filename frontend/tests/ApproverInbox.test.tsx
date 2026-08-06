@@ -57,7 +57,7 @@ vi.mock("@/lib/api/approvals", async (importOriginal) => {
     claimsForApprover,
     routingStepsForClaim,
   } = await import("@/lib/seed-data");
-  const { decideOnClaim } = await import("@/lib/mock/claimStore");
+  const { decideOnClaim } = await import("@/lib/store/claimStore");
   const APPROVER = "u-mgr-1";
 
   return {
@@ -179,7 +179,7 @@ vi.mock("@/lib/api/comments", async (importOriginal) => {
     commentsForClaim,
     getUserName,
   } = await import("@/lib/seed-data");
-  const { addClaimComment } = await import("@/lib/mock/claimStore");
+  const { addClaimComment } = await import("@/lib/store/claimStore");
   return {
     ...actual,
     listComments: vi.fn(async (claimId: string) => {
@@ -225,7 +225,7 @@ import {
   computeClaimTotal,
 } from "@/lib/seed-data";
 import type { Claim } from "@/lib/types";
-import { decideOnClaim, addClaimComment } from "@/lib/mock/claimStore";
+import { decideOnClaim, addClaimComment } from "@/lib/store/claimStore";
 import * as approvalsApi from "@/lib/api/approvals";
 import * as commentsApi from "@/lib/api/comments";
 

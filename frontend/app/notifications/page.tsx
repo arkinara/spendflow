@@ -21,7 +21,7 @@ import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import { useNotifications } from "@/lib/mock/useNotifications";
+import { useNotifications } from "@/lib/hooks/useNotifications";
 import { claimDetailRoute } from "@/lib/seed-data";
 import type { Notification } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";

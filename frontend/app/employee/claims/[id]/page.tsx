@@ -33,13 +33,13 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { Timeline, type TimelineEntry } from "@/components/ui/Timeline";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useClaimDetail } from "@/lib/mock/useClaimDetail";
+import { useClaimDetail } from "@/lib/hooks/useClaimDetail";
 import {
   withdrawClaim as apiWithdrawClaim,
   resubmitClaim as apiResubmitClaim,
   type BackendAuditEntry,
 } from "@/lib/api/claims";
-import { evaluateLinePolicy } from "@/lib/mock/policy";
+import { evaluateLinePolicy } from "@/lib/utils/policy";
 import {
   getUserName,
   getCategory,

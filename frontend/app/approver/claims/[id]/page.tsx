@@ -36,7 +36,7 @@ import { TextArea } from "@/components/ui/TextArea";
 import { Avatar } from "@/components/ui/Avatar";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useApproverClaim } from "@/lib/mock/useApproverClaim";
+import { useApproverClaim } from "@/lib/hooks/useApproverClaim";
 import {
   decide as apiDecide,
   ApprovalApiError,
@@ -49,7 +49,7 @@ import {
   type BackendComment,
 } from "@/lib/api/comments";
 import type { BackendAuditEntry } from "@/lib/api/claims";
-import { evaluateLinePolicy } from "@/lib/mock/policy";
+import { evaluateLinePolicy } from "@/lib/utils/policy";
 import {
   getUserName,
   getCategory,

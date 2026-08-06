@@ -20,7 +20,7 @@ import { StatusChip } from "@/components/ui/StatusChip";
 import { Timeline, type TimelineEntry } from "@/components/ui/Timeline";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { useClaimAudit } from "@/lib/mock/useClaimAudit";
+import { useClaimAudit } from "@/lib/hooks/useClaimAudit";
 import type { BackendAuditEntry } from "@/lib/api/audit";
 import { getClaim } from "@/lib/api/claims";
 import { getUserName, claimDetailRoute } from "@/lib/seed-data";

@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { DEPARTMENTS, categories } from "@/lib/fixtures";
 import type { ClaimStatus } from "@/lib/types";
 import { formatCurrency, formatDate } from "@/lib/format";
-import { useReportClaims } from "@/lib/mock/useReportClaims";
+import { useReportClaims } from "@/lib/hooks/useReportClaims";
 import {
   REPORT_STATUSES,
   filtersFromSearchParams,
@@ -34,7 +34,7 @@ import {
   hasActiveFilters,
   validateDateRange,
   type ReportFilters,
-} from "@/lib/mock/reportFilter";
+} from "@/lib/utils/reportFilter";
 import {
   exportCsv,
   downloadBlob,

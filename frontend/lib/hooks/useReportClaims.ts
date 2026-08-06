@@ -6,7 +6,7 @@ import {
   ReportingApiError,
   type ReportResult,
 } from "@/lib/api/reporting";
-import { hasActiveFilters, type ReportFilters } from "@/lib/mock/reportFilter";
+import { hasActiveFilters, type ReportFilters } from "@/lib/utils/reportFilter";
 
 /**
  * HTTP-backed reports hook (ticket #23, FE wiring). Reads the filtered report
