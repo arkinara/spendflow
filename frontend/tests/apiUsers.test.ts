@@ -7,6 +7,9 @@ import {
   deactivate,
   reactivate,
   getUserAudit,
+  createUser,
+  getInvite,
+  acceptInvite,
   UsersApiError,
   BulkPartialFailureError,
   type BackendUser,
@@ -33,10 +36,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(status: number, body: unknown, setCookie?: string): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(setCookie ? { "set-cookie": setCookie } : {}),
+    },
   });
 }
 
@@ -405,5 +411,247 @@ describe("getUserAudit (#34)", () => {
 
     expect(err).toBeInstanceOf(UsersApiError);
     expect(err).toMatchObject({ status: 0, code: "audit_unavailable" });
+  });
+});
+
+/* ------------------------------------------------------ invite flow (#36) == */
+
+describe("createUser (#36)", () => {
+  const PENDING = backendUser({
+    id: "u-new-1",
+    name: "Citra Lestari",
+    email: "citra.lestari@spendflow.example",
+    role: "approver",
+    managerId: null,
+    department: "Operations",
+    status: "pending",
+  });
+  const INVITE = {
+    token: "tok_secret",
+    sentAt: "2026-01-05T00:00:00Z",
+    expiresAt: "2026-01-12T00:00:00Z",
+  };
+
+  it("POSTs the create payload with credentials and returns the pending user + invite", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(201, { user: PENDING, invite: INVITE }));
+
+    const result = await createUser({
+      email: "citra.lestari@spendflow.example",
+      name: "Citra Lestari",
+      role: "approver",
+      managerId: "u-mgr-1",
+      department: "Operations",
+      jobTitle: "Finance Analyst",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/users`);
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      email: "citra.lestari@spendflow.example",
+      name: "Citra Lestari",
+      role: "approver",
+      managerId: "u-mgr-1",
+      department: "Operations",
+      jobTitle: "Finance Analyst",
+    });
+    expect(result.user).toMatchObject({ id: "u-new-1", status: "pending" });
+    expect(result.invite.token).toBe("tok_secret");
+  });
+
+  it("omits optional fields entirely when not provided", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(201, { user: PENDING, invite: INVITE }));
+    await createUser({ email: "citra@spendflow.example", name: "Citra Lestari", role: "employee" });
+
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+      email: "citra@spendflow.example",
+      name: "Citra Lestari",
+      role: "employee",
+    });
+  });
+
+  it("throws a 409 email_exists typed error for a duplicate email", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(409, {
+        error: {
+          code: "email_exists",
+          message: "A user with email citra@spendflow.example already exists",
+        },
+      }),
+    );
+
+    const err = await createUser({
+      email: "citra@spendflow.example",
+      name: "Citra Lestari",
+      role: "employee",
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 409, code: "email_exists" });
+  });
+
+  it("throws a 400 invalid_email typed error for a malformed address", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(400, { error: { code: "invalid_email", message: "Invalid email format" } }),
+    );
+
+    const err = await createUser({
+      email: "not-an-email",
+      name: "Citra Lestari",
+      role: "employee",
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 400, code: "invalid_email" });
+  });
+
+  it("throws a 403 forbidden typed error for a non-Finance-Admin caller", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(403, { error: { code: "forbidden", message: "Finance admins only." } }),
+    );
+
+    const err = await createUser({
+      email: "citra@spendflow.example",
+      name: "Citra Lestari",
+      role: "employee",
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  it("throws a 400 validation typed error for other body errors", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(400, { error: { code: "invalid_role", message: "Invalid role" } }),
+    );
+
+    const err = await createUser({
+      email: "citra@spendflow.example",
+      name: "Citra Lestari",
+      role: "admin" as never,
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 400, code: "invalid_role" });
+  });
+});
+
+describe("getInvite (#36)", () => {
+  const DETAILS = {
+    email: "citra.lestari@spendflow.example",
+    name: "Citra Lestari",
+    role: "approver" as const,
+    managerId: null,
+    department: "Operations",
+    jobTitle: null,
+    costCenter: null,
+  };
+
+  it("GETs the public invite endpoint and returns the invitee details", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, DETAILS));
+
+    const result = await getInvite("tok_secret");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/invites/tok_secret`);
+    expect(init).toMatchObject({ method: "GET", credentials: "include" });
+    expect(result).toEqual(DETAILS);
+  });
+
+  it("encodes the token into the path segment", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, DETAILS));
+    await getInvite("to/k");
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/invites/to%2Fk`);
+  });
+
+  it("throws a 404 invite_invalid typed error for an unknown token", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(404, {
+        error: { code: "invite_invalid", message: "Invitation not found. Please request a new invite." },
+      }),
+    );
+
+    await expect(getInvite("nope")).rejects.toMatchObject({
+      status: 404,
+      code: "invite_invalid",
+    });
+  });
+
+  it("throws a 410 invite_expired typed error for an expired token", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(410, {
+        error: { code: "invite_expired", message: "This invitation has expired. Please request a new invite." },
+      }),
+    );
+
+    await expect(getInvite("expired")).rejects.toMatchObject({
+      status: 410,
+      code: "invite_expired",
+    });
+  });
+
+  it("throws a 410 invite_consumed typed error for a used token", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(410, {
+        error: { code: "invite_consumed", message: "This invitation has already been used." },
+      }),
+    );
+
+    await expect(getInvite("used")).rejects.toMatchObject({
+      status: 410,
+      code: "invite_consumed",
+    });
+  });
+});
+
+describe("acceptInvite (#36)", () => {
+  const ACTIVE = backendUser({
+    id: "u-new-1",
+    name: "Citra Lestari",
+    email: "citra.lestari@spendflow.example",
+    role: "approver",
+    status: "active",
+  });
+
+  it("POSTs the password and returns the activated user", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, { user: ACTIVE }, "session_token=abc; HttpOnly; Path=/"),
+    );
+
+    const result = await acceptInvite("tok_secret", "supersecret1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/invites/tok_secret/accept`);
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      password: "supersecret1",
+    });
+    expect(result.user).toMatchObject({ id: "u-new-1", status: "active" });
+  });
+
+  it("throws a 400 invalid_password typed error when the BE rejects the password", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(400, {
+        error: { code: "invalid_password", message: "Password must be at least 8 characters" },
+      }),
+    );
+
+    await expect(acceptInvite("tok_secret", "short")).rejects.toMatchObject({
+      status: 400,
+      code: "invalid_password",
+    });
+  });
+
+  it("throws a 410 invite_consumed typed error for a used token", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(410, {
+        error: { code: "invite_consumed", message: "This invitation has already been used." },
+      }),
+    );
+
+    await expect(acceptInvite("used", "supersecret1")).rejects.toMatchObject({
+      status: 410,
+      code: "invite_consumed",
+    });
   });
 });

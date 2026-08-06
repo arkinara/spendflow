@@ -7,6 +7,9 @@
  *   - GET   /api/admin/users/:id/audit → audit entries for one user (#34)
  *   - PATCH /api/admin/users/:id/role   → change a user's role
  *   - PATCH /api/admin/users/:id/manager → set or clear a user's manager
+ *   - POST  /api/admin/users          → create a pending user + invite (#36)
+ *   - GET   /api/admin/invites/:token (public) → invite details (#36)
+ *   - POST  /api/admin/invites/:token/accept (public) → set password + activate (#36)
  *
  * Every call goes through `apiFetch` (#17): `credentials: "include"` session
  * cookie, `NEXT_PUBLIC_BE_URL` resolution, and the global 401 handler. Non-2xx
@@ -35,6 +38,13 @@
  * truthful. The BE will reject with one of the codes below once it lands:
  *   - `cannot_deactivate_self`        (400) — a user cannot deactivate themselves
  *   - `cannot_deactivate_last_finance` (400) — the last active Finance Admin
+ *
+ * Invite flow (#36): `createUser` emits `email_exists` (409, duplicate email),
+ * `invalid_email` (400, bad email format), `forbidden` (403, not a Finance
+ * Admin), or `validation` (400, other body errors). `getInvite` emits
+ * `invite_invalid` (404, unknown token), `invite_expired` (410), or
+ * `invite_consumed` (410). `acceptInvite` emits `invalid_password` (400, below
+ * the BE password policy) plus the invite codes above.
  * ========================================================================== */
 
 import { apiFetch } from "@/lib/api/fetch";
@@ -60,6 +70,37 @@ export interface BackendUser {
   status: UserStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Payload for `POST /api/admin/users` (#36) — a Finance Admin provisions a
+ *  new user who must still accept their invite before signing in. */
+export interface CreateUserInput {
+  email: string;
+  name: string;
+  role: Role;
+  managerId?: string;
+  department?: string;
+  jobTitle?: string;
+}
+
+/** Invite envelope returned by `POST /api/admin/users` (#36). */
+export interface InviteToken {
+  token: string;
+  sentAt: string;
+  expiresAt: string;
+}
+
+/** Invite details from `GET /api/admin/invites/:token` (public, #36). The BE
+ *  returns `costCenter` (the DB column the create flow persists); `jobTitle`
+ *  is kept for the mock-era surface and is `null` from the real BE. */
+export interface InviteDetails {
+  email: string;
+  name: string;
+  role: Role;
+  managerId: string | null;
+  department: string | null;
+  jobTitle: string | null;
+  costCenter: string | null;
 }
 
 /** Typed error carrying the backend's status + code + message. */
@@ -273,4 +314,51 @@ export async function getUserAudit({
       err instanceof Error ? err.message : "Failed to load the audit trail.",
     );
   }
+}
+
+/* ----------------------------------------------- invite flow (#36) */
+
+/** `POST /api/admin/users` (#36) — create a `status: "pending"` user + invite.
+ *  Finance Admin only (BE enforces with 403 `forbidden`). Returns the pending
+ *  user plus the single-use invite envelope (`token`, `sentAt`, `expiresAt`).
+ *  Errors: 409 `email_exists`, 400 `invalid_body`/`invalid_role`/`not_found`
+ *  (bad manager id). */
+export async function createUser(
+  input: CreateUserInput,
+): Promise<{ user: BackendUser; invite: InviteToken }> {
+  return parseJson<{ user: BackendUser; invite: InviteToken }>(
+    await apiFetch(`/api/admin/users`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+/** `GET /api/admin/invites/:token` (#36, public) — validate an invite token and
+ *  return the invitee's details. Errors: 404 `invite_invalid`, 410
+ *  `invite_expired`, 410 `invite_consumed`. */
+export async function getInvite(token: string): Promise<InviteDetails> {
+  return parseJson<InviteDetails>(
+    await apiFetch(`/api/admin/invites/${encodeURIComponent(token)}`, {
+      method: "GET",
+    }),
+  );
+}
+
+/** `POST /api/admin/invites/:token/accept` (#36, public) — set the password,
+ *  activate the user, and mint a real session cookie (the browser stores it as
+ *  httpOnly; the FE never reads it). Errors: 400 `invalid_password` (BE-enforced
+ *  password policy), 404 `invite_invalid`, 410 `invite_consumed`/`invite_expired`. */
+export async function acceptInvite(
+  token: string,
+  password: string,
+): Promise<{ user: BackendUser }> {
+  return parseJson<{ user: BackendUser }>(
+    await apiFetch(`/api/admin/invites/${encodeURIComponent(token)}/accept`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    }),
+  );
 }

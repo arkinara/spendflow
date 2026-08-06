@@ -32,6 +32,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ShieldCheck,
   UserRound,
+  UserPlus,
   ShieldX,
   AlertTriangle,
   RefreshCw,
@@ -40,6 +41,7 @@ import {
   ChevronDown,
   Search,
   FilterX,
+  Mail,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -62,6 +64,7 @@ import {
   UsersApiError,
   BulkPartialFailureError,
   type BackendUser,
+  type CreateUserInput,
 } from "@/lib/api/users";
 import type { Role, UserAuditEntry } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";
@@ -445,7 +448,24 @@ function UsersTab({
 }) {
   const { show } = useSnackbar();
   const { user: currentUser } = useRole();
-  const { state, retry, refresh, bulkChangeRole, deactivate, reactivate } = useUsers();
+  const {
+    state,
+    retry,
+    refresh,
+    bulkChangeRole,
+    deactivate,
+    reactivate,
+    createUser,
+  } = useUsers();
+
+  /* --------------------------------------------------------- add user (#36) */
+
+  const [addOpen, setAddOpen] = React.useState(false);
+
+  function handleUserCreated(email: string) {
+    setAddOpen(false);
+    show(`Invitation sent to ${email}`, { tone: "success" });
+  }
 
   /* ------------------------------------------------ search + role filter (#35) */
 
@@ -687,15 +707,25 @@ function UsersTab({
                 "Pick users below to bulk-change their role."
               )}
             </p>
-            <Button
-              variant="tonal"
-              size="sm"
-              icon={ShieldCheck}
-              disabled={selectedCount < 2}
-              onClick={() => setBulkOpen(true)}
-            >
-              {selectedCount > 0 ? `Bulk change role (${selectedCount})` : "Bulk change role"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="filled"
+                size="sm"
+                icon={UserPlus}
+                onClick={() => setAddOpen(true)}
+              >
+                Add User
+              </Button>
+              <Button
+                variant="tonal"
+                size="sm"
+                icon={ShieldCheck}
+                disabled={selectedCount < 2}
+                onClick={() => setBulkOpen(true)}
+              >
+                {selectedCount > 0 ? `Bulk change role (${selectedCount})` : "Bulk change role"}
+              </Button>
+            </div>
           </div>
 
           {filteredRows.length === 0 ? (
@@ -754,7 +784,7 @@ function UsersTab({
                 header: "Status",
                 sortable: true,
                 sortValue: (u) => u.status,
-                render: (u) => <StatusChip status={u.status} size="sm" />,
+                render: (u) => <StatusChip userStatus={u.status} size="sm" />,
               },
               {
                 key: "manager",
@@ -866,6 +896,16 @@ function UsersTab({
         action={statusTarget?.action ?? "deactivate"}
         onClose={() => setStatusTarget(null)}
         onSaved={handleStatusSaved}
+        onForbidden={onForbidden}
+      />
+
+      <AddUserDialog
+        open={addOpen}
+        users={rows}
+        currentUserId={currentUser.id}
+        createUser={createUser}
+        onClose={() => setAddOpen(false)}
+        onCreated={handleUserCreated}
         onForbidden={onForbidden}
       />
     </div>
@@ -1273,6 +1313,194 @@ function SetManagerDialog({
           value={managerId}
           onChange={setManagerId}
           placeholder="Select a manager…"
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+/* ====================================================== add user dialog == */
+
+/** Simple email format check (the BE enforces the real policy; this is a
+ *  client-side fast fail so a typo never fires a round-trip). */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * "Add User" dialog (#36): a Finance Admin provisions a new user by email +
+ * name + role (+ optional manager/department/job title). Submitting POSTs
+ * `/api/admin/users` via the `useUsers.createUser` hook, which prepends the
+ * returned `status: "pending"` row to the directory cache. On success the
+ * parent closes the dialog and toasts "Invitation sent to …". On failure the
+ * dialog stays open and surfaces the BE error inline (e.g. 409
+ * `email_exists`).
+ */
+function AddUserDialog({
+  open,
+  users,
+  currentUserId,
+  createUser,
+  onClose,
+  onCreated,
+  onForbidden,
+}: {
+  open: boolean;
+  users: BackendUser[];
+  currentUserId: string;
+  createUser: (input: CreateUserInput) => Promise<BackendUser>;
+  onClose: () => void;
+  onCreated: (email: string) => void;
+  onForbidden: () => void;
+}) {
+  const [email, setEmail] = React.useState("");
+  const [name, setName] = React.useState("");
+  const [role, setRole] = React.useState<Role>("employee");
+  const [managerId, setManagerId] = React.useState("");
+  const [department, setDepartment] = React.useState("");
+  const [jobTitle, setJobTitle] = React.useState("");
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [submitting, setSubmitting] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setEmail("");
+      setName("");
+      setRole("employee");
+      setManagerId("");
+      setDepartment("");
+      setJobTitle("");
+      setFormError(null);
+      setSubmitting(false);
+    }
+  }, [open]);
+
+  // Candidates for the manager picker: everyone except the signed-in admin.
+  const managerOptions = React.useMemo(() => {
+    const list = users
+      .filter((u) => u.id !== currentUserId)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((u) => ({ value: u.id, label: u.name }));
+    return [{ value: "", label: "No manager" }, ...list];
+  }, [users, currentUserId]);
+
+  async function submit() {
+    const trimmedEmail = email.trim();
+    const trimmedName = name.trim();
+    if (!EMAIL_RE.test(trimmedEmail)) {
+      setFormError("Enter a valid work email address.");
+      return;
+    }
+    if (!trimmedName) {
+      setFormError("Enter the user's name.");
+      return;
+    }
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await createUser({
+        email: trimmedEmail,
+        name: trimmedName,
+        role,
+        managerId: managerId === "" ? undefined : managerId,
+        department: department.trim() || undefined,
+        jobTitle: jobTitle.trim() || undefined,
+      });
+      onCreated(trimmedEmail);
+    } catch (err) {
+      if (err instanceof UsersApiError && err.status === 403) {
+        onForbidden();
+        return;
+      }
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : "Could not create the user. Check your connection and try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Add a user"
+      description="Provision a new account. They'll activate it from the invitation email."
+      icon={
+        <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-primary">
+          <UserPlus className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+        </span>
+      }
+      footer={
+        <>
+          <Button variant="text" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? "Sending invite…" : "Send invite"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="rounded-xl bg-surface-container-high px-3 py-2 text-sm text-on-surface-variant">
+          We&apos;ll send an invitation email. They&apos;ll need to set a password
+          before signing in.
+        </p>
+        {formError && <FormErrorBanner message={formError} />}
+        <TextField
+          label="Email"
+          type="email"
+          iconLeft={Mail}
+          placeholder="name@company.example"
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            if (formError) setFormError(null);
+          }}
+          autoComplete="off"
+          required
+        />
+        <TextField
+          label="Name"
+          placeholder="Full name"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            if (formError) setFormError(null);
+          }}
+          autoComplete="off"
+          required
+        />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Select
+            label="Role"
+            required
+            options={ROLE_OPTIONS}
+            value={role}
+            onChange={(v) => setRole(v as Role)}
+          />
+          <Select
+            label="Manager"
+            options={managerOptions}
+            value={managerId}
+            onChange={setManagerId}
+            placeholder="No manager"
+          />
+        </div>
+        <TextField
+          label="Department"
+          placeholder="e.g. Operations"
+          value={department}
+          onChange={(e) => setDepartment(e.target.value)}
+          autoComplete="off"
+        />
+        <TextField
+          label="Job title"
+          placeholder="e.g. Senior Analyst"
+          value={jobTitle}
+          onChange={(e) => setJobTitle(e.target.value)}
+          autoComplete="off"
         />
       </div>
     </Dialog>

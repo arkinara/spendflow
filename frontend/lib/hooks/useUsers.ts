@@ -27,12 +27,14 @@
 import * as React from "react";
 import {
   bulkChangeRole as bulkChangeRoleApi,
+  createUser as createUserApi,
   deactivate as deactivateApi,
   getUserAudit as getUserAuditApi,
   listUsers,
   reactivate as reactivateApi,
   UsersApiError,
   type BackendUser,
+  type CreateUserInput,
   type UserAuditFilters,
 } from "@/lib/api/users";
 import type { Role, UserStatus, UserAuditEntry } from "@/lib/types";
@@ -72,6 +74,11 @@ export interface UseUsers {
   deactivate: (userId: string) => Promise<BackendUser>;
   /** Soft-reactivate a user (#33): mirror of {@link deactivate} → `"active"`. */
   reactivate: (userId: string) => Promise<BackendUser>;
+  /** Create a pending user + invite (#36): POSTs `createUser`, then prepends
+   *  the new `status: "pending"` row to the local cache so it appears without a
+   *  refetch. On failure the cache stays unchanged and the error rethrows so the
+   *  dialog can surface it inline (e.g. 409 `email_exists`). */
+  createUser: (input: CreateUserInput) => Promise<BackendUser>;
 }
 
 export function useUsers(): UseUsers {
@@ -183,7 +190,31 @@ export function useUsers(): UseUsers {
     [setStatus],
   );
 
-  return { state, retry, refresh, bulkChangeRole, deactivate, reactivate };
+  /** #36: on success prepend the new pending row to the cache (no refetch); on
+   *  failure leave the cache untouched and rethrow for the dialog's inline
+   *  error. */
+  const createUser = React.useCallback(
+    async (input: CreateUserInput): Promise<BackendUser> => {
+      const { user } = await createUserApi(input);
+      setState((prev) =>
+        prev.status === "ready"
+          ? { status: "ready", rows: [user, ...prev.rows] }
+          : prev,
+      );
+      return user;
+    },
+    [],
+  );
+
+  return {
+    state,
+    retry,
+    refresh,
+    bulkChangeRole,
+    deactivate,
+    reactivate,
+    createUser,
+  };
 }
 
 /* =========================================================================== */

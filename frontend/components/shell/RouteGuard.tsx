@@ -13,6 +13,8 @@ import { SessionError } from "./SessionError";
 /**
  * Client-side route guard for mock sessions.
  *
+ * - `allowedRoles` null/undefined → public route: renders children untouched,
+ *   no session check, no redirect (used by the invite-acceptance page #36).
  * - loading → skeleton
  * - session-store failure → explicit error state (never an infinite skeleton)
  * - unauthenticated → redirect to /login?next=<path>
@@ -24,7 +26,7 @@ export function RouteGuard({
   allowedRoles,
   children,
 }: {
-  allowedRoles: Role[];
+  allowedRoles?: Role[] | null;
   children: React.ReactNode;
 }) {
   const { status, session } = useSession();
@@ -35,8 +37,10 @@ export function RouteGuard({
   const [denyRole, setDenyRole] = React.useState(false);
   const redirected = React.useRef(false);
 
+  const isPublic = allowedRoles == null;
+
   React.useEffect(() => {
-    if (redirected.current) return;
+    if (isPublic || redirected.current) return;
     if (status === "loading" || status === "error") return;
     if (status === "unauthenticated") {
       redirected.current = true;
@@ -51,8 +55,9 @@ export function RouteGuard({
       show("You're not authorized to view that page.", { tone: "error" });
       router.replace(ROLE_HOME[session.role]);
     }
-  }, [status, session, allowedRoles, pathname, router, show]);
+  }, [status, session, allowedRoles, isPublic, pathname, router, show]);
 
+  if (isPublic) return <>{children}</>;
   if (status === "error") return <SessionError />;
   // While redirecting a role-mismatched session, surface a visible access-denied
   // notice (role="alert") instead of a bare skeleton, so the user — and the

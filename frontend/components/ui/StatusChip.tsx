@@ -6,6 +6,7 @@ import {
   CircleDashed,
   Wallet,
   Loader,
+  Clock,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -37,10 +38,12 @@ const PAYMENT_SPECS: Record<PaymentStatus, ChipSpec> = {
   failed: { label: "Failed", tone: "error", icon: XCircle },
 };
 
-/** Soft-activation chip (#33): green "Active" / grey "Inactive". */
+/** User lifecycle chip (#33, #36): green "Active", grey "Inactive", and a
+ *  "Pending" state (info tone + clock) for invited-but-not-activated users. */
 const USER_SPECS: Record<UserStatus, ChipSpec> = {
   active: { label: "Active", tone: "success", icon: CheckCircle2 },
   disabled: { label: "Inactive", tone: "neutral", icon: XCircle },
+  pending: { label: "Pending", tone: "info", icon: Clock },
 };
 
 const TONE_CLASSES: Record<Tone, string> = {
@@ -57,7 +60,16 @@ const SIZE_CLASSES = {
 } as const;
 
 export interface StatusChipProps {
+  /**
+   * Claim status (e.g. `claim.status`). Accepts all {@link ClaimStatus} values.
+   * Note: `ClaimStatus` and `UserStatus` overlap on `"active"` and `"disabled"`,
+   * but **not** on `"pending"` — a `"pending"` value is always a claim.
+   * For the user lifecycle status (active / disabled / pending) prefer
+   * `userStatus` so the overlap doesn't cause ambiguity (#36).
+   */
   status?: ClaimStatus | UserStatus;
+  /** User lifecycle status (active / disabled / pending) — #33, #36. */
+  userStatus?: UserStatus;
   paymentStatus?: PaymentStatus;
   size?: keyof typeof SIZE_CLASSES;
   className?: string;
@@ -65,17 +77,26 @@ export interface StatusChipProps {
 
 export function StatusChip({
   status,
+  userStatus,
   paymentStatus,
   size = "md",
   className,
 }: StatusChipProps) {
-  const isUserStatus = status === "active" || status === "disabled";
+  // Explicit `userStatus` prop wins. Otherwise detect by string — `"pending"` is
+  // a ClaimStatus only (a user with status pending is a new `#36` invitee, and
+  // callers should use `userStatus="pending"` to be unambiguous). The other
+  // shared values (`"active"`, `"disabled"`) route to USER_SPECS — the existing
+  // convention from #33 — since CLAIM_SPECS doesn't define them anyway.
+  const isUserStatus =
+    userStatus !== undefined ||
+    (!paymentStatus &&
+      (status === "active" || status === "disabled"));
   const spec: ChipSpec = paymentStatus
     ? PAYMENT_SPECS[paymentStatus]
     : isUserStatus
-    ? USER_SPECS[status as UserStatus]
+    ? USER_SPECS[(userStatus ?? (status as UserStatus))]
     : status
-    ? CLAIM_SPECS[status]
+    ? CLAIM_SPECS[status as ClaimStatus]
     : CLAIM_SPECS.draft;
   const Icon = spec.icon;
   const iconSize = size === "sm" ? "h-3 w-3" : "h-3.5 w-3.5";

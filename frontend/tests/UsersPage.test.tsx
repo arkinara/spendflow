@@ -54,6 +54,7 @@ const usersMocks = vi.hoisted(() => ({
   deactivate: vi.fn(),
   reactivate: vi.fn(),
   getUserAudit: vi.fn(),
+  createUser: vi.fn(),
 }));
 
 vi.mock("@/lib/api/users", async (importOriginal) => {
@@ -69,6 +70,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     deactivate: usersMocks.deactivate,
     reactivate: usersMocks.reactivate,
     getUserAudit: usersMocks.getUserAudit,
+    createUser: usersMocks.createUser,
   };
 });
 
@@ -214,9 +216,26 @@ beforeEach(() => {
   usersMocks.deactivate.mockReset();
   usersMocks.reactivate.mockReset();
   usersMocks.getUserAudit.mockReset();
+  usersMocks.createUser.mockReset();
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
   usersMocks.bulkChangeRole.mockResolvedValue(SEED_USERS);
   usersMocks.getUserAudit.mockResolvedValue(AUDIT_ENTRIES);
+  usersMocks.createUser.mockResolvedValue({
+    user: backendUser({
+      id: "u-new-1",
+      name: "Citra Lestari",
+      email: "citra.lestari@spendflow.example",
+      role: "approver",
+      managerId: null,
+      department: "Operations",
+      status: "pending",
+    }),
+    invite: {
+      token: "tok_secret",
+      sentAt: TS,
+      expiresAt: "2026-01-08T00:00:00Z",
+    },
+  });
 });
 
 afterEach(() => {
@@ -947,5 +966,129 @@ describe("User directory — recent activity", () => {
 
     fireEvent.click(within(region).getByRole("button", { name: /hide changes/i }));
     expect(within(region).queryByText(/"role": "employee"/)).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------ add user dialog (#36) */
+
+describe("User directory — Add User dialog", () => {
+  async function openAddDialog() {
+    fireEvent.click(screen.getByRole("button", { name: /^add user$/i }));
+    return screen.findByRole("dialog");
+  }
+
+  it("opens the dialog with the expected fields and help text", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const add = screen.getByRole("button", { name: /^add user$/i });
+    expect(add).toBeEnabled();
+
+    const dialog = await openAddDialog();
+    expect(within(dialog).getByRole("heading", { name: /add a user/i })).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/we'll send an invitation email/i)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/set a password before signing in/i)).toBeInTheDocument();
+    for (const label of [/email/i, /name/i, /role/i, /manager/i, /department/i, /job title/i]) {
+      expect(within(dialog).getByLabelText(label)).toBeInTheDocument();
+    }
+    expect(within(dialog).getByRole("button", { name: /send invite/i })).toBeEnabled();
+  });
+
+  it("creates the user, closes the dialog, toasts, and shows the pending row", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    await pickOption(dialog, /role/i, /approver/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    await waitFor(() =>
+      expect(usersMocks.createUser).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: "citra.lestari@spendflow.example",
+          name: "Citra Lestari",
+          role: "approver",
+        })
+      )
+    );
+
+    // Success → dialog closes + success toast.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText(/invitation sent to citra\.lestari@spendflow\.example/i)).toBeInTheDocument();
+
+    // The new user row appears (prepended to the cache, no refetch) with a
+    // Pending status chip.
+    await waitFor(() => expect(queryRow("Citra Lestari")).not.toBeNull());
+    expect(within(rowFor("Citra Lestari")).getByText("Pending")).toBeInTheDocument();
+    expect(usersMocks.listUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a BE 409 email_exists inline and keeps the dialog open", async () => {
+    usersMocks.createUser.mockRejectedValue(
+      new UsersApiError(
+        409,
+        "email_exists",
+        "A user with email citra.lestari@spendflow.example already exists"
+      )
+    );
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    expect(
+      await within(dialog).findByText(/citra\.lestari@spendflow\.example already exists/i)
+    ).toBeInTheDocument();
+    // Dialog stays open (no silent close on failure) — Send invite is the retry.
+    expect(within(dialog).getByRole("heading", { name: /add a user/i })).toBeInTheDocument();
+    // No new row was prepended.
+    expect(queryRow("Citra Lestari")).toBeNull();
+  });
+
+  it("blocks a malformed email client-side without calling the API", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "not-an-email" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    expect(await within(dialog).findByText(/enter a valid work email address/i)).toBeInTheDocument();
+    expect(usersMocks.createUser).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("heading", { name: /add a user/i })).toBeInTheDocument();
+  });
+
+  it("requires a name before submitting", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    expect(await within(dialog).findByText(/enter the user's name/i)).toBeInTheDocument();
+    expect(usersMocks.createUser).not.toHaveBeenCalled();
   });
 });

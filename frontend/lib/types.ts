@@ -3,13 +3,14 @@ import type { CurrencyCode } from "@/lib/format";
 export type Role = "employee" | "approver" | "finance";
 
 /**
- * Soft-activation flag (#33). `"active"` users can sign in; `"disabled"` users
- * are soft-deactivated by a Finance Admin (their claims + approvals are
- * preserved). The BE does not persist this field yet — the FE sends it in PATCH
- * bodies as a forward-compatible placeholder and the row's status is treated as
- * client-side state until a real endpoint lands.
+ * User lifecycle status (#33, #36). `"active"` users can sign in; `"disabled"`
+ * users are soft-deactivated by a Finance Admin (their claims + approvals are
+ * preserved); `"pending"` users were created by a Finance Admin and are waiting
+ * to accept their invite (set a password) before they can sign in (#36).
+ * `"pending"`/`"disabled"` are persisted by the BE (#38); `"active"` is the
+ * normal signed-in state.
  */
-export type UserStatus = "active" | "disabled";
+export type UserStatus = "active" | "disabled" | "pending";
 
 export type ClaimStatus =
   | "draft"
