@@ -309,7 +309,7 @@ describe("User directory — role change dialog", () => {
 });
 
 describe("User directory — set manager dialog", () => {
-  it("shows the current manager and lists all other users as candidates", async () => {
+  it("shows the current manager and lists only active approvers as candidates", async () => {
     renderPage();
     await waitForReady(/Aulia Pratiwi/);
 
@@ -323,12 +323,15 @@ describe("User directory — set manager dialog", () => {
     fireEvent.click(trigger);
     const listbox = await within(dialog).findByRole("listbox");
 
-    // The target user cannot be picked as their own manager.
+    // Only active approvers are candidates — the target themselves, finance
+    // admins, and other employees never appear (#43 role guard).
     expect(
       within(listbox).queryByRole("option", { name: /Aulia Pratiwi/i })
     ).not.toBeInTheDocument();
     expect(within(listbox).getByRole("option", { name: /Dewi Anggraeni/i })).toBeInTheDocument();
-    expect(within(listbox).getByRole("option", { name: /Ridwan Saputra/i })).toBeInTheDocument();
+    expect(
+      within(listbox).queryByRole("option", { name: /Ridwan Saputra/i })
+    ).not.toBeInTheDocument();
     expect(within(listbox).getByRole("option", { name: /no manager/i })).toBeInTheDocument();
   });
 
@@ -340,11 +343,11 @@ describe("User directory — set manager dialog", () => {
     fireEvent.click(within(row).getByRole("button", { name: /set manager/i }));
     const dialog = await screen.findByRole("dialog");
 
-    await pickOption(dialog, /^manager/i, /Ridwan Saputra/i);
+    await pickOption(dialog, /^manager/i, /Dewi Anggraeni/i);
     fireEvent.click(within(dialog).getByRole("button", { name: /set manager/i }));
 
     await waitFor(() =>
-      expect(usersMocks.setUserManager).toHaveBeenCalledWith("u-emp-1", "u-fin-1")
+      expect(usersMocks.setUserManager).toHaveBeenCalledWith("u-emp-1", "u-mgr-1")
     );
     await waitFor(() => expect(usersMocks.listUsers).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -402,6 +405,140 @@ describe("User directory — set manager dialog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /set manager/i }));
 
     expect(await within(dialog).findByText(/circular reporting line/i)).toBeInTheDocument();
+  });
+});
+
+describe("Set manager — role guard + candidate filter", () => {
+  const APPROVER_DISABLED = backendUser({
+    id: "u-app-dis",
+    name: "Eka Wahyuni",
+    email: "eka.wahyuni@spendflow.example",
+    role: "approver",
+    managerId: null,
+    status: "disabled",
+  });
+  const APPROVER_PENDING = backendUser({
+    id: "u-app-pend",
+    name: "Fajar Nugraha",
+    email: "fajar.nugraha@spendflow.example",
+    role: "approver",
+    managerId: null,
+    status: "pending",
+  });
+  const EMPLOYEE_OTHER = backendUser({
+    id: "u-emp-2",
+    name: "Budi Santoso",
+    email: "budi.santoso@spendflow.example",
+    role: "employee",
+    managerId: null,
+  });
+
+  async function openSetManager(name: string) {
+    const row = rowFor(name);
+    fireEvent.click(within(row).getByRole("button", { name: /set manager/i }));
+    return screen.findByRole("dialog");
+  }
+
+  it("lists only active approvers — no employees, finance admins, pending, disabled, or self", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      FINANCE,
+      MANAGER,
+      APPROVER_DISABLED,
+      APPROVER_PENDING,
+      EMPLOYEE_OTHER,
+      backendUser(), // target: Aulia (employee)
+    ]);
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const dialog = await openSetManager("Aulia Pratiwi");
+    const trigger = within(dialog).getByLabelText(/manager/i);
+    fireEvent.click(trigger);
+    const listbox = await within(dialog).findByRole("listbox");
+
+    // Only the single active approver (Dewi) is a candidate.
+    expect(
+      within(listbox).getByRole("option", { name: /Dewi Anggraeni/i })
+    ).toBeInTheDocument();
+    // Self
+    expect(
+      within(listbox).queryByRole("option", { name: /Aulia Pratiwi/i })
+    ).not.toBeInTheDocument();
+    // Other employee
+    expect(
+      within(listbox).queryByRole("option", { name: /Budi Santoso/i })
+    ).not.toBeInTheDocument();
+    // Finance admin
+    expect(
+      within(listbox).queryByRole("option", { name: /Ridwan Saputra/i })
+    ).not.toBeInTheDocument();
+    // Disabled approver
+    expect(
+      within(listbox).queryByRole("option", { name: /Eka Wahyuni/i })
+    ).not.toBeInTheDocument();
+    // Pending approver
+    expect(
+      within(listbox).queryByRole("option", { name: /Fajar Nugraha/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders an inline empty state when no active approvers exist", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      FINANCE,
+      APPROVER_DISABLED,
+      APPROVER_PENDING,
+      backendUser(), // target: Aulia (employee)
+    ]);
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const dialog = await openSetManager("Aulia Pratiwi");
+    expect(
+      within(dialog).getByText(/no active approvers available/i)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/add an approver user first/i)).toBeInTheDocument();
+    // No manager picker is rendered when there are no candidates.
+    expect(within(dialog).queryByLabelText(/^manager/i)).not.toBeInTheDocument();
+  });
+
+  it("hides the 'Set manager' button on approver and finance admin rows", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    // Seeded approver (dewi.anggraeni@spendflow.example) — no button.
+    expect(
+      within(rowFor("Dewi Anggraeni")).queryByRole("button", { name: /set manager/i })
+    ).not.toBeInTheDocument();
+    // Seeded finance admin (ridwan.saputra@spendflow.example) — no button.
+    expect(
+      within(rowFor("Ridwan Saputra")).queryByRole("button", { name: /set manager/i })
+    ).not.toBeInTheDocument();
+    // Employee rows keep the button.
+    expect(
+      within(rowFor("Aulia Pratiwi")).getByRole("button", { name: /set manager/i })
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces the BE's 400 invalid_manager message verbatim", async () => {
+    usersMocks.setUserManager.mockRejectedValue(
+      new UsersApiError(
+        400,
+        "invalid_manager",
+        "Manager must be an Approver; user has role employee"
+      )
+    );
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const dialog = await openSetManager("Aulia Pratiwi");
+    await pickOption(dialog, /^manager/i, /Dewi Anggraeni/i);
+    fireEvent.click(within(dialog).getByRole("button", { name: /set manager/i }));
+
+    expect(
+      await within(dialog).findByText(/manager must be an approver; user has role employee/i)
+    ).toBeInTheDocument();
+    // Dialog stays open (save button is the retry).
+    expect(within(dialog).getByRole("heading", { name: /set manager/i })).toBeInTheDocument();
   });
 });
 

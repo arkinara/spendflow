@@ -848,14 +848,16 @@ function UsersTab({
                     >
                       Change role
                     </Button>
-                    <Button
-                      variant="text"
-                      size="sm"
-                      icon={UserRound}
-                      onClick={() => setManagerTarget(u)}
-                    >
-                      Set manager
-                    </Button>
+                    {u.role === "employee" && (
+                      <Button
+                        variant="text"
+                        size="sm"
+                        icon={UserRound}
+                        onClick={() => setManagerTarget(u)}
+                      >
+                        Set manager
+                      </Button>
+                    )}
                     {u.status === "active" ? (
                       <span title="Activate the user first to use this">
                         <Button
@@ -1285,13 +1287,28 @@ function SetManagerDialog({
     }
   }, [open, target]);
 
-  const options = React.useMemo(() => {
-    const list = users
-      .filter((u) => u.id !== target?.id)
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((u) => ({ value: u.id, label: u.name }));
-    return [{ value: "", label: "No manager (clear)" }, ...list];
-  }, [users, target]);
+  // #43: the manager picker only ever offers active approvers (the only role
+  // that can actually approve submitted claims), never the target themselves.
+  const candidates = React.useMemo(
+    () =>
+      users
+        .filter(
+          (u) =>
+            u.role === "approver" &&
+            u.status === "active" &&
+            u.id !== target?.id
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [users, target]
+  );
+
+  const options = React.useMemo(
+    () => [
+      { value: "", label: "No manager (clear)" },
+      ...candidates.map((u) => ({ value: u.id, label: u.name })),
+    ],
+    [candidates]
+  );
 
   async function submit() {
     if (!target) return;
@@ -1345,14 +1362,23 @@ function SetManagerDialog({
           Current manager: <span className="font-medium text-on-surface">{currentName ?? "—"}</span>
         </p>
         {formError && <FormErrorBanner message={formError} />}
-        <Select
-          label="Manager"
-          required
-          options={options}
-          value={managerId}
-          onChange={setManagerId}
-          placeholder="Select a manager…"
-        />
+        {candidates.length === 0 ? (
+          <div
+            role="status"
+            className="rounded-xl bg-surface-container-high px-4 py-6 text-center text-sm text-on-surface-variant"
+          >
+            No active approvers available. Add an Approver user first.
+          </div>
+        ) : (
+          <Select
+            label="Manager"
+            required
+            options={options}
+            value={managerId}
+            onChange={setManagerId}
+            placeholder="Select a manager…"
+          />
+        )}
       </div>
     </Dialog>
   );
