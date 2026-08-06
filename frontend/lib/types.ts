@@ -271,3 +271,21 @@ export interface AuditEntry {
   at: string;
   detail: string;
 }
+
+/**
+ * One row in the admin audit trail (BE `GET /api/admin/users/:id/audit`).
+ * `before`/`after` are JSON snapshots of the target entity's prior/new state
+ * (e.g. `{ "role": "approver" }`). Actor names are not embedded in the entry —
+ * the UI resolves `actorId` against the current user directory on render, so
+ * a departed admin falls back to their id.
+ */
+export interface UserAuditEntry {
+  id: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  before: unknown;
+  after: unknown;
+  createdAt: string;
+}

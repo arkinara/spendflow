@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
-import { useUsers } from "@/lib/hooks/useUsers";
-import { UsersApiError, type BackendUser } from "@/lib/api/users";
+import { useUsers, useUserAudit } from "@/lib/hooks/useUsers";
+import { UsersApiError, type BackendUser, type UserAuditEntry } from "@/lib/api/users";
 
 /**
  * State-machine tests for `useUsers` (ticket #30). `@/lib/api/users` is mocked
@@ -13,6 +13,7 @@ const usersMocks = vi.hoisted(() => ({
   listUsers: vi.fn(),
   deactivate: vi.fn(),
   reactivate: vi.fn(),
+  getUserAudit: vi.fn(),
 }));
 
 vi.mock("@/lib/api/users", async (importOriginal) => {
@@ -22,6 +23,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     listUsers: usersMocks.listUsers,
     deactivate: usersMocks.deactivate,
     reactivate: usersMocks.reactivate,
+    getUserAudit: usersMocks.getUserAudit,
   };
 });
 
@@ -43,10 +45,25 @@ function backendUser(overrides: Partial<BackendUser> = {}): BackendUser {
   };
 }
 
+function auditEntry(overrides: Partial<UserAuditEntry> = {}): UserAuditEntry {
+  return {
+    id: "audit-1",
+    actorId: "u-fin-1",
+    action: "role.change",
+    entityType: "user",
+    entityId: "u-emp-1",
+    before: { role: "employee" },
+    after: { role: "approver" },
+    createdAt: "2026-01-02T00:00:00Z",
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   usersMocks.listUsers.mockReset();
   usersMocks.deactivate.mockReset();
   usersMocks.reactivate.mockReset();
+  usersMocks.getUserAudit.mockReset();
 });
 
 afterEach(() => {
@@ -201,5 +218,93 @@ describe("useUsers", () => {
     }
     expect(caught).toBeInstanceOf(UsersApiError);
     expect((caught as UsersApiError).message).toMatch(/Backend exploded/);
+  });
+});
+
+describe("useUserAudit (#34)", () => {
+  it("with null filters transitions straight to ready with empty entries (no network)", async () => {
+    const { result } = renderHook(() => useUserAudit(null));
+
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    if (result.current.state.status === "ready") {
+      expect(result.current.state.entries).toEqual([]);
+    }
+    expect(usersMocks.getUserAudit).not.toHaveBeenCalled();
+  });
+
+  it("starts loading then resolves to a ready entry list", async () => {
+    usersMocks.getUserAudit.mockResolvedValue([auditEntry()]);
+    const { result } = renderHook(() =>
+      useUserAudit({ userIds: ["u-emp-1"], limit: 50 })
+    );
+
+    expect(result.current.state.status).toBe("loading");
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(usersMocks.getUserAudit).toHaveBeenCalledWith({
+      userIds: ["u-emp-1"],
+      limit: 50,
+    });
+    if (result.current.state.status === "ready") {
+      expect(result.current.state.entries).toHaveLength(1);
+    }
+  });
+
+  it("maps a 403 to the denied state", async () => {
+    usersMocks.getUserAudit.mockRejectedValue(
+      new UsersApiError(403, "forbidden", "Finance admins only."),
+    );
+    const { result } = renderHook(() => useUserAudit({ userIds: ["u-emp-1"] }));
+
+    await waitFor(() => expect(result.current.state.status).toBe("denied"));
+  });
+
+  it("maps other errors to the error state and refresh retries", async () => {
+    usersMocks.getUserAudit
+      .mockRejectedValueOnce(new UsersApiError(500, "internal", "Backend exploded."))
+      .mockResolvedValueOnce([auditEntry()]);
+    const { result } = renderHook(() => useUserAudit({ userIds: ["u-emp-1"] }));
+
+    await waitFor(() => expect(result.current.state.status).toBe("error"));
+    if (result.current.state.status === "error") {
+      expect(result.current.state.message).toMatch(/Backend exploded/);
+    }
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    expect(result.current.state.status).toBe("loading");
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(usersMocks.getUserAudit).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads when the userIds array reference changes", async () => {
+    usersMocks.getUserAudit.mockResolvedValue([]);
+    const { result, rerender } = renderHook(
+      ({ userIds }: { userIds: string[] }) =>
+        useUserAudit({ userIds, limit: 50 }),
+      { initialProps: { userIds: ["u-emp-1"] } },
+    );
+
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(usersMocks.getUserAudit).toHaveBeenCalledTimes(1);
+
+    rerender({ userIds: ["u-emp-1", "u-fin-1"] });
+
+    await waitFor(() => expect(usersMocks.getUserAudit).toHaveBeenCalledTimes(2));
+    expect(usersMocks.getUserAudit).toHaveBeenLastCalledWith({
+      userIds: ["u-emp-1", "u-fin-1"],
+      limit: 50,
+    });
+  });
+
+  it("carries a non-UsersApiError message into the error state", async () => {
+    usersMocks.getUserAudit.mockRejectedValue(new Error("Network is down."));
+    const { result } = renderHook(() => useUserAudit({ userIds: ["u-emp-1"] }));
+
+    await waitFor(() => expect(result.current.state.status).toBe("error"));
+    if (result.current.state.status === "error") {
+      expect(result.current.state.message).toMatch(/Network is down/);
+    }
   });
 });

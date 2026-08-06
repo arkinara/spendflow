@@ -51,6 +51,7 @@ const usersMocks = vi.hoisted(() => ({
   bulkChangeRole: vi.fn(),
   deactivate: vi.fn(),
   reactivate: vi.fn(),
+  getUserAudit: vi.fn(),
 }));
 
 vi.mock("@/lib/api/users", async (importOriginal) => {
@@ -65,6 +66,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     bulkChangeRole: usersMocks.bulkChangeRole,
     deactivate: usersMocks.deactivate,
     reactivate: usersMocks.reactivate,
+    getUserAudit: usersMocks.getUserAudit,
   };
 });
 
@@ -73,7 +75,7 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { UsersApiError, BulkPartialFailureError, type BackendUser } from "@/lib/api/users";
+import { UsersApiError, BulkPartialFailureError, type BackendUser, type UserAuditEntry } from "@/lib/api/users";
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -116,6 +118,33 @@ const MANAGER = backendUser({
 });
 
 const SEED_USERS: BackendUser[] = [FINANCE, MANAGER, backendUser()];
+
+function auditEntry(overrides: Partial<UserAuditEntry> = {}): UserAuditEntry {
+  return {
+    id: "audit-1",
+    actorId: "u-fin-1",
+    action: "role.change",
+    entityType: "user",
+    entityId: "u-emp-1",
+    before: { role: "employee" },
+    after: { role: "approver" },
+    createdAt: TS,
+    ...overrides,
+  };
+}
+
+const AUDIT_ENTRIES: UserAuditEntry[] = [
+  auditEntry({
+    id: "a1",
+    actorId: "u-mgr-1",
+    action: "manager.change",
+    entityId: "u-emp-1",
+    before: { managerId: null },
+    after: { managerId: "u-mgr-1" },
+    createdAt: "2026-01-02T00:00:00Z",
+  }),
+  auditEntry(),
+];
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -169,8 +198,10 @@ beforeEach(() => {
   usersMocks.bulkChangeRole.mockReset();
   usersMocks.deactivate.mockReset();
   usersMocks.reactivate.mockReset();
+  usersMocks.getUserAudit.mockReset();
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
   usersMocks.bulkChangeRole.mockResolvedValue(SEED_USERS);
+  usersMocks.getUserAudit.mockResolvedValue(AUDIT_ENTRIES);
 });
 
 afterEach(() => {
@@ -639,5 +670,108 @@ describe("User directory — cross-role access denied", () => {
 
     await waitFor(() => expect(navMocks.replace).toHaveBeenCalledWith("/employee"));
     expect(screen.queryByText("User directory")).not.toBeInTheDocument();
+  });
+});
+
+/* -------------------------------------------------- recent activity (#34) == */
+
+describe("User directory — recent activity", () => {
+  async function expandActivity() {
+    const toggle = screen.getByRole("button", { name: /recent activity/i });
+    fireEvent.click(toggle);
+    return toggle;
+  }
+
+  it("is collapsed by default and defers the audit fetch until expanded", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    const toggle = screen.getByRole("button", { name: /recent activity/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // No fan-out on the common path.
+    expect(usersMocks.getUserAudit).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: /recent activity/i })).not.toBeInTheDocument();
+  });
+
+  it("expanding fetches the audit and renders action label + actor + target", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    await expandActivity();
+
+    await waitFor(() =>
+      expect(usersMocks.getUserAudit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          limit: 50,
+          userIds: expect.arrayContaining(["u-fin-1", "u-mgr-1", "u-emp-1"]),
+        })
+      )
+    );
+
+    const region = await screen.findByRole("region", { name: /recent activity/i });
+    expect(within(region).getByText("Role change")).toBeInTheDocument();
+    expect(within(region).getByText("Manager change")).toBeInTheDocument();
+    // Actor name + email resolved from the directory.
+    expect(within(region).getByText("Ridwan Saputra")).toBeInTheDocument();
+    expect(
+      within(region).getByText(/ridwan\.saputra@spendflow\.example/)
+    ).toBeInTheDocument();
+    // Target user name.
+    expect(within(region).getAllByText("Aulia Pratiwi").length).toBeGreaterThan(0);
+  });
+
+  it("shows a Refresh button that re-reads the audit", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    await expandActivity();
+
+    await waitFor(() => expect(usersMocks.getUserAudit).toHaveBeenCalledTimes(1));
+    const refresh = screen.getByRole("button", { name: /refresh/i });
+    fireEvent.click(refresh);
+
+    await waitFor(() => expect(usersMocks.getUserAudit).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows an empty state when the directory has no admin actions", async () => {
+    usersMocks.getUserAudit.mockResolvedValue([]);
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    await expandActivity();
+
+    expect(await screen.findByText(/no admin activity yet/i)).toBeInTheDocument();
+  });
+
+  it("surfaces an error with a working retry when the audit fetch fails", async () => {
+    usersMocks.getUserAudit
+      .mockRejectedValueOnce(new UsersApiError(0, "audit_unavailable", "Backend exploded."))
+      .mockResolvedValueOnce(AUDIT_ENTRIES);
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    await expandActivity();
+
+    expect(await screen.findByText(/couldn't load recent activity/i)).toBeInTheDocument();
+    expect(screen.getByText(/backend exploded/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(screen.getByText("Role change")).toBeInTheDocument());
+    expect(usersMocks.getUserAudit).toHaveBeenCalledTimes(2);
+  });
+
+  it("toggles the before/after JSON on click", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    await expandActivity();
+
+    const region = await screen.findByRole("region", { name: /recent activity/i });
+    expect(within(region).queryByText(/"role": "employee"/)).not.toBeInTheDocument();
+
+    const roleChangeRow = within(region).getByText("Role change").closest("li")!;
+    const show = within(roleChangeRow).getByRole("button", { name: /show changes/i });
+    fireEvent.click(show);
+
+    expect(within(region).getByText(/"role": "employee"/)).toBeInTheDocument();
+    expect(within(region).getByText(/"role": "approver"/)).toBeInTheDocument();
+
+    fireEvent.click(within(region).getByRole("button", { name: /hide changes/i }));
+    expect(within(region).queryByText(/"role": "employee"/)).not.toBeInTheDocument();
   });
 });

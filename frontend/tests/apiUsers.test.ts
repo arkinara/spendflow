@@ -6,9 +6,11 @@ import {
   bulkChangeRole,
   deactivate,
   reactivate,
+  getUserAudit,
   UsersApiError,
   BulkPartialFailureError,
   type BackendUser,
+  type UserAuditEntry,
 } from "@/lib/api/users";
 import { BE_URL } from "@/lib/auth/apiClient";
 
@@ -52,6 +54,20 @@ function backendUser(overrides: Partial<BackendUser> = {}): BackendUser {
     status: "active",
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function auditEntry(overrides: Partial<UserAuditEntry> = {}): UserAuditEntry {
+  return {
+    id: "audit-1",
+    actorId: "u-fin-1",
+    action: "role.change",
+    entityType: "user",
+    entityId: "u-emp-1",
+    before: { role: "employee" },
+    after: { role: "approver" },
+    createdAt: "2026-01-02T00:00:00Z",
     ...overrides,
   };
 }
@@ -336,5 +352,58 @@ describe("deactivate / reactivate (#33)", () => {
     expect(err).toBeInstanceOf(UsersApiError);
     expect(err).toMatchObject({ status: 404, code: "not_found" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getUserAudit (#34)", () => {
+  it("fans out one GET per user, merges, sorts newest-first, and caps at limit", async () => {
+    fetchMock
+      // u-emp-1 → two entries (older)
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          entries: [
+            auditEntry({ id: "a1", createdAt: "2026-01-02T00:00:00Z" }),
+            auditEntry({ id: "a2", actorId: "u-mgr-1", action: "manager.change", createdAt: "2026-01-01T00:00:00Z" }),
+          ],
+        })
+      )
+      // u-fin-1 → one newer entry
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          entries: [
+            auditEntry({ id: "a3", entityId: "u-fin-1", action: "status.change", createdAt: "2026-01-03T00:00:00Z" }),
+          ],
+        })
+      );
+
+    const result = await getUserAudit({ userIds: ["u-emp-1", "u-fin-1"], limit: 2 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/users/u-emp-1/audit`);
+    expect(fetchMock.mock.calls[1][0]).toBe(`${BE_URL}/api/admin/users/u-fin-1/audit`);
+    // Merged + sorted newest-first + capped at 2.
+    expect(result).toHaveLength(2);
+    expect(result.map((e) => e.id)).toEqual(["a3", "a1"]);
+  });
+
+  it("returns an empty array without any network calls for empty userIds", async () => {
+    const result = await getUserAudit({ userIds: [] });
+    expect(result).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("throws a typed audit_unavailable error when a single user's fetch fails", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, { entries: [auditEntry()] })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(500, { error: { code: "internal", message: "Backend exploded." } })
+      );
+
+    const err = await getUserAudit({ userIds: ["u-emp-1", "u-fin-1"] }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 0, code: "audit_unavailable" });
   });
 });

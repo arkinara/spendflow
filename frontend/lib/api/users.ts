@@ -4,6 +4,7 @@
  * Thin typed wrapper over the finance-only user endpoints (BE #14, mounted in
  * `backend/src/app.ts`):
  *   - GET   /api/admin/users          → list every user
+ *   - GET   /api/admin/users/:id/audit → audit entries for one user (#34)
  *   - PATCH /api/admin/users/:id/role   → change a user's role
  *   - PATCH /api/admin/users/:id/manager → set or clear a user's manager
  *
@@ -37,7 +38,9 @@
  * ========================================================================== */
 
 import { apiFetch } from "@/lib/api/fetch";
-import type { Role, UserStatus } from "@/lib/types";
+import type { Role, UserStatus, UserAuditEntry } from "@/lib/types";
+
+export type { UserAuditEntry };
 
 /** `PublicUser` from `backend/src/types.ts` — ISO date strings over the wire,
  *  never includes the password hash. `status` is the soft-activation flag
@@ -225,4 +228,49 @@ export async function bulkChangeRole(
     throw new BulkPartialFailureError(details, updated.length, userIds.length);
   }
   return updated;
+}
+
+/* --------------------------------------------------------------- audit (#34) */
+
+/** Filters the admin audit view composes from (#34). `userIds` is the
+ *  directory subset whose per-user audit trails get fanned out. */
+export interface UserAuditFilters {
+  userIds: string[];
+  limit?: number;
+}
+
+/** `GET /api/admin/users/:id/audit` fan-out (#34). The BE only exposes the
+ *  per-user audit endpoint — no directory-wide batch on the wire — so this
+ *  makes one request per user via `Promise.all`, merges the results, sorts
+ *  newest-first, and caps at `limit` (default 50). An empty `userIds`
+ *  short-circuits to `[]` with no network calls. Any single fetch failure
+ *  aborts the whole call with a `UsersApiError` coded `audit_unavailable`. */
+export async function getUserAudit({
+  userIds,
+  limit = 50,
+}: UserAuditFilters): Promise<UserAuditEntry[]> {
+  if (userIds.length === 0) return [];
+  try {
+    const perUser = await Promise.all(
+      userIds.map(async (userId) => {
+        const body = await parseJson<{ entries: UserAuditEntry[] }>(
+          await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/audit`, {
+            method: "GET",
+          }),
+        );
+        return body.entries ?? [];
+      }),
+    );
+    const merged = perUser.flat();
+    merged.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    return merged.slice(0, limit);
+  } catch (err) {
+    throw new UsersApiError(
+      0,
+      "audit_unavailable",
+      err instanceof Error ? err.message : "Failed to load the audit trail.",
+    );
+  }
 }

@@ -28,18 +28,33 @@ import * as React from "react";
 import {
   bulkChangeRole as bulkChangeRoleApi,
   deactivate as deactivateApi,
+  getUserAudit as getUserAuditApi,
   listUsers,
   reactivate as reactivateApi,
   UsersApiError,
   type BackendUser,
+  type UserAuditFilters,
 } from "@/lib/api/users";
-import type { Role, UserStatus } from "@/lib/types";
+import type { Role, UserStatus, UserAuditEntry } from "@/lib/types";
 
 export type UsersListState =
   | { status: "loading" }
   | { status: "ready"; rows: BackendUser[] }
   | { status: "error"; message: string }
   | { status: "denied" };
+
+/** State machine for `useUserAudit` (#34): same shape as `UsersListState`. */
+export type UserAuditState =
+  | { status: "loading" }
+  | { status: "ready"; entries: UserAuditEntry[] }
+  | { status: "error"; message: string }
+  | { status: "denied" };
+
+export interface UseUserAudit {
+  state: UserAuditState;
+  /** Force a fresh fan-out read of the BE (the "Refresh" button). */
+  refresh: () => void;
+}
 
 export interface UseUsers {
   state: UsersListState;
@@ -169,4 +184,61 @@ export function useUsers(): UseUsers {
   );
 
   return { state, retry, refresh, bulkChangeRole, deactivate, reactivate };
+}
+
+/* =========================================================================== */
+
+/** `useUserAudit` (#34) — reads the admin audit trail for a set of user ids.
+ *  Same state machine as `useUsers` (loading | ready | error | denied), wired
+ *  to the collapsible "Recent activity" section on `/finance/users`. When
+ *  `filters` is `null` the hook sits `ready` with empty entries and makes no
+ *  network calls (the collapsed-by-default path). Passing filters fans out one
+ *  `GET /api/admin/users/:id/audit` per id; the fetch re-runs when the
+ *  `userIds` array reference changes. A BE 403 maps to `denied`; anything else
+ *  to `error` with the BE message. 401 is handled globally by `apiFetch`. */
+export function useUserAudit(filters: UserAuditFilters | null): UseUserAudit {
+  const [state, setState] = React.useState<UserAuditState>({ status: "loading" });
+  const [version, setVersion] = React.useState(0);
+  // Serialize the array reference so callers that pass a fresh `userIds`
+  // literal every render don't trigger an effect loop (and an OOM). The id
+  // list is stable for a given directory + filter state, so a sorted join is
+  // a safe identity.
+  const userIdsKey = filters?.userIds ? [...filters.userIds].sort().join("|") : null;
+  const limit = filters?.limit;
+
+  React.useEffect(() => {
+    if (userIdsKey === null) {
+      setState({ status: "ready", entries: [] });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+
+    (async () => {
+      try {
+        const entries = await getUserAuditApi({
+          userIds: userIdsKey.split("|"),
+          limit,
+        });
+        if (!cancelled) setState({ status: "ready", entries });
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof UsersApiError && err.status === 403) {
+          setState({ status: "denied" });
+        } else {
+          setState({
+            status: "error",
+            message: err instanceof Error ? err.message : "Failed to load the audit trail.",
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+      }, [userIdsKey, limit, version]);
+
+  const refresh = React.useCallback(() => setVersion((v) => v + 1), []);
+  return { state, refresh };
 }
