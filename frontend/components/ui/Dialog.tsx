@@ -14,6 +14,9 @@ export interface DialogProps {
   footer?: React.ReactNode;
   size?: "sm" | "md" | "lg";
   dismissable?: boolean;
+  /** ARIA role for the panel. `alertdialog` (used by destructive confirms)
+   *  tells assistive tech the user's attention is required before continuing. */
+  role?: "dialog" | "alertdialog";
 }
 
 const SIZES = {
@@ -32,6 +35,7 @@ export function Dialog({
   footer,
   size = "md",
   dismissable = true,
+  role = "dialog",
 }: DialogProps) {
   const panelRef = React.useRef<HTMLDivElement>(null);
   const previouslyFocused = React.useRef<HTMLElement | null>(null);
@@ -90,7 +94,7 @@ export function Dialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
+      role={role}
       aria-modal="true"
       aria-label={title}
     >

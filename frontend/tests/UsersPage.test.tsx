@@ -53,6 +53,7 @@ const usersMocks = vi.hoisted(() => ({
   bulkChangeRole: vi.fn(),
   deactivate: vi.fn(),
   reactivate: vi.fn(),
+  deleteUser: vi.fn(),
   getUserAudit: vi.fn(),
   createUser: vi.fn(),
 }));
@@ -69,6 +70,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     bulkChangeRole: usersMocks.bulkChangeRole,
     deactivate: usersMocks.deactivate,
     reactivate: usersMocks.reactivate,
+    deleteUser: usersMocks.deleteUser,
     getUserAudit: usersMocks.getUserAudit,
     createUser: usersMocks.createUser,
   };
@@ -194,6 +196,11 @@ function queryRow(name: string): HTMLElement | null {
   });
 }
 
+/** Accessible name of the per-row Deactivate button (#43 now carries a
+ *  "soft disable" disambiguator so screen readers don't confuse it with the
+ *  destructive Delete action). */
+const DEACTIVATE_NAME = /^deactivate .* \(soft disable\)$/i;
+
 /** Open the custom `Select` and click the option whose label matches. */
 async function pickOption(dialog: HTMLElement, selectLabel: RegExp, optionLabel: RegExp) {
   const trigger = within(dialog).getByLabelText(selectLabel);
@@ -215,6 +222,7 @@ beforeEach(() => {
   usersMocks.bulkChangeRole.mockReset();
   usersMocks.deactivate.mockReset();
   usersMocks.reactivate.mockReset();
+  usersMocks.deleteUser.mockReset();
   usersMocks.getUserAudit.mockReset();
   usersMocks.createUser.mockReset();
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
@@ -428,7 +436,7 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     await waitForReady(/Aulia Pratiwi/);
 
     const row = rowFor("Aulia Pratiwi");
-    fireEvent.click(within(row).getByRole("button", { name: /^deactivate$/i }));
+    fireEvent.click(within(row).getByRole("button", { name: DEACTIVATE_NAME }));
 
     const dialog = await screen.findByRole("dialog");
     expect(
@@ -463,7 +471,7 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     const row = rowFor("Aulia Pratiwi");
     expect(within(row).getByRole("button", { name: /^reactivate$/i })).toBeInTheDocument();
     expect(
-      within(row).queryByRole("button", { name: /^deactivate$/i })
+      within(row).queryByRole("button", { name: DEACTIVATE_NAME })
     ).not.toBeInTheDocument();
 
     fireEvent.click(within(row).getByRole("button", { name: /^reactivate$/i }));
@@ -490,7 +498,7 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     await waitForReady(/Ridwan Saputra/);
 
     const row = rowFor("Ridwan Saputra"); // u-fin-1 = the current session
-    expect(within(row).getByRole("button", { name: /^deactivate$/i })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: DEACTIVATE_NAME })).toBeDisabled();
   });
 
   it("disables Deactivate when the target is the only active finance admin", async () => {
@@ -499,7 +507,7 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     await waitForReady(/Ridwan Saputra/);
 
     expect(
-      within(rowFor("Ridwan Saputra")).getByRole("button", { name: /^deactivate$/i })
+      within(rowFor("Ridwan Saputra")).getByRole("button", { name: DEACTIVATE_NAME })
     ).toBeDisabled();
   });
 
@@ -519,7 +527,7 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     await waitForReady(/Candra Wijaya/);
 
     expect(
-      within(rowFor("Candra Wijaya")).getByRole("button", { name: /^deactivate$/i })
+      within(rowFor("Candra Wijaya")).getByRole("button", { name: DEACTIVATE_NAME })
     ).toBeEnabled();
   });
 
@@ -535,7 +543,7 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     await waitForReady(/Aulia Pratiwi/);
 
     const row = rowFor("Aulia Pratiwi");
-    fireEvent.click(within(row).getByRole("button", { name: /^deactivate$/i }));
+    fireEvent.click(within(row).getByRole("button", { name: DEACTIVATE_NAME }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: /deactivate aulia pratiwi/i }));
 
@@ -550,6 +558,198 @@ describe("User directory — status chip + deactivate/reactivate", () => {
     await waitFor(() =>
       expect(within(rowFor("Aulia Pratiwi")).getByText("Active")).toBeInTheDocument()
     );
+  });
+});
+
+/* --------------------------------------------------- delete user (#43) ===== */
+
+describe("User directory — hard delete + password re-auth", () => {
+  const PENDING = backendUser({
+    id: "u-pend-1",
+    name: "Budi Santoso",
+    email: "budi.santoso@spendflow.example",
+    role: "employee",
+    status: "pending",
+  });
+  const DISABLED = backendUser({
+    id: "u-dis-1",
+    name: "Gadis Purnama",
+    email: "gadis.purnama@spendflow.example",
+    role: "employee",
+    status: "disabled",
+  });
+
+  function deleteButton(name: string): HTMLElement {
+    return within(rowFor(name)).getByRole("button", {
+      name: new RegExp(`^delete ${name} permanently$`, "i"),
+    });
+  }
+
+  async function openDeleteDialog(name: string) {
+    fireEvent.click(deleteButton(name));
+    return screen.findByRole("alertdialog");
+  }
+
+  async function submitDelete(dialog: HTMLElement, password: string) {
+    fireEvent.change(within(dialog).getByLabelText(/re-enter your password to confirm/i), {
+      target: { value: password },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /delete permanently/i }));
+  }
+
+  it("opens the dialog with the removal list + guard text when Delete is clicked on a pending row", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING, DISABLED]);
+    renderPage();
+    await waitForReady(/Budi Santoso/);
+
+    const dialog = await openDeleteDialog("Budi Santoso");
+    expect(
+      within(dialog).getByRole("heading", { name: /delete budi santoso\?/i })
+    ).toBeInTheDocument();
+    // Removal list.
+    expect(within(dialog).getByText(/user account \+ login credentials/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/pending invitations/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/active sessions/i)).toBeInTheDocument();
+    // Plain-English guard.
+    expect(
+      within(dialog).getByText(/only available for pending or deactivated users/i)
+    ).toBeInTheDocument();
+    // Password field + verb-named submit (disabled until a password is typed).
+    expect(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /delete permanently/i })).toBeDisabled();
+  });
+
+  it("opens the same dialog for a disabled row", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING, DISABLED]);
+    renderPage();
+    await waitForReady(/Gadis Purnama/);
+
+    const dialog = await openDeleteDialog("Gadis Purnama");
+    expect(
+      within(dialog).getByRole("heading", { name: /delete gadis purnama\?/i })
+    ).toBeInTheDocument();
+  });
+
+  it("wrong password → inline error, dialog stays open, password field cleared", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING]);
+    usersMocks.deleteUser.mockRejectedValue(
+      new UsersApiError(401, "invalid_password", "Invalid password")
+    );
+    renderPage();
+    await waitForReady(/Budi Santoso/);
+
+    const dialog = await openDeleteDialog("Budi Santoso");
+    await submitDelete(dialog, "wrong-pass");
+
+    expect(
+      await within(dialog).findByText(/incorrect password/i)
+    ).toBeInTheDocument();
+    // Dialog stays open (no silent close on failure).
+    expect(
+      within(dialog).getByRole("heading", { name: /delete budi santoso\?/i })
+    ).toBeInTheDocument();
+    // Password cleared for the retry.
+    expect(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i)
+    ).toHaveValue("");
+    expect(usersMocks.deleteUser).toHaveBeenCalledWith("u-pend-1", "wrong-pass");
+  });
+
+  it("correct password → dialog closes, row disappears, toast, no refetch", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING]);
+    usersMocks.deleteUser.mockResolvedValue(undefined);
+    renderPage();
+    await waitForReady(/Budi Santoso/);
+
+    const dialog = await openDeleteDialog("Budi Santoso");
+    await submitDelete(dialog, "right-pass");
+
+    await waitFor(() =>
+      expect(usersMocks.deleteUser).toHaveBeenCalledWith("u-pend-1", "right-pass")
+    );
+    // Success → dialog closes + success toast + row removed from the table.
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(await screen.findByText(/budi santoso deleted permanently/i)).toBeInTheDocument();
+    await waitFor(() => expect(queryRow("Budi Santoso")).toBeNull());
+    expect(usersMocks.listUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("Delete is disabled with a tooltip on active rows but enabled on pending rows", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING]);
+    renderPage();
+    await waitForReady(/Budi Santoso/);
+
+    const activeDelete = deleteButton("Ridwan Saputra");
+    expect(activeDelete).toBeDisabled();
+    expect(activeDelete.closest("span")).toHaveAttribute(
+      "title",
+      "Activate the user first to use this"
+    );
+
+    expect(deleteButton("Budi Santoso")).toBeEnabled();
+  });
+
+  it("Deactivate uses the error tone while Reactivate stays on the primary text color", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, DISABLED, backendUser()]);
+    renderPage();
+    await waitForReady(/Gadis Purnama/);
+
+    const deactivate = within(rowFor("Aulia Pratiwi")).getByRole("button", {
+      name: DEACTIVATE_NAME,
+    });
+    expect(deactivate.className).toMatch(/text-error/);
+    // Destructive-soft text button — NOT the filled-danger style (which uses
+    // `text-error-container` as its foreground + a solid `bg-error`).
+    expect(deactivate.className).not.toMatch(/text-error-container/);
+    expect(deactivate.className).toMatch(/hover:bg-error\/10/);
+
+    const reactivate = within(rowFor("Gadis Purnama")).getByRole("button", {
+      name: /^reactivate$/i,
+    });
+    expect(reactivate.className).toMatch(/text-primary/);
+    expect(reactivate.className).not.toMatch(/text-error/);
+  });
+
+  it("surfaces a 409 as an inline error suggesting deactivation first", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING]);
+    usersMocks.deleteUser.mockRejectedValue(
+      new UsersApiError(
+        409,
+        "cannot_delete_active_user",
+        "Active users cannot be deleted"
+      )
+    );
+    renderPage();
+    await waitForReady(/Budi Santoso/);
+
+    const dialog = await openDeleteDialog("Budi Santoso");
+    await submitDelete(dialog, "right-pass");
+
+    expect(
+      await within(dialog).findByText(/deactivate them first, then try again/i)
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("heading", { name: /delete budi santoso\?/i })
+    ).toBeInTheDocument();
+  });
+
+  it("Esc closes the dialog without submitting (password never sent)", async () => {
+    usersMocks.listUsers.mockResolvedValue([FINANCE, MANAGER, PENDING]);
+    renderPage();
+    await waitForReady(/Budi Santoso/);
+
+    const dialog = await openDeleteDialog("Budi Santoso");
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "secret" } }
+    );
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    // The delete was never fired — Esc only closes.
+    expect(usersMocks.deleteUser).not.toHaveBeenCalled();
   });
 });
 

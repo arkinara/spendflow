@@ -13,6 +13,7 @@ const usersMocks = vi.hoisted(() => ({
   listUsers: vi.fn(),
   deactivate: vi.fn(),
   reactivate: vi.fn(),
+  deleteUser: vi.fn(),
   getUserAudit: vi.fn(),
 }));
 
@@ -23,6 +24,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     listUsers: usersMocks.listUsers,
     deactivate: usersMocks.deactivate,
     reactivate: usersMocks.reactivate,
+    deleteUser: usersMocks.deleteUser,
     getUserAudit: usersMocks.getUserAudit,
   };
 });
@@ -63,6 +65,7 @@ beforeEach(() => {
   usersMocks.listUsers.mockReset();
   usersMocks.deactivate.mockReset();
   usersMocks.reactivate.mockReset();
+  usersMocks.deleteUser.mockReset();
   usersMocks.getUserAudit.mockReset();
 });
 
@@ -218,6 +221,59 @@ describe("useUsers", () => {
     }
     expect(caught).toBeInstanceOf(UsersApiError);
     expect((caught as UsersApiError).message).toMatch(/Backend exploded/);
+  });
+
+  it("deleteUser removes the row from the cache on success (no refetch)", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      backendUser(),
+      backendUser({ id: "u-pend-1", name: "Budi Santoso", status: "pending" }),
+    ]);
+    usersMocks.deleteUser.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useUsers());
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    if (result.current.state.status === "ready") {
+      expect(result.current.state.rows).toHaveLength(2);
+    }
+
+    await act(async () => {
+      await result.current.deleteUser("u-pend-1", "s3cret");
+    });
+
+    expect(usersMocks.deleteUser).toHaveBeenCalledWith("u-pend-1", "s3cret");
+    if (result.current.state.status === "ready") {
+      expect(result.current.state.rows).toHaveLength(1);
+      expect(result.current.state.rows[0].id).toBe("u-emp-1");
+    }
+    // No directory re-read — the removal is purely client-side.
+    expect(usersMocks.listUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("deleteUser rethrows on failure and leaves the cache untouched", async () => {
+    usersMocks.listUsers.mockResolvedValue([backendUser()]);
+    usersMocks.deleteUser.mockRejectedValue(
+      new UsersApiError(401, "invalid_password", "Invalid password"),
+    );
+    const { result } = renderHook(() => useUsers());
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.deleteUser("u-emp-1", "wrong");
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    // Row still present — a failed delete never blanks the cache.
+    if (result.current.state.status === "ready") {
+      expect(result.current.state.rows).toHaveLength(1);
+    }
+    expect(caught).toBeInstanceOf(UsersApiError);
+    expect((caught as UsersApiError)).toMatchObject({
+      status: 401,
+      code: "invalid_password",
+    });
   });
 });
 

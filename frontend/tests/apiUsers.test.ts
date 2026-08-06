@@ -6,6 +6,7 @@ import {
   bulkChangeRole,
   deactivate,
   reactivate,
+  deleteUser,
   getUserAudit,
   createUser,
   getInvite,
@@ -358,6 +359,76 @@ describe("deactivate / reactivate (#33)", () => {
     expect(err).toBeInstanceOf(UsersApiError);
     expect(err).toMatchObject({ status: 404, code: "not_found" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("deleteUser (#43)", () => {
+  it("POSTs the password to /delete, uses credentials, and resolves on 204", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+    await deleteUser("u-emp-1", "s3cret");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/users/u-emp-1/delete`);
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      password: "s3cret",
+    });
+  });
+
+  it("encodes the user id into the path segment", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    await deleteUser("u/slash", "s3cret");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${BE_URL}/api/admin/users/u%2Fslash/delete`
+    );
+  });
+
+  it("throws a 401 invalid_password typed error for a wrong actor password", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(401, {
+        error: { code: "invalid_password", message: "Invalid password" },
+      })
+    );
+
+    const err = await deleteUser("u-emp-1", "wrong").catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 401, code: "invalid_password" });
+  });
+
+  it("throws a 403 forbidden typed error for a non-Finance-Admin caller", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(403, { error: { code: "forbidden", message: "Finance admins only." } })
+    );
+
+    const err = await deleteUser("u-emp-1", "s3cret").catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  it("throws a 404 not_found typed error for an unknown user id", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(404, { error: { code: "not_found", message: "User nope not found" } })
+    );
+
+    const err = await deleteUser("nope", "s3cret").catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 404, code: "not_found" });
+  });
+
+  it("throws a 409 cannot_delete_active_user typed error for an active target", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(409, {
+        error: {
+          code: "cannot_delete_active_user",
+          message: "Active users cannot be deleted",
+        },
+      })
+    );
+
+    const err = await deleteUser("u-emp-1", "s3cret").catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 409, code: "cannot_delete_active_user" });
   });
 });
 

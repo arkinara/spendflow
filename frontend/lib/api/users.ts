@@ -10,6 +10,7 @@
  *   - POST  /api/admin/users          → create a pending user + invite (#36)
  *   - GET   /api/admin/invites/:token (public) → invite details (#36)
  *   - POST  /api/admin/invites/:token/accept (public) → set password + activate (#36)
+ *   - POST  /api/admin/users/:id/delete → hard-delete a pending/disabled user (#43)
  *
  * Every call goes through `apiFetch` (#17): `credentials: "include"` session
  * cookie, `NEXT_PUBLIC_BE_URL` resolution, and the global 401 handler. Non-2xx
@@ -45,9 +46,20 @@
  * `invite_invalid` (404, unknown token), `invite_expired` (410), or
  * `invite_consumed` (410). `acceptInvite` emits `invalid_password` (400, below
  * the BE password policy) plus the invite codes above.
+ *
+ * Hard delete (#43): `deleteUser` POSTs the actor's own password as
+ * re-authentication (BE #41/#42) and resolves on 204. Errors: 401
+ * `invalid_password` (actor's password did not verify), 409
+ * `cannot_delete_active_user` (target is still active — deactivate first), 403
+ * `forbidden` (not a Finance Admin), 404 `not_found`. Unlike every other call
+ * in this module, `deleteUser` does NOT ride `apiFetch`'s global 401 handler:
+ * a 401 here means "wrong password" or an idle-session re-auth failure — both
+ * must surface inline in the confirmation dialog rather than force a login
+ * redirect (see the method doc for rationale).
  * ========================================================================== */
 
 import { apiFetch } from "@/lib/api/fetch";
+import { BE_URL } from "@/lib/auth/apiClient";
 import type { Role, UserStatus, UserAuditEntry } from "@/lib/types";
 
 export type { UserAuditEntry };
@@ -221,6 +233,31 @@ export async function reactivate(userId: string): Promise<BackendUser> {
   const user = await requireUser(userId);
   const updated = await changeUserRole(userId, user.role, "active");
   return { ...updated, status: "active" };
+}
+
+/** Hard-delete a user (#43): `POST /api/admin/users/:id/delete` with the
+ *  actor's own password as re-authentication (BE #41/#42). Only offered for
+ *  `status: "pending"` or `"disabled"` rows — the BE rejects a delete of an
+ *  `"active"` user with 409 `cannot_delete_active_user`. Success is `204` with
+ *  no body. Errors: 401 `invalid_password`, 403 `forbidden`, 404 `not_found`,
+ *  409 `cannot_delete_active_user`.
+ *
+ *  NOTE: deliberately bypasses `apiFetch`'s global 401 handler. A 401 here
+ *  means the actor mistyped their own password or the session expired since the
+ *  dialog opened — both must surface inline in the confirmation dialog, not
+ *  hard-redirect to `/login`. The request is otherwise identical to `apiFetch`
+ *  (`credentials: "include"`, `BE_URL` resolution). */
+export async function deleteUser(userId: string, password: string): Promise<void> {
+  const res = await fetch(
+    `${BE_URL}/api/admin/users/${encodeURIComponent(userId)}/delete`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    }
+  );
+  if (!res.ok) await readError(res);
 }
 
 /** `PATCH /api/admin/users/:id/manager` — pass `null` to clear the manager.

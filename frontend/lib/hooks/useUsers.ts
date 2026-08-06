@@ -22,6 +22,11 @@
  * rolls back to its prior status and the error rethrows so the confirm dialog
  * can surface it inline. NOTE: the BE does not persist `status` yet, so a
  * later `refresh()` will drop the optimistic flip (documented caveat).
+ *
+ * `deleteUser` (#43) is non-optimistic: the row is removed from the cache only
+ * after the BE confirms the hard delete (204), so a cancelled/mistyped
+ * password never blanks a row that still exists server-side. On failure the
+ * error rethrows untouched for the dialog's inline message.
  * ========================================================================== */
 
 import * as React from "react";
@@ -29,6 +34,7 @@ import {
   bulkChangeRole as bulkChangeRoleApi,
   createUser as createUserApi,
   deactivate as deactivateApi,
+  deleteUser as deleteUserApi,
   getUserAudit as getUserAuditApi,
   listUsers,
   reactivate as reactivateApi,
@@ -79,6 +85,12 @@ export interface UseUsers {
    *  refetch. On failure the cache stays unchanged and the error rethrows so the
    *  dialog can surface it inline (e.g. 409 `email_exists`). */
   createUser: (input: CreateUserInput) => Promise<BackendUser>;
+  /** Hard-delete a user (#43): POSTs the actor's password via `deleteUser`,
+   *  then removes the row from the cache so the table re-renders without a
+   *  refetch. On failure the cache is untouched and the error rethrows so the
+   *  confirmation dialog can show it inline (401 `invalid_password`, 409
+   *  `cannot_delete_active_user`, …). */
+  deleteUser: (userId: string, password: string) => Promise<void>;
 }
 
 export function useUsers(): UseUsers {
@@ -206,6 +218,24 @@ export function useUsers(): UseUsers {
     [],
   );
 
+  /** #43: on success remove the deleted row from the cache (the table re-renders
+   *  without a refetch); on failure leave the cache untouched and rethrow so the
+   *  dialog can surface the inline error (401 `invalid_password`, …). */
+  const deleteUser = React.useCallback(
+    async (userId: string, password: string): Promise<void> => {
+      await deleteUserApi(userId, password);
+      setState((prev) =>
+        prev.status === "ready"
+          ? {
+              status: "ready",
+              rows: prev.rows.filter((u) => u.id !== userId),
+            }
+          : prev,
+      );
+    },
+    [],
+  );
+
   return {
     state,
     retry,
@@ -214,6 +244,7 @@ export function useUsers(): UseUsers {
     deactivate,
     reactivate,
     createUser,
+    deleteUser,
   };
 }
 

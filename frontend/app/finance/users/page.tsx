@@ -25,6 +25,11 @@
  *  table. Both compose with AND semantics and mirror the query string
  *  (`?q=...&role=finance`) so a filtered view is shareable. Filtering is
  *  purely client-side after the list loads (no BE round-trip per keystroke).
+ *
+ *  #43: adds a per-row "Delete permanently" action (pending/disabled rows only)
+ *  gated by a password re-auth confirm dialog. Deactivate is now rendered in
+ *  the error tone so it reads distinct from Reactivate. The delete is BE-enforced
+ *  (POST /api/admin/users/:id/delete); the FE just never offers it on active rows.
  *  ========================================================================== */
 
 import * as React from "react";
@@ -42,6 +47,7 @@ import {
   Search,
   FilterX,
   Mail,
+  Trash2,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -55,6 +61,7 @@ import { TextField } from "@/components/ui/TextField";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { useRole } from "@/lib/auth/session";
 import { useUsers, useUserAudit } from "@/lib/hooks/useUsers";
@@ -68,6 +75,7 @@ import {
 } from "@/lib/api/users";
 import type { Role, UserAuditEntry } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";
+import { DeleteUserDialog } from "@/app/finance/users/DeleteUserDialog";
 
 const ROLE_LABEL: Record<Role, string> = {
   employee: "Employee",
@@ -205,18 +213,6 @@ function UsersError({ message, onRetry }: { message: string; onRetry: () => void
         </Button>
       </div>
     </Card>
-  );
-}
-
-function FormErrorBanner({ message }: { message: React.ReactNode }) {
-  return (
-    <div
-      role="alert"
-      className="flex items-start gap-2 rounded-xl bg-error-container px-3 py-2 text-sm text-error-container-foreground"
-    >
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
-      <div className="min-w-0 flex-1 space-y-1.5">{message}</div>
-    </div>
   );
 }
 
@@ -456,6 +452,7 @@ function UsersTab({
     deactivate,
     reactivate,
     createUser,
+    deleteUser,
   } = useUsers();
 
   /* --------------------------------------------------------- add user (#36) */
@@ -544,6 +541,9 @@ function UsersTab({
   // #33: per-row deactivate/reactivate target + guard rails.
   const [statusTarget, setStatusTarget] = React.useState<StatusTarget | null>(null);
 
+  // #43: per-row hard-delete target (password re-auth confirm dialog).
+  const [deleteTarget, setDeleteTarget] = React.useState<BackendUser | null>(null);
+
   const activeFinanceCount = React.useMemo(
     () => rows.filter((u) => u.role === "finance" && u.status === "active").length,
     [rows]
@@ -565,6 +565,12 @@ function UsersTab({
       show(`${target.name} reactivated.`, { tone: "success" });
     }
     setStatusTarget(null);
+  }
+
+  async function handleDeleteSaved(target: BackendUser, password: string) {
+    await deleteUser(target.id, password);
+    show(`${target.name} deleted permanently`, { tone: "success" });
+    setDeleteTarget(null);
   }
 
   /* ---------------------------------------------- bulk selection (select all) */
@@ -812,17 +818,7 @@ function UsersTab({
                 align: "right",
                 render: (u) => (
                   <div className="flex justify-end gap-2">
-                    {u.status === "active" ? (
-                      <Button
-                        variant="text"
-                        size="sm"
-                        icon={ShieldX}
-                        disabled={!canDeactivate(u)}
-                        onClick={() => setStatusTarget({ user: u, action: "deactivate" })}
-                      >
-                        Deactivate
-                      </Button>
-                    ) : (
+                    {u.status === "disabled" ? (
                       <Button
                         variant="text"
                         size="sm"
@@ -830,6 +826,18 @@ function UsersTab({
                         onClick={() => setStatusTarget({ user: u, action: "reactivate" })}
                       >
                         Reactivate
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="text"
+                        size="sm"
+                        icon={ShieldX}
+                        className="text-error hover:bg-error/10"
+                        aria-label={`Deactivate ${u.name} (soft disable)`}
+                        disabled={!canDeactivate(u)}
+                        onClick={() => setStatusTarget({ user: u, action: "deactivate" })}
+                      >
+                        Deactivate
                       </Button>
                     )}
                     <Button
@@ -848,6 +856,31 @@ function UsersTab({
                     >
                       Set manager
                     </Button>
+                    {u.status === "active" ? (
+                      <span title="Activate the user first to use this">
+                        <Button
+                          variant="text"
+                          size="sm"
+                          icon={Trash2}
+                          className="text-error hover:bg-error/10"
+                          aria-label={`Delete ${u.name} permanently`}
+                          disabled
+                        >
+                          Delete
+                        </Button>
+                      </span>
+                    ) : (
+                      <Button
+                        variant="text"
+                        size="sm"
+                        icon={Trash2}
+                        className="text-error hover:bg-error/10"
+                        aria-label={`Delete ${u.name} permanently`}
+                        onClick={() => setDeleteTarget(u)}
+                      >
+                        Delete
+                      </Button>
+                    )}
                   </div>
                 ),
               },
@@ -896,6 +929,14 @@ function UsersTab({
         action={statusTarget?.action ?? "deactivate"}
         onClose={() => setStatusTarget(null)}
         onSaved={handleStatusSaved}
+        onForbidden={onForbidden}
+      />
+
+      <DeleteUserDialog
+        open={deleteTarget !== null}
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onSaved={handleDeleteSaved}
         onForbidden={onForbidden}
       />
 
