@@ -10,10 +10,7 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
-import {
-  claimsForApprover,
-  openFinanceExceptions,
-} from "@/lib/seed-data";
+import { claimsForApprover } from "@/lib/seed-data";
 import type { Role } from "@/lib/types";
 
 /**
@@ -22,6 +19,12 @@ import type { Role } from "@/lib/types";
  * Each mock role sees only its own nav items. Employee is intentionally limited
  * to Dashboard + Claims per the #1 ticket spec; Approver and Finance Admin each
  * get the items relevant to their workflow.
+ *
+ * The Finance "Exceptions" badge is NOT computed here — it is fed the live
+ * open-flag count by the caller (`AppShell` reads it from
+ * `openExceptionStore`, whose source is `GET /api/finance/exceptions`, ticket
+ * #37). Pass `openExceptionCount` and the badge trims to nothing when the
+ * count is 0, missing, or the dashboard/queue failed to load.
  */
 
 export interface NavDef {
@@ -31,7 +34,10 @@ export interface NavDef {
   badge?: number;
 }
 
-export function getNavItems(role: Role): NavDef[] {
+export function getNavItems(
+  role: Role,
+  openExceptionCount?: number | null,
+): NavDef[] {
   switch (role) {
     case "employee":
       return [
@@ -55,7 +61,11 @@ export function getNavItems(role: Role): NavDef[] {
           label: "Exceptions",
           href: "/finance/exceptions",
           icon: AlertTriangle,
-          badge: openFinanceExceptions().length,
+          // Live open-flag count from openExceptionStore; null/0 hide the badge.
+          badge:
+            openExceptionCount != null && openExceptionCount > 0
+              ? openExceptionCount
+              : undefined,
         },
         { label: "Payments", href: "/finance/payments", icon: CreditCard },
         { label: "Policies", href: "/finance/policies", icon: SlidersHorizontal },

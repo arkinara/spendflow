@@ -28,6 +28,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { useFinanceExceptions } from "@/lib/hooks/useFinanceLists";
+import { refreshOpenExceptionCount } from "@/lib/store/openExceptionStore";
 import {
   resolveException as resolveExceptionApi,
   FinanceApiError,
@@ -121,6 +122,9 @@ export default function ExceptionsPage() {
       );
       closeResolve();
       refresh();
+      // Re-publish the open-flag count so the nav badge decrements now, not
+      // after the next 30s poll (ticket #37).
+      void refreshOpenExceptionCount();
     } catch (err) {
       if (err instanceof FinanceApiError && err.code === "stale_decision") {
         // The claim moved out of Approved since the dialog opened — surface the

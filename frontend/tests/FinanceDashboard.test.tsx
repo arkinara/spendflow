@@ -305,6 +305,21 @@ function resolveButtonFor(reference: string): HTMLElement {
   return within(row).getByRole("button", { name: /resolve/i });
 }
 
+/**
+ * Collect every digit-only badge rendered on an "Exceptions" nav link (rail +
+ * bottom nav both render). Empty array = badge hidden. #37: the badge is fed
+ * the live open-flag count from `openExceptionStore` (GET /api/finance/exceptions).
+ */
+function exceptionBadgeTexts(): string[] {
+  const out: string[] = [];
+  for (const link of screen.getAllByRole("link", { name: /exceptions/i })) {
+    for (const el of within(link).queryAllByText(/^\d+$/)) {
+      out.push(el.textContent ?? "");
+    }
+  }
+  return out;
+}
+
 beforeEach(() => {
   restoreStore();
   localStorage.clear();
@@ -321,6 +336,87 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreStore();
+});
+
+/* ------------------------------- Exceptions nav badge (reactive, #37) */
+
+describe("Exceptions nav badge — reactive to the live open-flag count", () => {
+  it("shows the live open-exception count when > 0", async () => {
+    renderDashboard();
+
+    await waitFor(() => expect(financeApi.getExceptions).toHaveBeenCalled());
+    await waitFor(() => expect(exceptionBadgeTexts().length).toBeGreaterThan(0));
+    for (const text of exceptionBadgeTexts()) {
+      expect(text).toBe(String(openFinanceExceptions().length));
+    }
+  });
+
+  it("hides the badge when the open-exception count is 0", async () => {
+    // Drain both finance-owned open exceptions out-of-band, then render — the
+    // badge store re-reads the endpoint and publishes a 0 count.
+    const store = await import("@/lib/store/claimStore");
+    store.resolveException({
+      claimId: "clm-1010",
+      actorId: "u-fin-1",
+      action: "override",
+      note: "Waived.",
+    });
+    store.resolveException({
+      claimId: "clm-1011",
+      actorId: "u-fin-1",
+      action: "override",
+      note: "Waived.",
+    });
+    expect(openFinanceExceptions()).toHaveLength(0);
+
+    renderDashboard();
+
+    await waitFor(() => expect(financeApi.getExceptions).toHaveBeenCalled());
+    await waitFor(() => expect(exceptionBadgeTexts()).toEqual([]));
+  });
+
+  it("hides the badge when the dashboard/queue fetch fails (403) — never stale", async () => {
+    vi.mocked(financeApi.getDashboard).mockRejectedValueOnce(
+      new FinanceApiError(403, "forbidden", "Finance admins only."),
+    );
+    vi.mocked(financeApi.getExceptions).mockRejectedValueOnce(
+      new FinanceApiError(403, "forbidden", "Finance admins only."),
+    );
+
+    renderDashboard();
+
+    expect(
+      await screen.findByText(/couldn.t load the finance dashboard/i)
+    ).toBeInTheDocument();
+    // The badge store swallowed the 403 and published null -> badge hidden,
+    // even though a previous successful load may have seen open exceptions.
+    expect(exceptionBadgeTexts()).toEqual([]);
+  });
+
+  it("decrements the badge after an exception is resolved (re-fetch)", async () => {
+    const initialCount = openFinanceExceptions().length;
+    expect(initialCount).toBeGreaterThan(1);
+
+    renderExceptions();
+
+    await waitFor(() => expect(exceptionBadgeTexts()).toContain(String(initialCount)));
+
+    // Resolve one exception through the real page flow; the queue page pokes
+    // the badge store after the decision so the nav badge re-fetches and drops.
+    fireEvent.click(resolveButtonFor("EXP-2026-1010"));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /override & accept/i }));
+    fireEvent.change(within(dialog).getByLabelText(/justification/i), {
+      target: { value: "Pre-approved by VP." },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /confirm override/i }));
+
+    await waitFor(() => {
+      const texts = exceptionBadgeTexts();
+      expect(texts).toContain(String(openFinanceExceptions().length));
+      expect(texts).not.toContain(String(initialCount));
+    });
+  });
 });
 
 /* ------------------------------------- Finance Dashboard (sub-feature) */
@@ -571,6 +667,12 @@ describe("Exception resolution — override / reject validation, success + stale
   });
 
   it("renders the access-denied error card when getExceptions returns 403", async () => {
+    // Two consumers read /api/finance/exceptions on this page: the queue hook
+    // AND the nav-badge store (#37). Give each its own rejection so the page
+    // still surfaces the access-denied state (and the badge hides).
+    vi.mocked(financeApi.getExceptions).mockRejectedValueOnce(
+      new FinanceApiError(403, "forbidden", "Finance admins only."),
+    );
     vi.mocked(financeApi.getExceptions).mockRejectedValueOnce(
       new FinanceApiError(403, "forbidden", "Finance admins only."),
     );

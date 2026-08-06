@@ -8,6 +8,7 @@ import { useSession, useRole } from "@/lib/auth/session";
 import { getNavItems } from "@/lib/auth/nav";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
 import { useUnreadCount } from "@/lib/store/notifyStore";
+import { useOpenExceptionCount } from "@/lib/store/openExceptionStore";
 
 export interface AppShellProps {
   action?: React.ReactNode;
@@ -22,7 +23,10 @@ export function AppShell({ action, children }: AppShellProps) {
   // is hidden) and re-renders the badge the moment a mark-read action forces
   // an immediate refresh.
   const unread = useUnreadCount();
-  const items: NavItem[] = getNavItems(role);
+  // Live open-flag count for the Exceptions nav badge (#37). Null when not
+  // Finance, while loading, or on dashboard/queue load failure — badge hidden.
+  const openExceptionCount = useOpenExceptionCount(role === "finance");
+  const items: NavItem[] = getNavItems(role, openExceptionCount);
 
   const handleSignOut = React.useCallback(() => {
     signOut();

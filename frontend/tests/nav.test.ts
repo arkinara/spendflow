@@ -35,4 +35,28 @@ describe("getNavItems (role-based nav filtering)", () => {
       expect(h.startsWith("/approver")).toBe(false);
     }
   });
+
+  it("Finance nav entry shows the badge when the store reports a count > 0", () => {
+    const items = getNavItems("finance", 3);
+    const exceptions = items.find((i) => i.href === "/finance/exceptions");
+    expect(exceptions?.badge).toBe(3);
+  });
+
+  it("hides the Finance exception badge when the count is 0", () => {
+    const items = getNavItems("finance", 0);
+    const exceptions = items.find((i) => i.href === "/finance/exceptions");
+    expect(exceptions?.badge).toBeUndefined();
+  });
+
+  it("hides the Finance exception badge when no count is provided (store not loaded)", () => {
+    const items = getNavItems("finance");
+    const exceptions = items.find((i) => i.href === "/finance/exceptions");
+    expect(exceptions?.badge).toBeUndefined();
+  });
+
+  it("hides the Finance exception badge when the store reports an error (null)", () => {
+    const items = getNavItems("finance", null);
+    const exceptions = items.find((i) => i.href === "/finance/exceptions");
+    expect(exceptions?.badge).toBeUndefined();
+  });
 });
