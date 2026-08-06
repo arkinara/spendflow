@@ -3,7 +3,7 @@
 /* ============================================================================
  * SpendFlow — useAdminStore (ticket #21, FE wiring).
  * HTTP-backed: reads `GET /api/admin/categories|policies|routes` via
- * `lib/api/admin.ts`. The mock `adminStore`/`mock_data` collections are no
+ * `lib/api/admin.ts`. The mock `adminStore` collections are no
  * longer the data source for this vertical (kept as fallback for #22–#24).
  *
  * The hook's public interface (`{ state, retry, refresh }`) is unchanged so

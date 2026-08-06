@@ -9,8 +9,8 @@ import { useSession, ROLE_HOME, ROLE_LABEL } from "@/lib/auth/session";
 import {
   users,
   CURRENT_USER_BY_ROLE,
-  getUser,
-} from "@/lib/mock/mock_data";
+} from "@/lib/fixtures";
+import { getUser } from "@/lib/seed-data";
 import type { Role, User } from "@/lib/types";
 
 /**

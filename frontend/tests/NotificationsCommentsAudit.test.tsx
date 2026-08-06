@@ -65,9 +65,11 @@ vi.mock("@/lib/api/notifications", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/notifications")>();
   const {
     notifications: liveNotifications,
+  } = await import("@/lib/fixtures");
+  const {
     notificationsFor,
     unreadCount: unreadCountForRole,
-  } = await import("@/lib/mock/mock_data");
+  } = await import("@/lib/seed-data");
 
   return {
     ...actual,
@@ -114,12 +116,14 @@ vi.mock("@/lib/api/comments", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/comments")>();
   const {
     comments: liveComments,
+  } = await import("@/lib/fixtures");
+  const {
     commentsForClaim,
     getClaim,
     getUser,
     isClaimParticipant,
     getUserName,
-  } = await import("@/lib/mock/mock_data");
+  } = await import("@/lib/seed-data");
 
   let seq = 9900;
 
@@ -181,7 +185,7 @@ vi.mock("@/lib/api/comments", async (importOriginal) => {
 vi.mock("@/lib/api/audit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/audit")>();
   const { auditForClaim, getClaim, getUser, isClaimParticipant } = await import(
-    "@/lib/mock/mock_data"
+    "@/lib/seed-data"
   );
 
   return {
@@ -222,7 +226,7 @@ import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import {
   notifications,
   comments,
-} from "@/lib/mock/mock_data";
+} from "@/lib/fixtures";
 import type { Notification, Comment } from "@/lib/types";
 
 /* ----------------------------------------------------------------- helpers */

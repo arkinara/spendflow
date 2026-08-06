@@ -12,7 +12,7 @@ import {
 import {
   claimsForApprover,
   openFinanceExceptions,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Role } from "@/lib/types";
 
 /**

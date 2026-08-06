@@ -35,9 +35,9 @@ import { FileUpload, type UploadedFile } from "@/components/ui/FileUpload";
 import { Skeleton } from "@/components/ui/Skeleton";
 import {
   categories,
-  getCategory,
   MILEAGE_RATE,
-} from "@/lib/mock/mock_data";
+} from "@/lib/fixtures";
+import { getCategory } from "@/lib/seed-data";
 import type { ExpenseCategoryId } from "@/lib/types";
 import {
   evaluatePolicy,

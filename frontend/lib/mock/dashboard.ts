@@ -11,7 +11,7 @@
 import {
   claimsForEmployee,
   computeClaimTotal,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Claim, ClaimStatus } from "@/lib/types";
 
 /** The four status groups the PRD calls out as the at-a-glance summary. */

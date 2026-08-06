@@ -9,13 +9,15 @@
 import {
   claims,
   comments,
+} from "@/lib/fixtures";
+import {
   pushNotification,
   pushAudit,
   computeClaimTotal,
   getUser,
   getUserName,
   routingStepsForClaim,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type {
   Claim,
   LineItem,

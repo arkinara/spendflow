@@ -4,7 +4,7 @@ import {
   resolvePaidAt,
   PRIMARY_STATUSES,
 } from "@/lib/mock/dashboard";
-import { claimsForEmployee } from "@/lib/mock/mock_data";
+import { claimsForEmployee } from "@/lib/seed-data";
 
 describe("loadEmployeeDashboard — status summary counts", () => {
   it("reports counts that exactly match claimsForEmployee for u-emp-1", () => {

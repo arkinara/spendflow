@@ -18,10 +18,12 @@ import {
   policies,
   routingRules,
   users,
+} from "@/lib/fixtures";
+import {
   computeClaimTotal,
   getUser,
   getCategory,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type {
   ExpenseCategory,
   Policy,

@@ -36,13 +36,13 @@ vi.mock("next/link", () => ({
 /**
  * #18: the detail page + `useClaimDetail` both read through `@/lib/api/claims`.
  * Mock the module so the page is fed controlled FE-shaped `Claim` fixtures
- * derived from the in-memory mock_data set. Ownership is enforced here as a
+ * derived from the in-memory mock fixture set. Ownership is enforced here as a
  * stand-in for the BE's session auth: claims owned by another employee throw
  * a 403 so the hook's `denied` branch renders.
  */
 vi.mock("@/lib/api/claims", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/claims")>();
-  const { getClaim: mockGetClaim } = await import("@/lib/mock/mock_data");
+  const { getClaim: mockGetClaim } = await import("@/lib/seed-data");
   const VIEWER = "u-emp-1";
 
   return {
@@ -93,7 +93,7 @@ import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import {
   getClaim,
   computeClaimTotal,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Claim } from "@/lib/types";
 import { formatCurrency } from "@/lib/format";
 import * as claimsApi from "@/lib/api/claims";

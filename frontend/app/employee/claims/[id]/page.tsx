@@ -44,7 +44,7 @@ import {
   getUserName,
   getCategory,
   computeClaimTotal,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type {
   Claim,
   LineItem,

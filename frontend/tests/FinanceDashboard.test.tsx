@@ -48,7 +48,7 @@ vi.mock("next/link", () => ({
  * #20: the finance dashboard / exceptions / payments pages read through
  * `@/lib/api/finance`. Mock the module so the pages are fed controlled
  * `FinanceExceptionItem` / `FinancePaymentItem` fixtures derived from the
- * in-memory mock_data set, and the resolve / mark-processing / mark-paid
+ * in-memory mock fixture set, and the resolve / mark-processing / mark-paid
  * mutator calls delegate to the mock store (so a successful decision is
  * reflected on the next `refresh()`). The mock enforces the BE's typed-error
  * invariants (400 comment_required / 400 validation_required / 409
@@ -65,7 +65,7 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     claimsReadyToPay,
     claimsProcessing,
     claimsPaid,
-  } = await import("@/lib/mock/mock_data");
+  } = await import("@/lib/seed-data");
   const {
     resolveException: storeResolve,
     markClaimProcessing: storeMarkProcessing,
@@ -209,12 +209,14 @@ import {
   comments,
   notifications,
   auditLog,
+} from "@/lib/fixtures";
+import {
   getClaim,
   openFinanceExceptions,
   claimsReadyToPay,
   claimsProcessing,
   claimsPaid,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Claim } from "@/lib/types";
 import * as financeApi from "@/lib/api/finance";
 import { FinanceApiError } from "@/lib/api/finance";

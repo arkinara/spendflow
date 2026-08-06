@@ -30,7 +30,7 @@ import { DateField } from "@/components/ui/DateField";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import { users, DEPARTMENTS } from "@/lib/mock/mock_data";
+import { users, DEPARTMENTS } from "@/lib/fixtures";
 import {
   useCategories,
   usePolicies,

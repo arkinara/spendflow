@@ -3,7 +3,7 @@
 import * as React from "react";
 import {
   getUser,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Role, User } from "@/lib/types";
 import {
   getCurrentUser as apiGetCurrentUser,

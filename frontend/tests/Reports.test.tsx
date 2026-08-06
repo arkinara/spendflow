@@ -58,7 +58,8 @@ const rejectNext = vi.hoisted<{ current: Error | null }>(() => ({ current: null 
  */
 vi.mock("@/lib/api/reporting", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/reporting")>();
-  const { claims, getUser, getCategory } = await import("@/lib/mock/mock_data");
+  const { claims } = await import("@/lib/fixtures");
+  const { getUser, getCategory } = await import("@/lib/seed-data");
 
   type Filters = {
     dateStart?: string;
@@ -192,7 +193,8 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { claims, getUser } from "@/lib/mock/mock_data";
+import { claims } from "@/lib/fixtures";
+import { getUser } from "@/lib/seed-data";
 import type { Claim, User } from "@/lib/types";
 import { ReportingApiError } from "@/lib/api/reporting";
 

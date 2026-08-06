@@ -38,7 +38,7 @@ vi.mock("next/link", () => ({
  */
 vi.mock("@/lib/api/claims", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/claims")>();
-  const { claimsForEmployee } = await import("@/lib/mock/mock_data");
+  const { claimsForEmployee } = await import("@/lib/seed-data");
   return {
     ...actual,
     listClaims: vi.fn(async () => claimsForEmployee("u-emp-1")),
@@ -50,7 +50,7 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { claimsForEmployee } from "@/lib/mock/mock_data";
+import { claimsForEmployee } from "@/lib/seed-data";
 import * as claimsApi from "@/lib/api/claims";
 
 function seedEmployee() {

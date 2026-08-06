@@ -10,7 +10,8 @@ import {
   useSession,
   ROLE_HOME,
 } from "@/lib/auth/session";
-import { CURRENT_USER_BY_ROLE, getUser } from "@/lib/mock/mock_data";
+import { CURRENT_USER_BY_ROLE } from "@/lib/fixtures";
+import { getUser } from "@/lib/seed-data";
 import type { Role } from "@/lib/types";
 
 const PRESETS: { role: Role; label: string; icon: typeof User }[] = [

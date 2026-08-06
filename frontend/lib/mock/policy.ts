@@ -6,7 +6,7 @@
    downstream Finance review.
    ========================================================================== */
 
-import { getCategory } from "@/lib/mock/mock_data";
+import { getCategory } from "@/lib/seed-data";
 import type { ExpenseCategoryId } from "@/lib/types";
 import { formatCurrency, type CurrencyCode } from "@/lib/format";
 
@@ -34,7 +34,7 @@ export interface PolicyInputLine {
 
 /**
  * Evaluate a single draft line against the mock policy rules.
- * Rules (mock fixtures in mock_data.ts):
+ * Rules (mock fixtures in lib/fixtures.ts):
  *  - missing_receipt: amount above the category `receiptThreshold` with no
  *    attached receipt (mileage threshold is 0 so it never triggers).
  *  - over_category_max: amount above the category `perItemCap`, if defined.

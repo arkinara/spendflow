@@ -9,7 +9,7 @@ import {
   computeClaimTotal,
   getUser,
   getCategory,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Claim, ClaimStatus } from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 

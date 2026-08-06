@@ -43,7 +43,7 @@ vi.mock("next/link", () => ({
  * #19: the inbox + review pages read through `@/lib/api/approvals` and
  * `@/lib/api/comments`. Mock those modules so the pages are fed controlled
  * `BackendInboxItem` / `BackendApproverClaimDetail` fixtures derived from the
- * in-memory mock_data set. The mock enforces the BE's invariants
+ * in-memory mock fixture set. The mock enforces the BE's invariants
  * (403 cross-step / 409 stale_decision / 400 comment_required) so the FE's
  * denied / conflict / validation branches render under test.
  */
@@ -56,7 +56,7 @@ vi.mock("@/lib/api/approvals", async (importOriginal) => {
     computeClaimTotal,
     claimsForApprover,
     routingStepsForClaim,
-  } = await import("@/lib/mock/mock_data");
+  } = await import("@/lib/seed-data");
   const { decideOnClaim } = await import("@/lib/mock/claimStore");
   const APPROVER = "u-mgr-1";
 
@@ -153,7 +153,7 @@ vi.mock("@/lib/api/approvals", async (importOriginal) => {
 
 vi.mock("@/lib/api/claims", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/claims")>();
-  const { getClaim: mockGetClaim } = await import("@/lib/mock/mock_data");
+  const { getClaim: mockGetClaim } = await import("@/lib/seed-data");
   return {
     ...actual,
     getClaimAudit: vi.fn(async (id: string) => {
@@ -178,7 +178,7 @@ vi.mock("@/lib/api/comments", async (importOriginal) => {
   const {
     commentsForClaim,
     getUserName,
-  } = await import("@/lib/mock/mock_data");
+  } = await import("@/lib/seed-data");
   const { addClaimComment } = await import("@/lib/mock/claimStore");
   return {
     ...actual,
@@ -218,10 +218,12 @@ import {
   claims,
   comments,
   notifications,
+} from "@/lib/fixtures";
+import {
   claimsForApprover,
   getClaim,
   computeClaimTotal,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Claim } from "@/lib/types";
 import { decideOnClaim, addClaimComment } from "@/lib/mock/claimStore";
 import * as approvalsApi from "@/lib/api/approvals";

@@ -241,7 +241,7 @@ import {
   policies,
   routingRules,
   claims,
-} from "@/lib/mock/mock_data";
+} from "@/lib/fixtures";
 import type {
   ExpenseCategory,
   Policy,

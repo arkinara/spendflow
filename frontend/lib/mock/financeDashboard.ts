@@ -20,7 +20,7 @@ import {
   claimsPaid,
   openFinanceExceptions,
   computeClaimTotal,
-} from "@/lib/mock/mock_data";
+} from "@/lib/seed-data";
 import type { Claim } from "@/lib/types";
 
 export interface FinanceGroup {

@@ -23,7 +23,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { cn } from "@/lib/utils";
-import { DEPARTMENTS, categories } from "@/lib/mock/mock_data";
+import { DEPARTMENTS, categories } from "@/lib/fixtures";
 import type { ClaimStatus } from "@/lib/types";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useReportClaims } from "@/lib/mock/useReportClaims";
