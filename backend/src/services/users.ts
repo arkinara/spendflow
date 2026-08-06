@@ -154,12 +154,19 @@ export function setManager(
     throw new UserServiceError("self_manager", "A user cannot be their own manager");
   }
   const manager = db
-    .select({ id: usersTable.id })
+    .select({ id: usersTable.id, role: usersTable.role })
     .from(usersTable)
     .where(eq(usersTable.id, newManagerId))
     .get();
   if (!manager) {
     throw new UserServiceError("invalid_manager", `Manager ${newManagerId} does not exist`);
+  }
+  if (manager.role !== "approver") {
+    throw new UserServiceError(
+      "invalid_manager",
+      `Manager must be an Approver; user has role '${manager.role}'`,
+      400
+    );
   }
   if (wouldCreateCycle(db, targetId, newManagerId)) {
     throw new UserServiceError("cycle", "Setting that manager would create a circular reporting line");

@@ -73,28 +73,34 @@ describe("users / roles / reporting-line admin API", () => {
 
   it("assigning a manager to an Employee is retrievable via the API and recorded", async () => {
     const cookie = await financeCookie();
-    // Give the employee a brand-new manager (finance user) for isolation.
+    await provisionUser(h.db, {
+      id: "u-approver2",
+      name: "Approver Two",
+      email: "approver2@spendflow.example",
+      password: "demo1234",
+      role: "approver",
+    });
     const res = await authedPatch(
       h.app,
       `/api/admin/users/${DEMO.employee.id}/manager`,
       cookie,
-      { managerId: DEMO.finance.id }
+      { managerId: "u-approver2" }
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.user.managerId).toBe(DEMO.finance.id);
+    expect(body.user.managerId).toBe("u-approver2");
 
     // The audit trail reflects the change.
     const audit = lastAuditFor(DEMO.employee.id);
     expect(audit.action).toBe("manager.change");
     expect(JSON.parse(audit.before)).toEqual({ managerId: DEMO.approver.id });
-    expect(JSON.parse(audit.after)).toEqual({ managerId: DEMO.finance.id });
+    expect(JSON.parse(audit.after)).toEqual({ managerId: "u-approver2" });
 
     // And it is retrievable through the list endpoint.
     const list = await authedGet(h.app, "/api/admin/users", cookie);
     const userList = (await list.json()).users as Array<{ id: string; managerId: string }>;
     const emp = userList.find((u) => u.id === DEMO.employee.id);
-    expect(emp?.managerId).toBe(DEMO.finance.id);
+    expect(emp?.managerId).toBe("u-approver2");
   });
 
   it("setting a user as their own manager is rejected with a validation error", async () => {
@@ -127,15 +133,15 @@ describe("users / roles / reporting-line admin API", () => {
       name: "User B",
       email: "b@spendflow.example",
       password: "demo1234",
-      role: "employee",
-      managerId: DEMO.finance.id,
+      role: "approver",
+      managerId: DEMO.approver.id,
     });
     await provisionUser(h.db, {
       id: "u-a",
       name: "User A",
       email: "a@spendflow.example",
       password: "demo1234",
-      role: "employee",
+      role: "approver",
       managerId: "u-b",
     });
     const res = await authedPatch(h.app, "/api/admin/users/u-b/manager", cookie, {
@@ -146,7 +152,42 @@ describe("users / roles / reporting-line admin API", () => {
     expect(body.error.code).toBe("cycle");
   });
 
-  it("clearing a manager (null) is supported and audited", async () => {
+  it("rejects assigning a manager with role=employee with 400 invalid_manager", async () => {
+    const cookie = await financeCookie();
+    await provisionUser(h.db, {
+      id: "emp2",
+      name: "Employee Two",
+      email: "emp2@spendflow.example",
+      password: "demo1234",
+      role: "employee",
+    });
+    const res = await authedPatch(
+      h.app,
+      `/api/admin/users/${DEMO.employee.id}/manager`,
+      cookie,
+      { managerId: "emp2" }
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("invalid_manager");
+    expect(body.error.message).toContain("Manager must be an Approver; user has role 'employee'");
+  });
+
+  it("rejects assigning a manager with role=finance with 400 invalid_manager", async () => {
+    const cookie = await financeCookie();
+    const res = await authedPatch(
+      h.app,
+      `/api/admin/users/${DEMO.employee.id}/manager`,
+      cookie,
+      { managerId: DEMO.finance.id }
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("invalid_manager");
+    expect(body.error.message).toContain("Manager must be an Approver; user has role 'finance'");
+  });
+
+  it("clearing a manager (null) is supported and audited (returns 200)", async () => {
     const cookie = await financeCookie();
     const res = await authedPatch(
       h.app,
