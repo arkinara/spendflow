@@ -14,15 +14,21 @@
  * `changeUserRole` sequentially (no BE bulk endpoint yet) and surfaces a
  * partial failure inline with the failing user ids.
  *
- * #33: adds a per-row Deactivate/Reactivate action + a status chip (green
- * Active / grey Inactive). Deactivation is a soft flag (`status: "disabled"`)
- * flipped optimistically in the `useUsers` cache — the BE has no deactivate
- * endpoint yet, so the status rides the role PATCH and isn't persisted server
- * side. Self-deactivation and deactivating the last active Finance Admin are
- * blocked client-side (defense in depth; the BE rejects too once it lands).
- * ========================================================================== */
+ *  #33: adds a per-row Deactivate/Reactivate action + a status chip (green
+ *  Active / grey Inactive). Deactivation is a soft flag (`status: "disabled"`)
+ *  flipped optimistically in the `useUsers` cache — the BE has no deactivate
+ *  endpoint yet, so the status rides the role PATCH and isn't persisted server
+ *  side. Self-deactivation and deactivating the last active Finance Admin are
+ *  blocked client-side (defense in depth; the BE rejects too once it lands).
+ *
+ *  #35: adds a debounced name/email search input + role filter chips above the
+ *  table. Both compose with AND semantics and mirror the query string
+ *  (`?q=...&role=finance`) so a filtered view is shareable. Filtering is
+ *  purely client-side after the list loads (no BE round-trip per keystroke).
+ *  ========================================================================== */
 
 import * as React from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ShieldCheck,
   UserRound,
@@ -32,6 +38,8 @@ import {
   Users as UsersIcon,
   History,
   ChevronDown,
+  Search,
+  FilterX,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
@@ -41,6 +49,7 @@ import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { Dialog } from "@/components/ui/Dialog";
 import { Select } from "@/components/ui/Select";
 import { TextArea } from "@/components/ui/TextArea";
+import { TextField } from "@/components/ui/TextField";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -69,6 +78,35 @@ const ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "finance", label: "Finance Admin" },
 ];
 
+/* ---------------------------------------------------------- search/filter (#35) */
+
+/** Role filter value: a concrete role, or `"all"` for no role filter. */
+export type RoleFilter = Role | "all";
+
+/** Valid role chip values (the "All" chip is the default). */
+const ROLE_FILTER_OPTIONS: { value: RoleFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "employee", label: "Employee" },
+  { value: "approver", label: "Approver" },
+  { value: "finance", label: "Finance" },
+];
+
+/** Graceful fallback for an invalid `?role=` value → "all" (no filter). */
+function parseRole(value: string | null): RoleFilter {
+  return value === "employee" || value === "approver" || value === "finance"
+    ? value
+    : "all";
+}
+
+/** Canonical `?q=&role=` query string for a filter state (empty when unset). */
+function filterQueryString(q: string, role: RoleFilter): string {
+  const params = new URLSearchParams();
+  const trimmed = q.trim();
+  if (trimmed) params.set("q", trimmed);
+  if (role !== "all") params.set("role", role);
+  return params.toString();
+}
+
 /** Target of the deactivate/reactivate confirm dialog (#33). */
 export type StatusAction = "deactivate" | "reactivate";
 export interface StatusTarget {
@@ -76,7 +114,19 @@ export interface StatusTarget {
   action: StatusAction;
 }
 
+/**
+ * `/finance/users` reads `useSearchParams` for URL-state restoration (#35),
+ * which requires a Suspense boundary in the Next 14 app router.
+ */
 export default function UsersAdminPage() {
+  return (
+    <React.Suspense fallback={null}>
+      <UsersAdminPageInner />
+    </React.Suspense>
+  );
+}
+
+function UsersAdminPageInner() {
   const [roleTarget, setRoleTarget] = React.useState<BackendUser | null>(null);
   const [managerTarget, setManagerTarget] = React.useState<BackendUser | null>(null);
   const [denied, setDenied] = React.useState(false);
@@ -397,11 +447,75 @@ function UsersTab({
   const { user: currentUser } = useRole();
   const { state, retry, refresh, bulkChangeRole, deactivate, reactivate } = useUsers();
 
+  /* ------------------------------------------------ search + role filter (#35) */
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Seed filter state from the URL once on mount (shareable filtered views).
+  const [searchInput, setSearchInput] = React.useState(
+    () => searchParams.get("q") ?? ""
+  );
+  const [roleFilter, setRoleFilter] = React.useState<RoleFilter>(() =>
+    parseRole(searchParams.get("role"))
+  );
+
+  // The input reflects every keystroke; the *filtered list* only catches up
+  // after a 200ms pause, so the table doesn't re-render on each key.
+  const [debouncedQuery, setDebouncedQuery] = React.useState(searchInput);
+  React.useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQuery(searchInput), 200);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
+
+  // Canonical query string already in the URL (drives the URL→state no-op and
+  // keeps the state→URL effect from firing on unrelated re-renders).
+  const urlCanonical = React.useMemo(
+    () =>
+      filterQueryString(
+        searchParams.get("q") ?? "",
+        parseRole(searchParams.get("role"))
+      ),
+    [searchParams]
+  );
+
+  // State → URL (debounced 200ms; best-effort mirror, never scrolls).
+  React.useEffect(() => {
+    const t = window.setTimeout(() => {
+      const qs = filterQueryString(searchInput, roleFilter);
+      if (qs === urlCanonical) return;
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [searchInput, roleFilter, urlCanonical, router, pathname]);
+
+  const clearFilters = React.useCallback(() => {
+    setSearchInput("");
+    setRoleFilter("all");
+  }, []);
+
+  const hasActiveFilters = roleFilter !== "all" || debouncedQuery.trim() !== "";
+
   React.useEffect(() => {
     if (state.status === "denied") onForbidden();
   }, [state.status, onForbidden]);
 
   const rows = state.status === "ready" ? state.rows : [];
+
+  // Search (name/email substring, case-insensitive) AND role filter compose.
+  const filteredRows = React.useMemo(() => {
+    const q = debouncedQuery.trim().toLowerCase();
+    return rows.filter((u) => {
+      const matchesRole = roleFilter === "all" || u.role === roleFilter;
+      const matchesQuery =
+        !q ||
+        u.name.toLowerCase().includes(q) ||
+        u.email.toLowerCase().includes(q);
+      return matchesRole && matchesQuery;
+    });
+  }, [rows, debouncedQuery, roleFilter]);
+
   const nameById = React.useMemo(
     () => new Map(rows.map((u) => [u.id, u.name])),
     [rows]
@@ -451,21 +565,21 @@ function UsersTab({
 
   // "Select all" only ever selects the currently-filtered rows.
   const allVisibleSelected =
-    rows.length > 0 && rows.every((u) => selectedIds.has(u.id));
+    filteredRows.length > 0 && filteredRows.every((u) => selectedIds.has(u.id));
   const someVisibleSelected =
-    rows.some((u) => selectedIds.has(u.id)) && !allVisibleSelected;
+    filteredRows.some((u) => selectedIds.has(u.id)) && !allVisibleSelected;
 
   const toggleSelectVisible = React.useCallback(() => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (allVisibleSelected) {
-        rows.forEach((u) => next.delete(u.id));
+        filteredRows.forEach((u) => next.delete(u.id));
       } else {
-        rows.forEach((u) => next.add(u.id));
+        filteredRows.forEach((u) => next.add(u.id));
       }
       return next;
     });
-  }, [rows, allVisibleSelected]);
+  }, [filteredRows, allVisibleSelected]);
 
   const selectedCount = selectedIds.size;
 
@@ -521,6 +635,48 @@ function UsersTab({
       )}
       {state.status === "ready" && rows.length > 0 && (
         <Card padded={false}>
+          {/* #35: debounced search + role filter chips (client-side). */}
+          <div className="space-y-3 border-b border-outline-variant px-5 py-4">
+            <TextField
+              iconLeft={Search}
+              label="Search users"
+              placeholder="Search by name or email"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              helper="Filters by name or email. Results update after a short pause."
+              containerClassName="max-w-md"
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <SegmentedTabs<RoleFilter>
+                ariaLabel="Filter users by role"
+                options={ROLE_FILTER_OPTIONS}
+                value={roleFilter}
+                onChange={setRoleFilter}
+                size="sm"
+              />
+              {hasActiveFilters && (
+                <Button
+                  variant="text"
+                  size="sm"
+                  icon={FilterX}
+                  onClick={clearFilters}
+                >
+                  Clear filters
+                </Button>
+              )}
+            </div>
+            <p
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className="sr-only"
+            >
+              {filteredRows.length === 0
+                ? "No users match your filters."
+                : `Showing ${filteredRows.length} of ${rows.length} users.`}
+            </p>
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant px-5 py-3">
             <p className="text-sm text-on-surface-variant">
               {selectedCount > 0 ? (
@@ -541,7 +697,21 @@ function UsersTab({
               {selectedCount > 0 ? `Bulk change role (${selectedCount})` : "Bulk change role"}
             </Button>
           </div>
-          <DataTable
+
+          {filteredRows.length === 0 ? (
+            <EmptyState
+              icon={FilterX}
+              title="No matching users"
+              body="No users match your search or role filter. Try clearing them."
+              variant="compact"
+              action={
+                <Button variant="outlined" icon={FilterX} onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              }
+            />
+          ) : (
+            <DataTable
             headerCheckbox={{
               label: "Select all users",
               checked: allVisibleSelected,
@@ -652,11 +822,12 @@ function UsersTab({
                 ),
               },
             ]}
-            data={rows}
+            data={filteredRows}
             rowKey={(u) => u.id}
             density="compact"
             caption="User directory"
           />
+          )}
         </Card>
       )}
 

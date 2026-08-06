@@ -11,6 +11,7 @@ const navMocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
   pathname: "/finance/users",
+  search: "",
 }));
 
 vi.mock("next/navigation", () => ({
@@ -21,6 +22,7 @@ vi.mock("next/navigation", () => ({
   }),
   usePathname: () => navMocks.pathname,
   useParams: () => ({}),
+  useSearchParams: () => new URLSearchParams(navMocks.search),
 }));
 
 vi.mock("next/link", () => ({
@@ -178,6 +180,18 @@ function rowFor(name: string): HTMLElement {
   return cell.closest("tr")!;
 }
 
+/**
+ * Row-scoped presence check for a user. The signed-in Finance Admin's name
+ * also renders in the AppShell menu, and manager names repeat in the Manager
+ * column — so a bare `getByText`/`queryByText` is ambiguous. The per-row
+ * "Select {name}" checkbox (#32) only exists for visible table rows.
+ */
+function queryRow(name: string): HTMLElement | null {
+  return screen.queryByRole("checkbox", {
+    name: new RegExp(`^select ${name}$`, "i"),
+  });
+}
+
 /** Open the custom `Select` and click the option whose label matches. */
 async function pickOption(dialog: HTMLElement, selectLabel: RegExp, optionLabel: RegExp) {
   const trigger = within(dialog).getByLabelText(selectLabel);
@@ -192,6 +206,7 @@ beforeEach(() => {
   seedFinance();
   navMocks.push.mockClear();
   navMocks.replace.mockClear();
+  navMocks.search = "";
   usersMocks.listUsers.mockReset();
   usersMocks.changeUserRole.mockReset();
   usersMocks.setUserManager.mockReset();
@@ -226,12 +241,14 @@ describe("User directory — list render", () => {
 
     // Role chips + manager names ("—" when none).
     expect(screen.getByText("Finance Admin")).toBeInTheDocument();
-    expect(screen.getByText("Approver")).toBeInTheDocument();
-    expect(screen.getByText("Employee")).toBeInTheDocument();
+    // "Approver"/"Employee" also render as role-filter chips (#35), so the
+    // RolePill label may match more than once.
+    expect(screen.getAllByText("Approver").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Employee").length).toBeGreaterThan(0);
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
 
-    // Department column populated.
-    expect(screen.getByText("Finance")).toBeInTheDocument();
+    // Department column populated ("Finance" also matches the role chip #35).
+    expect(screen.getAllByText("Finance").length).toBeGreaterThan(0);
   });
 
   it("renders an empty state when the directory has no users", async () => {
@@ -604,6 +621,163 @@ describe("User directory — bulk role change", () => {
     expect(
       within(dialog).getByRole("heading", { name: /bulk change role/i })
     ).toBeInTheDocument();
+  });
+});
+
+/* --------------------------------------------------- search + role filter (#35) */
+
+describe("User directory — search + role filter", () => {
+  /** The role-filter chip row (there are two tablists on the page). */
+  function roleTab(name: string): HTMLElement {
+    const list = screen.getByRole("tablist", { name: /filter users by role/i });
+    return within(list).getByRole("tab", { name: new RegExp(name, "i") });
+  }
+
+  function searchInput(): HTMLElement {
+    return screen.getByLabelText(/search users/i);
+  }
+
+  /** Last URL written via router.replace (report-style inspection). */
+  function lastReplacedUrl(): string {
+    const calls = navMocks.replace.mock.calls;
+    return calls[calls.length - 1][0] as string;
+  }
+
+  it("filters by name substring after the 200ms debounce (no instant filter)", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    fireEvent.change(searchInput(), { target: { value: "Aulia" } });
+
+    // Debounce: the table must NOT re-filter on the keystroke itself.
+    expect(queryRow("Ridwan Saputra")).not.toBeNull();
+    expect(queryRow("Dewi Anggraeni")).not.toBeNull();
+
+    // ~200ms later the filter applies.
+    await waitFor(() => {
+      expect(queryRow("Ridwan Saputra")).toBeNull();
+      expect(queryRow("Dewi Anggraeni")).toBeNull();
+    });
+    expect(queryRow("Aulia Pratiwi")).not.toBeNull();
+  });
+
+  it("filters by email substring (case-insensitive)", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    fireEvent.change(searchInput(), {
+      target: { value: "RIDWAN.SAPUTRA" },
+    });
+
+    await waitFor(() => {
+      expect(queryRow("Aulia Pratiwi")).toBeNull();
+      expect(queryRow("Dewi Anggraeni")).toBeNull();
+    });
+    expect(queryRow("Ridwan Saputra")).not.toBeNull();
+  });
+
+  it("role chip filters by a single role; All restores everyone", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    fireEvent.click(roleTab("Finance"));
+    expect(roleTab("Finance")).toHaveAttribute("aria-selected", "true");
+    expect(queryRow("Ridwan Saputra")).not.toBeNull();
+    expect(queryRow("Aulia Pratiwi")).toBeNull();
+    expect(queryRow("Dewi Anggraeni")).toBeNull();
+
+    fireEvent.click(roleTab("All"));
+    expect(roleTab("All")).toHaveAttribute("aria-selected", "true");
+    expect(queryRow("Aulia Pratiwi")).not.toBeNull();
+    expect(queryRow("Dewi Anggraeni")).not.toBeNull();
+  });
+
+  it("composes search + role with AND semantics", async () => {
+    // A second finance user whose name/email does NOT contain "a" — so a
+    // finance-only role filter alone is not enough to prove composition.
+    const RIZKY = backendUser({
+      id: "u-fin-2",
+      name: "Rizky Hakim",
+      email: "rizky.hakim@spendflow.example",
+      role: "finance",
+      managerId: null,
+      department: "Finance",
+    });
+    usersMocks.listUsers.mockResolvedValue([FINANCE, RIZKY, MANAGER, backendUser()]);
+    renderPage();
+    await waitForReady(/Rizky Hakim/);
+
+    fireEvent.click(roleTab("Finance"));
+    fireEvent.change(searchInput(), { target: { value: "ridwan" } });
+
+    // AND: Ridwan matches the query AND the role; Rizky passes the role but
+    // fails the query; Aulia (employee) and Dewi (approver) fail the role.
+    await waitFor(() => {
+      expect(queryRow("Ridwan Saputra")).not.toBeNull();
+      expect(queryRow("Rizky Hakim")).toBeNull();
+      expect(queryRow("Aulia Pratiwi")).toBeNull();
+      expect(queryRow("Dewi Anggraeni")).toBeNull();
+    });
+  });
+
+  it("shows an empty state with a working Clear filters action", async () => {
+    // Seed a URL combo that matches nobody so "Clear filters" can also be
+    // observed clearing the query string (the mock never updates it itself).
+    navMocks.search = "q=zzzz-no-match&role=finance";
+    renderPage();
+
+    expect(await screen.findByText(/no matching users/i)).toBeInTheDocument();
+    expect(queryRow("Ridwan Saputra")).toBeNull();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /clear filters/i })[0]);
+
+    await waitFor(() => expect(queryRow("Aulia Pratiwi")).not.toBeNull());
+    expect(queryRow("Ridwan Saputra")).not.toBeNull();
+    expect(queryRow("Dewi Anggraeni")).not.toBeNull();
+    expect(searchInput()).toHaveValue("");
+    await waitFor(() =>
+      expect(navMocks.replace).toHaveBeenCalledWith("/finance/users", { scroll: false })
+    );
+  });
+
+  it("seeds filters from the URL query string on first render", async () => {
+    navMocks.search = "q=ridwan&role=finance";
+    renderPage();
+
+    // Ridwan also renders in the AppShell menu, so wait on the seeded input.
+    await waitFor(() => expect(searchInput()).toHaveValue("ridwan"));
+    expect(queryRow("Aulia Pratiwi")).toBeNull();
+    expect(queryRow("Dewi Anggraeni")).toBeNull();
+    expect(roleTab("Finance")).toHaveAttribute("aria-selected", "true");
+    expect(roleTab("All")).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("mirrors filter changes into the URL after the debounce", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    fireEvent.change(searchInput(), { target: { value: "ridwan" } });
+    await waitFor(() =>
+      expect(lastReplacedUrl()).toBe("/finance/users?q=ridwan")
+    );
+
+    fireEvent.click(roleTab("Finance"));
+    await waitFor(() =>
+      expect(lastReplacedUrl()).toBe("/finance/users?q=ridwan&role=finance")
+    );
+  });
+
+  it("renders the All chip selected and no filter for an invalid ?role value", async () => {
+    navMocks.search = "role=admin";
+    renderPage();
+
+    await waitForReady(/Aulia Pratiwi/);
+    expect(roleTab("All")).toHaveAttribute("aria-selected", "true");
+    expect(roleTab("Finance")).toHaveAttribute("aria-selected", "false");
+    // No user is filtered out by the bogus role.
+    expect(queryRow("Ridwan Saputra")).not.toBeNull();
+    expect(queryRow("Dewi Anggraeni")).not.toBeNull();
+    expect(searchInput()).toHaveValue("");
   });
 });
 
