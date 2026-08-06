@@ -32,7 +32,7 @@ export default function LoginPage() {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { status, signIn } = useSession();
+  const { signIn } = useSession();
   const devPresets = process.env.NEXT_PUBLIC_SPENDFLOW_DEV_PRESETS === "1";
 
   const [email, setEmail] = React.useState("aulia.pratiwi@spendflow.example");
@@ -40,12 +40,12 @@ function LoginForm() {
   const [error, setError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
-  // Already authenticated? Bounce to the role home (or the `next` target).
-  React.useEffect(() => {
-    if (status !== "authenticated") return;
-    const next = searchParams.get("next");
-    router.replace(next || "/");
-  }, [status, searchParams, router]);
+  // NOTE: /login deliberately does NOT auto-redirect an already-authenticated
+  // visitor. A leftover httpOnly session cookie would otherwise silently punt
+  // them into a dashboard the moment they clicked "Sign in" on the landing
+  // page — they could never reach the credential form to sign in as someone
+  // else. The form always renders; a successful sign-in replaces any existing
+  // session server-side.
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -53,7 +53,10 @@ function LoginForm() {
     setSubmitting(true);
     const result = await signIn(email, password);
     if (result.ok) {
-      router.push(ROLE_HOME[result.role]);
+      // Honour the `next` target RouteGuard/401 handler attached, but never
+      // bounce back to "/" (the landing page that sent us here).
+      const next = searchParams.get("next");
+      router.push(next && next !== "/" ? next : ROLE_HOME[result.role]);
     } else {
       setError(result.error);
       setSubmitting(false);
