@@ -37,8 +37,8 @@ import {
   categories,
   getCategory,
   MILEAGE_RATE,
-  type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
+import type { ExpenseCategoryId } from "@/lib/types";
 import {
   evaluatePolicy,
   violationsForLine,

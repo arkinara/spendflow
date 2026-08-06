@@ -44,11 +44,13 @@ import {
   getUserName,
   getCategory,
   computeClaimTotal,
-  type Claim,
-  type LineItem,
-  type Attachment,
-  type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
+import type {
+  Claim,
+  LineItem,
+  Attachment,
+  ExpenseCategoryId,
+} from "@/lib/types";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 
 const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {

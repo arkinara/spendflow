@@ -93,8 +93,8 @@ import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import {
   getClaim,
   computeClaimTotal,
-  type Claim,
 } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 import { formatCurrency } from "@/lib/format";
 import * as claimsApi from "@/lib/api/claims";
 

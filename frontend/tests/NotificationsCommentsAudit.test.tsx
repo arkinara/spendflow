@@ -222,9 +222,8 @@ import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import {
   notifications,
   comments,
-  type Notification,
-  type Comment,
 } from "@/lib/mock/mock_data";
+import type { Notification, Comment } from "@/lib/types";
 
 /* ----------------------------------------------------------------- helpers */
 

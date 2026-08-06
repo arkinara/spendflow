@@ -21,15 +21,17 @@ import {
   computeClaimTotal,
   getUser,
   getCategory,
-  type ExpenseCategory,
-  type Policy,
-  type RoutingRule,
-  type RoutingStep,
-  type RoutingMatch,
-  type ApproverType,
-  type Claim,
-  type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
+import type {
+  ExpenseCategory,
+  Policy,
+  RoutingRule,
+  RoutingStep,
+  RoutingMatch,
+  ApproverType,
+  Claim,
+  ExpenseCategoryId,
+} from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 
 /* ----------------------------------------------------------------- ids -- */

@@ -20,8 +20,8 @@ import {
   claimsPaid,
   openFinanceExceptions,
   computeClaimTotal,
-  type Claim,
 } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 
 export interface FinanceGroup {
   status: "approved" | "processing" | "paid";

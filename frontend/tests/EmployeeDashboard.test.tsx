@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ClaimStatus } from "@/lib/mock/mock_data";
+import type { ClaimStatus } from "@/lib/types";
 
 const navMocks = vi.hoisted(() => ({
   push: vi.fn(),

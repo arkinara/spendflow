@@ -11,9 +11,8 @@
 import {
   claimsForEmployee,
   computeClaimTotal,
-  type Claim,
-  type ClaimStatus,
 } from "@/lib/mock/mock_data";
+import type { Claim, ClaimStatus } from "@/lib/types";
 
 /** The four status groups the PRD calls out as the at-a-glance summary. */
 export const PRIMARY_STATUSES: ClaimStatus[] = [

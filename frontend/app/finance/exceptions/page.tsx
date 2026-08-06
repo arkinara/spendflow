@@ -41,10 +41,12 @@ import {
 import {
   computeClaimTotal,
   getCategory,
-  type ClaimException,
-  type LineItem,
-  type ExpenseCategoryId,
 } from "@/lib/mock/mock_data";
+import type {
+  ClaimException,
+  LineItem,
+  ExpenseCategoryId,
+} from "@/lib/types";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

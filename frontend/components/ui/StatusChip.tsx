@@ -9,7 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ClaimStatus, PaymentStatus } from "@/lib/mock/mock_data";
+import type { ClaimStatus, PaymentStatus } from "@/lib/types";
 
 type Tone = "success" | "warning" | "error" | "info" | "neutral";
 

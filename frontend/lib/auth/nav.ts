@@ -12,8 +12,8 @@ import {
 import {
   claimsForApprover,
   openFinanceExceptions,
-  type Role,
 } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 
 /**
  * Role-aware navigation definition (Phase 1).

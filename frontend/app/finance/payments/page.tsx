@@ -31,7 +31,7 @@ import {
   FinanceApiError,
   type FinancePaymentItem,
 } from "@/lib/api/finance";
-import type { ClaimPayment } from "@/lib/mock/mock_data";
+import type { ClaimPayment } from "@/lib/types";
 import { formatCurrency, formatCurrencyCompact, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

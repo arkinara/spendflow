@@ -9,9 +9,8 @@ import {
   computeClaimTotal,
   getUser,
   getCategory,
-  type Claim,
-  type ClaimStatus,
 } from "@/lib/mock/mock_data";
+import type { Claim, ClaimStatus } from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 
 /** Statuses surfaced in the report status multi-select. */

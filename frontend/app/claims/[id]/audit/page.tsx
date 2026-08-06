@@ -23,7 +23,8 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { useClaimAudit } from "@/lib/mock/useClaimAudit";
 import type { BackendAuditEntry } from "@/lib/api/audit";
 import { getClaim } from "@/lib/api/claims";
-import { getUserName, claimDetailRoute, type Claim } from "@/lib/mock/mock_data";
+import { getUserName, claimDetailRoute } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
 
 const ACTION_LABEL: Record<string, string> = {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import type { Role } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 import { SESSION_STORAGE_KEY } from "@/lib/auth/session";
 
 const mocks = vi.hoisted(() => ({

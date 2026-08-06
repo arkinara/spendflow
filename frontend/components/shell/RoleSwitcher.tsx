@@ -10,9 +10,8 @@ import {
   users,
   CURRENT_USER_BY_ROLE,
   getUser,
-  type Role,
-  type User,
 } from "@/lib/mock/mock_data";
+import type { Role, User } from "@/lib/types";
 
 /**
  * Backwards-compatible role hook. Used inside the guarded app tree where a

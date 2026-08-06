@@ -20,7 +20,7 @@
  * ========================================================================== */
 
 import { apiFetch } from "@/lib/api/fetch";
-import type { ClaimStatus } from "@/lib/mock/mock_data";
+import type { ClaimStatus } from "@/lib/types";
 import { filtersToSearchParams, type ReportFilters } from "@/lib/mock/reportFilter";
 
 /** Typed error carrying the backend's status + code + message. */

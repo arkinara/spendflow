@@ -214,8 +214,8 @@ import {
   claimsReadyToPay,
   claimsProcessing,
   claimsPaid,
-  type Claim,
 } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 import * as financeApi from "@/lib/api/finance";
 import { FinanceApiError } from "@/lib/api/finance";
 

@@ -241,10 +241,12 @@ import {
   policies,
   routingRules,
   claims,
-  type ExpenseCategory,
-  type Policy,
-  type RoutingRule,
 } from "@/lib/mock/mock_data";
+import type {
+  ExpenseCategory,
+  Policy,
+  RoutingRule,
+} from "@/lib/types";
 import { createCategory } from "@/lib/mock/adminStore";
 
 /* ----------------------------------------------------------------- helpers */

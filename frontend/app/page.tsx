@@ -14,7 +14,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { useSession } from "@/lib/auth/session";
-import type { Role } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 
 const ROLES: {
   role: Role;

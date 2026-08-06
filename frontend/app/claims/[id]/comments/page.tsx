@@ -24,7 +24,8 @@ import { useClaimComments, type CommentItem } from "@/lib/mock/useClaimComments"
 import { addComment, CommentApiError } from "@/lib/api/comments";
 import { getClaim } from "@/lib/api/claims";
 import { getClaimForReview } from "@/lib/api/approvals";
-import { getUser, claimDetailRoute, type Claim } from "@/lib/mock/mock_data";
+import { getUser, claimDetailRoute } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

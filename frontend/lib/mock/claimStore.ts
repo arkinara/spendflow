@@ -15,14 +15,16 @@ import {
   getUser,
   getUserName,
   routingStepsForClaim,
-  type Claim,
-  type LineItem,
-  type Attachment,
-  type ExpenseCategoryId,
-  type ClaimStatus,
-  type ClaimException,
-  type ClaimPayment,
 } from "@/lib/mock/mock_data";
+import type {
+  Claim,
+  LineItem,
+  Attachment,
+  ExpenseCategoryId,
+  ClaimStatus,
+  ClaimException,
+  ClaimPayment,
+} from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 import type { UploadedFile } from "@/components/ui/FileUpload";
 

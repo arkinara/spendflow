@@ -221,8 +221,8 @@ import {
   claimsForApprover,
   getClaim,
   computeClaimTotal,
-  type Claim,
 } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 import { decideOnClaim, addClaimComment } from "@/lib/mock/claimStore";
 import * as approvalsApi from "@/lib/api/approvals";
 import * as commentsApi from "@/lib/api/comments";

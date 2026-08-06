@@ -6,7 +6,7 @@ import { ShieldX } from "lucide-react";
 import { useSession } from "@/lib/auth/session";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
 import { useSnackbar } from "@/components/ui/Snackbar";
-import type { Role } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 import { AppShellSkeleton } from "./AppShellSkeleton";
 import { SessionError } from "./SessionError";
 

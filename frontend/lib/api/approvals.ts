@@ -15,7 +15,7 @@
 
 import { apiFetch } from "@/lib/api/fetch";
 import { toFEClaim, type BackendClaim } from "@/lib/api/claims";
-import type { Claim } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 
 /** Typed error carrying the backend's status + code + message. */
 export class ApprovalApiError extends Error {

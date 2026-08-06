@@ -24,7 +24,7 @@ import {
   getClaimAudit,
   type BackendAuditEntry,
 } from "@/lib/api/claims";
-import type { Claim } from "@/lib/mock/mock_data";
+import type { Claim } from "@/lib/types";
 
 export type ApproverClaimState =
   | { status: "loading" }

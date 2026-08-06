@@ -25,7 +25,7 @@ import type {
   ClaimStatus,
   ExpenseCategoryId,
   LineItem,
-} from "@/lib/mock/mock_data";
+} from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 
 /** Typed error carrying the backend's status + code + message. */

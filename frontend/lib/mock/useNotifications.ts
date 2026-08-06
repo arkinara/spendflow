@@ -8,7 +8,7 @@ import {
   type BackendNotification,
 } from "@/lib/api/notifications";
 import { refreshUnreadCount } from "@/lib/mock/notifyStore";
-import type { Notification, Role } from "@/lib/mock/mock_data";
+import type { Notification, Role } from "@/lib/types";
 
 /* ============================================================================
    SpendFlow — useNotifications (ticket #22, FE wiring).

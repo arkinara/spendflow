@@ -192,7 +192,8 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { claims, getUser, type Claim, type User } from "@/lib/mock/mock_data";
+import { claims, getUser } from "@/lib/mock/mock_data";
+import type { Claim, User } from "@/lib/types";
 import { ReportingApiError } from "@/lib/api/reporting";
 
 /* ---------------------------------------------------------------- helpers */

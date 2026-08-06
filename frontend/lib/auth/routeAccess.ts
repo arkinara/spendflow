@@ -1,4 +1,4 @@
-import type { Role } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 
 /**
  * Client-side route access map (Phase 1, mock sessions).

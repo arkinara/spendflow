@@ -1,4 +1,4 @@
-import type { Role } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 
 /**
  * HTTP client for the Better Auth + Drizzle backend (ticket #17).

@@ -3,9 +3,8 @@
 import * as React from "react";
 import {
   getUser,
-  type Role,
-  type User,
 } from "@/lib/mock/mock_data";
+import type { Role, User } from "@/lib/types";
 import {
   getCurrentUser as apiGetCurrentUser,
   signIn as apiSignIn,

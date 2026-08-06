@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { vi, afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
-import type { Role } from "@/lib/mock/mock_data";
+import type { Role } from "@/lib/types";
 
 afterEach(() => {
   cleanup();

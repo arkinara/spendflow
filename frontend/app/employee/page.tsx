@@ -28,7 +28,7 @@ import {
   type EmployeeDashboardData,
   type StatusGroup,
 } from "@/lib/mock/dashboard";
-import type { ClaimStatus } from "@/lib/mock/mock_data";
+import type { ClaimStatus } from "@/lib/types";
 import { formatCurrency, formatCurrencyCompact, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

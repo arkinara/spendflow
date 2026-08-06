@@ -26,9 +26,8 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { useEmployeeClaims } from "@/lib/mock/useEmployeeClaims";
 import {
   computeClaimTotal,
-  type Claim,
-  type ClaimStatus,
 } from "@/lib/mock/mock_data";
+import type { Claim, ClaimStatus } from "@/lib/types";
 import { formatCurrency, formatDate } from "@/lib/format";
 
 type Filter = "all" | ClaimStatus;

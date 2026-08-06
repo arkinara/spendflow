@@ -22,7 +22,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { useNotifications } from "@/lib/mock/useNotifications";
-import { claimDetailRoute, type Notification } from "@/lib/mock/mock_data";
+import { claimDetailRoute } from "@/lib/mock/mock_data";
+import type { Notification } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 

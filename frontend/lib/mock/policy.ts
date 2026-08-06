@@ -6,7 +6,8 @@
    downstream Finance review.
    ========================================================================== */
 
-import { getCategory, type ExpenseCategoryId } from "@/lib/mock/mock_data";
+import { getCategory } from "@/lib/mock/mock_data";
+import type { ExpenseCategoryId } from "@/lib/types";
 import { formatCurrency, type CurrencyCode } from "@/lib/format";
 
 export type PolicyType =
