@@ -859,10 +859,9 @@ function UsersTab({
                     {u.status === "active" ? (
                       <span title="Activate the user first to use this">
                         <Button
-                          variant="text"
+                          variant="danger"
                           size="sm"
                           icon={Trash2}
-                          className="text-error hover:bg-error/10"
                           aria-label={`Delete ${u.name} permanently`}
                           disabled
                         >
@@ -871,10 +870,9 @@ function UsersTab({
                       </span>
                     ) : (
                       <Button
-                        variant="text"
+                        variant="danger"
                         size="sm"
                         icon={Trash2}
-                        className="text-error hover:bg-error/10"
                         aria-label={`Delete ${u.name} permanently`}
                         onClick={() => setDeleteTarget(u)}
                       >

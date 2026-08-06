@@ -705,6 +705,16 @@ describe("User directory — hard delete + password re-auth", () => {
     expect(deactivate.className).not.toMatch(/text-error-container/);
     expect(deactivate.className).toMatch(/hover:bg-error\/10/);
 
+    // Delete (on a non-active row) is heavier than Deactivate — the filled-danger
+    // variant uses `bg-error ` (with a trailing space, solid background) + `text-error-container`,
+    // which visually distinguishes "permanent delete" from "soft disable".
+    const deleteBtn = deleteButton("Gadis Purnama");
+    expect(deleteBtn.className).toMatch(/bg-error /); // trailing space — not "bg-error/10"
+    expect(deleteBtn.className).toMatch(/text-error-container/);
+    // ...and Deactivate does NOT match the danger variant (it has text-error but no solid bg-error fill,
+    // only the hover:bg-error/10 tint) — confirms the visual distinction.
+    expect(deactivate.className).not.toMatch(/bg-error /);
+
     const reactivate = within(rowFor("Gadis Purnama")).getByRole("button", {
       name: /^reactivate$/i,
     });
