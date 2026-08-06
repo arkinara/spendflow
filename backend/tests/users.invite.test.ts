@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { auditLogsTable, userInvitationsTable, usersTable } from "../src/db/schema.js";
@@ -11,6 +11,24 @@ import {
   type Harness,
 } from "./helpers.js";
 import type { Role } from "../src/types.js";
+
+// Mock the Resend client so invite-delivery wiring is testable without a real
+// API key or network access. Existing (unkeyed) tests still exercise the
+// log-fallback path because setup.ts unsets RESEND_API_KEY.
+const emailMocks = vi.hoisted(() => ({
+  sendInviteEmail: vi.fn(),
+  EmailConfigError: class EmailConfigError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "EmailConfigError";
+    }
+  },
+}));
+
+vi.mock("@/email/resend", () => ({
+  EmailConfigError: emailMocks.EmailConfigError,
+  sendInviteEmail: emailMocks.sendInviteEmail,
+}));
 
 let h: Harness;
 beforeEach(async () => {
@@ -337,5 +355,98 @@ describe("POST /api/admin/invites/:token/accept", () => {
     });
     expect(res.status).toBe(404);
     expect((await res.json()).error.code).toBe("invite_invalid");
+  });
+});
+
+describe("POST /api/admin/users — email delivery via Resend (mocked)", () => {
+  const savedKey = process.env.RESEND_API_KEY;
+  const savedUrl = process.env.FE_URL;
+
+  beforeEach(() => {
+    emailMocks.sendInviteEmail.mockReset();
+    emailMocks.sendInviteEmail.mockResolvedValue({ id: "re_mock_123" });
+    process.env.RESEND_API_KEY = "re_test_mocked_key";
+  });
+
+  afterAll(() => {
+    if (savedKey === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = savedKey;
+    if (savedUrl === undefined) delete process.env.FE_URL;
+    else process.env.FE_URL = savedUrl;
+  });
+
+  it("sends one invite email with the FE_URL + token link, and still writes the log", async () => {
+    const { res, body } = await createInvite("mail@spendflow.example", {
+      name: "Mail Person",
+      role: "approver",
+    });
+
+    expect(res.status).toBe(201);
+    expect(emailMocks.sendInviteEmail).toHaveBeenCalledTimes(1);
+
+    const token = (body as { invite: { token: string } }).invite.token;
+    expect(emailMocks.sendInviteEmail).toHaveBeenCalledWith({
+      to: "mail@spendflow.example",
+      name: "Mail Person",
+      role: "approver",
+      inviteUrl: `http://localhost:3000/invite/${token}`,
+      expiresInDays: 7,
+    });
+
+    const log = readFileSync(INVITE_LOG, "utf8");
+    expect(log).toContain(`email=mail@spendflow.example`);
+    expect(log).toContain(`token=${token}`);
+    expect(log).toContain(`url=http://localhost:3000/invite/${token}`);
+  });
+
+  it("rethrows a Resend API 5xx but keeps the invite URL in the log", async () => {
+    emailMocks.sendInviteEmail.mockRejectedValueOnce(
+      new Error("Resend API error: internal_server_error: boom")
+    );
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { res, body } = await createInvite("fail@spendflow.example");
+
+    expect(res.status).toBe(500);
+    expect((body as { error: { code: string } }).error.code).toBe("internal");
+    const log = readFileSync(INVITE_LOG, "utf8");
+    expect(log).toContain(`email=fail@spendflow.example`);
+    expect(log).toMatch(/url=http:\/\/localhost:3000\/invite\/[A-Za-z0-9_-]{43}/);
+    warn.mockRestore();
+  });
+
+  it("warns and continues (201) on EmailConfigError, keeping the log fallback", async () => {
+    emailMocks.sendInviteEmail.mockRejectedValueOnce(
+      new emailMocks.EmailConfigError("RESEND_API_KEY is not set")
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { res, body } = await createInvite("cfg@spendflow.example");
+
+    expect(res.status).toBe(201);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("email not configured")
+    );
+    const token = (body as { invite: { token: string } }).invite.token;
+    expect(readFileSync(INVITE_LOG, "utf8")).toContain(`token=${token}`);
+    warn.mockRestore();
+  });
+
+  it("writes the same invite-log line shape when RESEND_API_KEY is unset", async () => {
+    delete process.env.RESEND_API_KEY;
+
+    const { res, body } = await createInvite("nokey@spendflow.example");
+    expect(res.status).toBe(201);
+    expect(emailMocks.sendInviteEmail).not.toHaveBeenCalled();
+
+    const token = (body as { invite: { token: string } }).invite.token;
+    const line = readFileSync(INVITE_LOG, "utf8").trim().split("\n").pop()!;
+    expect(line).toMatch(
+      new RegExp(
+        `^\\[\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z\\] ` +
+          `email=nokey@spendflow\\.example token=${token} ` +
+          `url=http://localhost:3000/invite/${token}$`
+      )
+    );
   });
 });

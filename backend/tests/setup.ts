@@ -13,4 +13,10 @@ beforeAll(() => {
   if (!process.env.BETTER_AUTH_URL) {
     process.env.BETTER_AUTH_URL = "http://localhost:8787";
   }
+  // Tests must never hit the real Resend API or a dev .env — unset these so
+  // the invite service always takes the log-fallback path unless a test
+  // explicitly sets them.
+  delete process.env.RESEND_API_KEY;
+  delete process.env.RESEND_FROM;
+  delete process.env.FE_URL;
 });

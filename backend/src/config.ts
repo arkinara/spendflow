@@ -10,6 +10,8 @@ export interface Env {
   betterAuthSecret: string;
   betterAuthUrl: string;
   frontendOrigin: string | null;
+  /** Base URL used to build invite links in emails (FE_URL; distinct from FRONTEND_ORIGIN). */
+  feUrl: string;
   sessionExpiresIn: number;
   port: number;
   /** Override for the local attachment storage directory (tests / prod). */
@@ -43,6 +45,7 @@ export function loadEnv(overrides: Partial<Env> = {}): Env {
       overrides.betterAuthUrl ?? str("BETTER_AUTH_URL", "http://localhost:8787"),
     frontendOrigin:
       overrides.frontendOrigin ?? process.env.FRONTEND_ORIGIN ?? null,
+    feUrl: overrides.feUrl ?? str("FE_URL", "http://localhost:3000"),
     sessionExpiresIn: overrides.sessionExpiresIn ?? int("SESSION_EXPIRES_IN", 604800),
     port: overrides.port ?? int("PORT", 8787),
     uploadsDir: overrides.uploadsDir ?? process.env.UPLOADS_DIR ?? null,

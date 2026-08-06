@@ -8,6 +8,7 @@ import { accountsTable, userInvitationsTable, usersTable } from "../db/schema.js
 import type { DB } from "../db/index.js";
 import type { Auth } from "../auth/index.js";
 import type { Env } from "../config.js";
+import { EmailConfigError, sendInviteEmail } from "../email/resend.js";
 import { ROLES, type PublicUser, type Role } from "../types.js";
 import { writeAudit } from "./audit.js";
 
@@ -21,8 +22,10 @@ import { writeAudit } from "./audit.js";
  * signed-in session, which a pending user does not have), flips the user to
  * `active`, marks the token consumed and issues a real session cookie.
  *
- * Email delivery is MOCKED this cycle: the invite URL is appended to
- * `backend/logs/invites.log` instead of being sent over SMTP.
+ * Email delivery goes through the Resend sandbox (#40). The invite URL is also
+ * always appended to `backend/logs/invites.log` as a best-effort fallback so
+ * the invite is never silently lost — devs without a `RESEND_API_KEY` (and
+ * callers after a Resend API failure) can still retrieve it from the log.
  */
 
 export class InviteError extends Error {
@@ -45,7 +48,7 @@ export class InviteError extends Error {
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Absolute path to the mocked-email log (repo: backend/logs/invites.log). */
+/** Absolute path to the invite-log fallback (repo: backend/logs/invites.log). */
 const INVITE_LOG = new URL("../../logs/invites.log", import.meta.url);
 
 function logInviteEmail(email: string, token: string, url: string) {
@@ -91,16 +94,17 @@ export interface CreateInviteInput {
 }
 
 /**
- * Create a `status = "pending"` user row + a single-use invite token, and log
- * the (mocked) invitation email. Returns the public user plus the invite
- * envelope; the token is only ever returned once, to the caller.
+ * Create a `status = "pending"` user row + a single-use invite token, then
+ * deliver the invitation email through Resend (falling back to the invite log
+ * when email isn't configured or the API call fails). Returns the public user
+ * plus the invite envelope; the token is only ever returned once, to the caller.
  */
-export function createInviteForUser(
+export async function createInviteForUser(
   db: DB,
   input: CreateInviteInput,
   actorId: string,
-  inviteUrlBase = "http://localhost:8787"
-): { user: PublicUser; invite: { token: string; sentAt: Date; expiresAt: Date } } {
+  inviteUrlBase = process.env.FE_URL ?? "http://localhost:3000"
+): Promise<{ user: PublicUser; invite: { token: string; sentAt: Date; expiresAt: Date } }> {
   const email = input.email.toLowerCase();
   const role = input.role;
 
@@ -188,6 +192,30 @@ export function createInviteForUser(
   });
 
   const inviteUrl = `${inviteUrlBase.replace(/\/$/, "")}/invite/${token}`;
+
+  if (process.env.RESEND_API_KEY) {
+    try {
+      await sendInviteEmail({
+        to: email,
+        name: input.name,
+        role,
+        inviteUrl,
+        expiresInDays: INVITE_TTL_MS / (24 * 60 * 60 * 1000),
+      });
+    } catch (err) {
+      // The invite URL must never be silently lost — the log fallback runs on
+      // every failure path before deciding whether to surface the error.
+      logInviteEmail(email, token, inviteUrl);
+      if (err instanceof EmailConfigError) {
+        console.warn("email not configured; invite URL logged instead");
+      } else {
+        console.error("Resend delivery failed; invite URL logged instead", err);
+        throw err;
+      }
+    }
+  }
+  // Best-effort log on every path (success or fallback) preserves the pre-#40
+  // behavior where the invite URL is always recorded for dev / troubleshooting.
   logInviteEmail(email, token, inviteUrl);
 
   const user = db.select().from(usersTable).where(eq(usersTable.id, userId)).get()!;

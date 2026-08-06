@@ -49,8 +49,10 @@ export function invitesRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     if (!parsed.success) {
       return jsonError(c, 400, "invalid_body", parsed.error.message);
     }
-    const inviteUrlBase = deps.env.frontendOrigin ?? deps.env.betterAuthUrl;
-    const { user, invite } = createInviteForUser(
+    // Invite links are built from FE_URL (the frontend's public base), not the
+    // CORS origin — they serve different purposes.
+    const inviteUrlBase = deps.env.feUrl;
+    const { user, invite } = await createInviteForUser(
       deps.db,
       parsed.data,
       ctx.user.id,
