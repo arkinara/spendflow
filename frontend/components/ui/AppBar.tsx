@@ -11,7 +11,6 @@ export interface AppBarProps {
   title?: string;
   unreadCount?: number;
   action?: React.ReactNode;
-  roleSwitcher?: React.ReactNode;
   user?: { name: string; subtitle?: string; color?: string };
   homeHref?: string;
   onSignOut?: () => void;
@@ -21,7 +20,6 @@ export function AppBar({
   title = "SpendFlow",
   unreadCount = 0,
   action,
-  roleSwitcher,
   user,
   homeHref = "/",
   onSignOut,
@@ -48,7 +46,6 @@ export function AppBar({
 
       <div className="flex items-center gap-1.5 sm:gap-2">
         {action && <div className="hidden sm:block">{action}</div>}
-        {roleSwitcher}
         <Link
           href="/notifications"
           aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ""}`}

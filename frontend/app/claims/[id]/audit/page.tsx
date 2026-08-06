@@ -12,7 +12,7 @@ import {
   Ban,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
-import { useRole } from "@/components/shell/RoleSwitcher";
+import { useRole } from "@/lib/auth/session";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Avatar } from "@/components/ui/Avatar";

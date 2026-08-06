@@ -17,11 +17,12 @@ import { registerUnauthorizedHandler } from "@/lib/api/fetch";
  * Session provider backed by the Better Auth + Drizzle backend (ticket #17).
  *
  * The httpOnly cookie issued by the BE is the single source of truth — there is
- * NO localStorage persistence. On mount we read `/api/me`; `signIn`/`signInAs`
- * POST to the BE auth endpoints; `signOut` invalidates the server-side session.
+ * NO localStorage persistence. On mount we read `/api/me`; `signIn` POSTs to
+ * the BE auth endpoint; `signOut` invalidates the server-side session.
  *
- * The React context shape is identical to the prior mock provider so existing
- * consumers (RouteGuard, AppBar, RoleSwitcher, login) keep working unchanged.
+ * The React context shape keeps the surface consumers (RouteGuard, AppBar,
+ * login) working unchanged. `useRole` is the guarded-tree convenience hook:
+ * it asserts an authenticated session and exposes the active role + user.
  *
  * `SESSION_STORAGE_KEY` is still exported purely as a stable constant that the
  * Phase 1 vitest harness keys its fixtures on (the test setup maps it to a
@@ -72,16 +73,10 @@ export type SessionStatus = "loading" | "authenticated" | "unauthenticated" | "e
 
 export type SignInResult = { ok: true; role: Role } | { ok: false; error: string };
 
-function credentialForRole(role: Role): DemoCredential {
-  const cred = DEMO_CREDENTIALS.find((c) => c.role === role);
-  if (!cred) throw new Error(`No demo credential registered for role "${role}".`);
-  return cred;
-}
-
 /**
  * Phase 1 bridge: the BE user carries role + identity, but display fields
  * (`jobTitle`, `avatarColor`) still live in the mock fixtures until #24
- * retires the mocks. We enrich by id so the AppBar / RoleSwitcher render the
+ * retires the mocks. We enrich by id so the AppBar renders the
  * seeded persona data unchanged. The seeded BE user ids (`u-emp-1`, `u-mgr-1`,
  * `u-fin-1`) intentionally match the mock fixture ids.
  */
@@ -105,7 +100,6 @@ export interface SessionContextValue {
   session: MockSession | null;
   user: User | null;
   signIn: (email: string, password: string) => Promise<SignInResult>;
-  signInAs: (role: Role) => Promise<SignInResult>;
   signOut: () => void;
 }
 
@@ -115,6 +109,19 @@ export function useSession(): SessionContextValue {
   const ctx = React.useContext(SessionContext);
   if (!ctx) throw new Error("useSession must be used within <SessionProvider>");
   return ctx;
+}
+
+/**
+ * Backwards-compatible guarded-tree role hook. Used inside the guarded app tree
+ * where a session is guaranteed to exist. Any role change requires a full
+ * re-auth through `signIn` — there is no in-session role swap.
+ */
+export function useRole(): { role: Role; user: User } {
+  const { session, user } = useSession();
+  if (!session || !user) {
+    throw new Error("useRole requires an authenticated session");
+  }
+  return { role: session.role, user };
 }
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
@@ -190,19 +197,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [applyUser, reset]
   );
 
-  const signInAs = React.useCallback(
-    async (role: Role): Promise<SignInResult> => {
-      const cred = credentialForRole(role);
-      // Optimistically flip to "loading" so an immediate route push (the
-      // RoleSwitcher / landing cards fire-and-forget) is seen by RouteGuard as
-      // "in flight" rather than "unauthenticated" — preventing a flash
-      // redirect to /login before the BE call resolves.
-      setStatus("loading");
-      return signIn(cred.email, cred.password);
-    },
-    [signIn]
-  );
-
   const signOut = React.useCallback(() => {
     // Clear FE state first so a slow/unreachable BE still drops the session
     // and routes to /login; the server-side invalidation is fire-and-forget.
@@ -211,8 +205,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [reset]);
 
   const value = React.useMemo<SessionContextValue>(
-    () => ({ status, session, user, signIn, signInAs, signOut }),
-    [status, session, user, signIn, signInAs, signOut]
+    () => ({ status, session, user, signIn, signOut }),
+    [status, session, user, signIn, signOut]
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

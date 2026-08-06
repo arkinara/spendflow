@@ -81,16 +81,28 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   localStorage.clear();
 });
 
 describe("LoginPage flow (BE-backed)", () => {
-  it("renders the three demo role preset buttons labelled with the seeded personas", async () => {
+  it("hides the demo preset buttons by default (dev flag off) and shows only the form", async () => {
+    renderLogin();
+    await screen.findByLabelText(/work email/i);
+    expect(screen.queryByRole("button", { name: /sign in as employee/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /sign in as finance/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/OR PICK A DEMO ROLE/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^sign in$/i })).toBeInTheDocument();
+  });
+
+  it("renders the three demo role preset buttons when the dev flag is on, marked dev-only", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SPENDFLOW_DEV_PRESETS", "1");
     renderLogin();
     await screen.findByLabelText(/work email/i);
     expect(screen.getByRole("button", { name: /sign in as employee/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /sign in as approver/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /sign in as finance/i })).toBeInTheDocument();
+    expect(screen.getByText(/dev only/i)).toBeInTheDocument();
   });
 
   it("blocks submission when fields are empty (native required, no fetch, no route)", async () => {
@@ -170,7 +182,9 @@ describe("LoginPage flow (BE-backed)", () => {
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
-  it("the Finance preset signs in against the BE and routes to /finance", async () => {
+  it("the Finance preset pre-fills the form; sign-in still runs the real email+password path", async () => {
+    const user = userEvent.setup();
+    vi.stubEnv("NEXT_PUBLIC_SPENDFLOW_DEV_PRESETS", "1");
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/api/me")) return jsonRes(401, { error: { message: "Unauthorized" } });
@@ -186,7 +200,15 @@ describe("LoginPage flow (BE-backed)", () => {
 
     renderLogin();
     await screen.findByLabelText(/work email/i);
-    fireEvent.click(screen.getByRole("button", { name: /sign in as finance/i }));
+    await user.click(screen.getByRole("button", { name: /sign in as finance/i }));
+
+    const email = screen.getByLabelText(/work email/i) as HTMLInputElement;
+    const password = screen.getByLabelText(/^password/i) as HTMLInputElement;
+    expect(email.value).toBe(FINANCE.email);
+    expect(password.value).toBe("demo1234");
+    expect(mocks.push).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
 
     await waitFor(() => expect(mocks.push).toHaveBeenCalledWith(ROLE_HOME.finance));
     const signInCall = fetchMock.mock.calls.find(

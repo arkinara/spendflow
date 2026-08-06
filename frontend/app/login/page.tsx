@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import {
   useSession,
   ROLE_HOME,
+  DEMO_CREDENTIALS,
 } from "@/lib/auth/session";
 import { CURRENT_USER_BY_ROLE } from "@/lib/fixtures";
 import { getUser } from "@/lib/seed-data";
@@ -31,7 +32,8 @@ export default function LoginPage() {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { status, signIn, signInAs } = useSession();
+  const { status, signIn } = useSession();
+  const devPresets = process.env.NEXT_PUBLIC_SPENDFLOW_DEV_PRESETS === "1";
 
   const [email, setEmail] = React.useState("aulia.pratiwi@spendflow.example");
   const [password, setPassword] = React.useState("demo1234");
@@ -58,16 +60,14 @@ function LoginForm() {
     }
   }
 
-  async function preset(role: Role) {
+  // Dev-only presets pre-fill the form with the seeded persona's real
+  // credentials; authentication still runs the real email+password path.
+  function fillPreset(role: Role) {
+    const cred = DEMO_CREDENTIALS.find((c) => c.role === role);
+    if (!cred) return;
     setError(null);
-    setSubmitting(true);
-    const result = await signInAs(role);
-    if (result.ok) {
-      router.push(ROLE_HOME[role]);
-    } else {
-      setError(result.error);
-      setSubmitting(false);
-    }
+    setEmail(cred.email);
+    setPassword(cred.password);
   }
 
   return (
@@ -153,39 +153,48 @@ function LoginForm() {
               </Button>
             </form>
 
-            <div className="my-6 flex items-center gap-4">
-              <span className="h-px flex-1 bg-outline-variant" />
-              <span className="text-xs font-medium text-on-surface-variant">
-                OR PICK A DEMO ROLE
-              </span>
-              <span className="h-px flex-1 bg-outline-variant" />
-            </div>
+            {devPresets && (
+              <>
+                <div className="my-6 flex items-center gap-4">
+                  <span className="h-px flex-1 bg-outline-variant" />
+                  <span className="text-xs font-medium text-on-surface-variant">
+                    OR PICK A DEMO ROLE
+                  </span>
+                  <span className="h-px flex-1 bg-outline-variant" />
+                </div>
 
-            <div className="space-y-2.5">
-              {PRESETS.map((p) => {
-                const u = getUser(CURRENT_USER_BY_ROLE[p.role])!;
-                return (
-                  <button
-                    key={p.role}
-                    type="button"
-                    onClick={() => preset(p.role)}
-                    aria-label={`${p.label} — ${u.name}`}
-                    className="flex w-full items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-low px-4 py-3 text-left transition-colors hover:bg-surface-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                      <p.icon className="h-5 w-5" strokeWidth={1.75} aria-hidden />
-                    </span>
-                    <span className="flex-1">
-                      <span className="block text-sm font-medium text-on-surface">{p.label}</span>
-                      <span className="block text-xs text-on-surface-variant">
-                        {u.name} · {u.jobTitle}
-                      </span>
-                    </span>
-                    <ArrowRight className="h-4 w-4 text-on-surface-variant" strokeWidth={1.75} aria-hidden />
-                  </button>
-                );
-              })}
-            </div>
+                <p className="mb-3 text-xs text-warning">
+                  Dev only — presets pre-fill demo credentials. Production never
+                  shows this.
+                </p>
+
+                <div className="space-y-2.5">
+                  {PRESETS.map((p) => {
+                    const u = getUser(CURRENT_USER_BY_ROLE[p.role])!;
+                    return (
+                      <button
+                        key={p.role}
+                        type="button"
+                        onClick={() => fillPreset(p.role)}
+                        aria-label={`${p.label} — pre-fill demo credentials for ${u.name}`}
+                        className="flex w-full items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-low px-4 py-3 text-left transition-colors hover:bg-surface-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      >
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+                          <p.icon className="h-5 w-5" strokeWidth={1.75} aria-hidden />
+                        </span>
+                        <span className="flex-1">
+                          <span className="block text-sm font-medium text-on-surface">{p.label}</span>
+                          <span className="block text-xs text-on-surface-variant">
+                            {u.name} · {u.jobTitle}
+                          </span>
+                        </span>
+                        <ArrowRight className="h-4 w-4 text-on-surface-variant" strokeWidth={1.75} aria-hidden />
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>

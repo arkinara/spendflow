@@ -13,7 +13,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
-import { useRole } from "@/components/shell/RoleSwitcher";
+import { useRole } from "@/lib/auth/session";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { TextField } from "@/components/ui/TextField";

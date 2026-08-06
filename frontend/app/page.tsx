@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
-import { useSession } from "@/lib/auth/session";
 import type { Role } from "@/lib/types";
 
 const ROLES: {
@@ -57,8 +56,6 @@ const HIGHLIGHTS = [
 ];
 
 export default function LandingPage() {
-  const { signInAs } = useSession();
-
   return (
     <div className="min-h-screen bg-background">
       <header className="flex h-16 items-center justify-between px-4 sm:px-8">
@@ -110,7 +107,6 @@ export default function LandingPage() {
               <Link
                 key={r.role}
                 href={r.href}
-                onClick={() => signInAs(r.role)}
                 className="group flex flex-col rounded-2xl border border-outline-variant bg-surface-container-low p-6 shadow-sm transition-colors duration-200 ease-m3 hover:bg-surface-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">

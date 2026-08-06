@@ -180,7 +180,7 @@ describe("public surface kept stable", () => {
     expect(SESSION_STORAGE_KEY).toBe("spendflow.session");
   });
 
-  it("signIn/signInAs are async (Promise-returning); context shape unchanged", () => {
+  it("signIn/signOut are async (Promise-returning); context shape unchanged", () => {
     fetchMock.mockResolvedValue(jsonRes(401, { error: { message: "Unauthorized" } }));
     let ctx!: ReturnType<typeof useSession>;
     function CtxProbe() {
@@ -192,15 +192,13 @@ describe("public surface kept stable", () => {
         <CtxProbe />
       </SessionProvider>,
     );
-    // Context exposes the same keys the consumers (RouteGuard/AppBar/RoleSwitcher) read.
+    // Context exposes the same keys the consumers (RouteGuard/AppBar/login) read.
     expect(ctx).toHaveProperty("status");
     expect(ctx).toHaveProperty("session");
     expect(ctx).toHaveProperty("user");
     expect(ctx).toHaveProperty("signIn");
-    expect(ctx).toHaveProperty("signInAs");
     expect(ctx).toHaveProperty("signOut");
     expect(typeof ctx.signIn).toBe("function");
-    expect(typeof ctx.signInAs).toBe("function");
     expect(typeof ctx.signOut).toBe("function");
   });
 });

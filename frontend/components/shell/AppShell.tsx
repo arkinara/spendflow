@@ -4,8 +4,7 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { AppBar } from "@/components/ui/AppBar";
 import { NavBar, type NavItem } from "@/components/ui/NavBar";
-import { RoleSwitcher, useRole } from "./RoleSwitcher";
-import { useSession } from "@/lib/auth/session";
+import { useSession, useRole } from "@/lib/auth/session";
 import { getNavItems } from "@/lib/auth/nav";
 import { ROLE_HOME } from "@/lib/auth/routeAccess";
 import { useUnreadCount } from "@/lib/store/notifyStore";
@@ -35,7 +34,6 @@ export function AppShell({ action, children }: AppShellProps) {
       <AppBar
         unreadCount={unread}
         action={action}
-        roleSwitcher={<RoleSwitcher />}
         user={{ name: user.name, subtitle: user.jobTitle, color: user.avatarColor }}
         homeHref={ROLE_HOME[role]}
         onSignOut={handleSignOut}
