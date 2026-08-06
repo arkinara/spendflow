@@ -198,6 +198,6 @@ export function asRole(value: unknown): Role | null {
 }
 
 export function asUserStatus(value: unknown): UserStatus | null {
-  if (value === "active" || value === "disabled") return value;
+  if (value === "active" || value === "disabled" || value === "pending") return value;
   return null;
 }

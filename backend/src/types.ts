@@ -3,7 +3,7 @@
 export const ROLES = ["employee", "approver", "finance"] as const;
 export type Role = (typeof ROLES)[number];
 
-export const USER_STATUSES = ["active", "disabled"] as const;
+export const USER_STATUSES = ["active", "disabled", "pending"] as const;
 export type UserStatus = (typeof USER_STATUSES)[number];
 
 /** Public user shape — never includes password_hash. */

@@ -36,7 +36,7 @@ export const usersTable = sqliteTable("users", {
   ),
   department: text("department"),
   costCenter: text("cost_center"),
-  status: text("status", { enum: ["active", "disabled"] })
+  status: text("status", { enum: ["active", "disabled", "pending"] })
     .notNull()
     .default("active"),
   // Mirror of the credential hash stored in `accounts.password`. Better Auth
@@ -58,7 +58,43 @@ export const usersRelations = relations(usersTable, ({ one, many }) => ({
     relationName: "managerReports",
   }),
   reports: many(usersTable, { relationName: "managerReports" }),
+  invitations: many(userInvitationsTable),
 }));
+
+/* --------------------------------------------------------- user_invitations -- */
+
+/**
+ * Single-use invite token for a `status = "pending"` user. The token is
+ * opaque (32 random bytes, base64url) and the accepted invariant is one active
+ * invite per pending user (accept marks the row consumed). Emails are MOCKED
+ * this cycle — the invite URL is written to `backend/logs/invites.log`.
+ */
+export const userInvitationsTable = sqliteTable(
+  "user_invitations",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    // Unix ms. Invites are valid for 7 days.
+    expiresAt: integer("expires_at").notNull(),
+    consumedAt: integer("consumed_at"),
+    consumedByIp: text("consumed_by_ip"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({ tokenIdx: index("user_invitations_token_idx").on(t.token) })
+);
+
+export const userInvitationsRelations = relations(
+  userInvitationsTable,
+  ({ one }) => ({
+    user: one(usersTable, {
+      fields: [userInvitationsTable.userId],
+      references: [usersTable.id],
+    }),
+  })
+);
 
 /* --------------------------------------------------------------- sessions -- */
 
@@ -663,6 +699,7 @@ export const schema = {
   accounts: accountsTable,
   verifications: verificationsTable,
   auditLogs: auditLogsTable,
+  userInvitations: userInvitationsTable,
   categories: categoriesTable,
   policies: policiesTable,
   claims: claimsTable,

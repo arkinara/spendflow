@@ -33,6 +33,8 @@ import { adminErrorHandler, adminRoutes } from "./routes/admin.js";
 import { commentErrorHandler, commentRoutes } from "./routes/comments.js";
 import { notificationErrorHandler, notificationRoutes } from "./routes/notifications.js";
 import { reportingErrorHandler, reportingRoutes } from "./routes/reporting.js";
+import { invitesRoutes } from "./routes/invites.js";
+import { InviteError } from "./services/invites.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -103,6 +105,14 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     }
     if (err instanceof ReportingError) {
       return reportingErrorHandler(err, c);
+    }
+    if (err instanceof InviteError) {
+      return jsonError(
+        c,
+        err.status as ContentfulStatusCode,
+        err.code,
+        err.message
+      );
     }
     return claimErrorHandler(err, c);
   });
@@ -203,6 +213,9 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
 
   /* --------------------------- #16 reporting query + CSV export API ------- */
   app.route("/", reportingRoutes({ auth, db, env }));
+
+  /* --------------------------- #38 user invites + acceptance ------------- */
+  app.route("/", invitesRoutes({ auth, db, env }));
 
   return app;
 }

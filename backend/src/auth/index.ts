@@ -67,7 +67,7 @@ export function createAuth(db: DB, env: Env) {
           returned: true,
         },
         status: {
-          type: ["active", "disabled"],
+          type: ["active", "disabled", "pending"],
           required: false,
           defaultValue: "active",
           input: false,
