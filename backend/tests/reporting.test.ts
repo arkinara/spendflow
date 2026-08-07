@@ -186,6 +186,7 @@ describe("report query — filter combinations (a)", () => {
       name: ENG_EMP.name,
       email: ENG_EMP.email,
       role: "employee",
+      roles: ["employee"],
       department: ENG_EMP.department,
     });
   });
@@ -491,6 +492,7 @@ describe("CSV export — row/field correctness (c)", () => {
       name: 'Siti "Tari",\nJr.',
       email: "siti.weird@spendflow.example",
       role: "employee",
+      roles: ["employee"],
       department: "Operations",
     });
     seedClaim({

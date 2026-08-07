@@ -11,6 +11,7 @@ import { approvalActionsTable, usersTable } from "../db/schema.js";
 import type { DB } from "../db/index.js";
 import { approverUserIdsForStep } from "./approval-engine.js";
 import { loadApprovalRoutes } from "./config.js";
+import { parseRoles } from "./roles.js";
 
 export interface ParticipantClaimShape {
   id: string;
@@ -33,10 +34,10 @@ export function claimParticipantIds(db: DB, claim: ParticipantClaimShape): strin
   ids.add(claim.employeeId);
 
   for (const fu of db
-    .select({ id: usersTable.id })
+    .select({ id: usersTable.id, roles: usersTable.roles })
     .from(usersTable)
-    .where(eq(usersTable.role, "finance"))
-    .all()) {
+    .all()
+    .filter((u) => parseRoles(u.roles).includes("finance"))) {
     ids.add(fu.id);
   }
 

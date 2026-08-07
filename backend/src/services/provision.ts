@@ -2,6 +2,7 @@ import { hashPassword } from "better-auth/crypto";
 import { eq } from "drizzle-orm";
 import { accountsTable, usersTable } from "../db/schema.js";
 import type { DB } from "../db/index.js";
+import { derivePrimaryRole, serializeRoles } from "./roles.js";
 import type { Role, UserStatus } from "../types.js";
 
 export interface ProvisionUserInput {
@@ -9,6 +10,8 @@ export interface ProvisionUserInput {
   email: string;
   password: string;
   role: Role;
+  /** Optional multi-role set (#44). Defaults to `[role]` when omitted. */
+  roles?: Role[];
   /** Optional deterministic id (used by the seed). Defaults to a random UUID. */
   id?: string;
   managerId?: string | null;
@@ -44,6 +47,8 @@ export async function provisionUser(
   const id = input.id ?? crypto.randomUUID();
   const now = new Date();
   const hash = await hashPassword(input.password);
+  const effectiveRoles = input.roles ?? [input.role];
+  const primaryRole = derivePrimaryRole(effectiveRoles);
 
   // Resolve the manager id once (null is valid — no reporting line).
   const managerId = input.managerId ?? null;
@@ -65,7 +70,8 @@ export async function provisionUser(
           email: input.email.toLowerCase(),
           emailVerified: input.emailVerified ?? false,
           image: null,
-          role: input.role,
+          roles: serializeRoles(effectiveRoles),
+          primaryRole,
           managerId,
           department: input.department ?? null,
           costCenter: input.costCenter ?? null,

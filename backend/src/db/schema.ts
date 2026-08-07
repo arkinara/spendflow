@@ -26,7 +26,15 @@ export const usersTable = sqliteTable("users", {
     .default(false),
   image: text("image"),
   // --- SpendFlow org fields (server-owned; see auth additionalFields) ---
-  role: text("role", { enum: ["employee", "approver", "finance"] })
+  // JSON-encoded array of roles (#44). Every user has at least one role; the
+  // empty default exists only so a fresh `users` column insert never violates
+  // NOT NULL — insert paths always set an explicit non-empty array.
+  roles: text("roles").notNull().default("[]"),
+  // Derived single role (finance > approver > employee precedence) kept for
+  // single-role call sites + admin display. Written on every role mutation.
+  primaryRole: text("primary_role", {
+    enum: ["employee", "approver", "finance"],
+  })
     .notNull()
     .default("employee"),
   // Self-referencing reporting line. NULL for users without a manager.

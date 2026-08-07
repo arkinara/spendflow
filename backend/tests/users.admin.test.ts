@@ -60,7 +60,8 @@ describe("users / roles / reporting-line admin API", () => {
       .from(usersTable)
       .where(eq(usersTable.id, DEMO.employee.id))
       .get();
-    expect(row?.role).toBe("approver");
+    expect(row?.primaryRole).toBe("approver");
+    expect(row?.roles).toBe('["approver"]');
 
     // Audit log captured actor + before/after.
     const audit = lastAuditFor(DEMO.employee.id);
@@ -79,6 +80,7 @@ describe("users / roles / reporting-line admin API", () => {
       email: "approver2@spendflow.example",
       password: "demo1234",
       role: "approver",
+      roles: ["approver"],
     });
     const res = await authedPatch(
       h.app,
@@ -134,6 +136,7 @@ describe("users / roles / reporting-line admin API", () => {
       email: "b@spendflow.example",
       password: "demo1234",
       role: "approver",
+      roles: ["approver"],
       managerId: DEMO.approver.id,
     });
     await provisionUser(h.db, {
@@ -142,6 +145,7 @@ describe("users / roles / reporting-line admin API", () => {
       email: "a@spendflow.example",
       password: "demo1234",
       role: "approver",
+      roles: ["approver"],
       managerId: "u-b",
     });
     const res = await authedPatch(h.app, "/api/admin/users/u-b/manager", cookie, {
@@ -160,6 +164,7 @@ describe("users / roles / reporting-line admin API", () => {
       email: "emp2@spendflow.example",
       password: "demo1234",
       role: "employee",
+      roles: ["employee"],
     });
     const res = await authedPatch(
       h.app,

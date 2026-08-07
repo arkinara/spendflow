@@ -41,11 +41,18 @@ export function createAuth(db: DB, env: Env) {
     },
     user: {
       additionalFields: {
-        role: {
+        roles: {
+          type: "string",
+          required: false,
+          defaultValue: "[]",
+          input: false, // server-owned — set only via admin API / provisioning
+          returned: true,
+        },
+        primaryRole: {
           type: ["employee", "approver", "finance"],
           required: false,
           defaultValue: "employee",
-          input: false, // server-owned — set only via admin API / provisioning
+          input: false,
           returned: true,
         },
         managerId: {

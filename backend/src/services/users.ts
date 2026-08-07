@@ -8,6 +8,7 @@ import {
 } from "../db/schema.js";
 import type { DB } from "../db/index.js";
 import { ROLES, type PublicUser, type Role, type UserStatus } from "../types.js";
+import { derivePrimaryRole, parseRoles, serializeRoles } from "./roles.js";
 import { writeAudit } from "./audit.js";
 
 export class UserServiceError extends Error {
@@ -32,13 +33,17 @@ export class UserServiceError extends Error {
 const MAX_CHAIN_DEPTH = 100;
 
 function toPublic(row: typeof usersTable.$inferSelect): PublicUser {
+  const roles = parseRoles(row.roles);
+  const primaryRole = row.primaryRole as Role;
   return {
     id: row.id,
     name: row.name,
     email: row.email,
     emailVerified: row.emailVerified,
     image: row.image,
-    role: row.role,
+    role: primaryRole,
+    roles,
+    primaryRole,
     managerId: row.managerId,
     department: row.department,
     costCenter: row.costCenter,
@@ -63,7 +68,7 @@ function loadOrFail(db: DB, id: string) {
   return row;
 }
 
-/** Change a user's role and record the before/after in the audit log. */
+/** Change a user's role (replaces the role set) and audit before/after. */
 export function changeRole(
   db: DB,
   targetId: string,
@@ -74,13 +79,17 @@ export function changeRole(
     throw new UserServiceError("invalid_role", `Role must be one of: ${ROLES.join(", ")}`);
   }
   const before = loadOrFail(db, targetId);
-  if (before.role === newRole) {
+  if (before.primaryRole === newRole) {
     const user = toPublic(before);
     return { user, audit: noopAudit() };
   }
   const now = new Date();
   db.update(usersTable)
-    .set({ role: newRole, updatedAt: now })
+    .set({
+      roles: serializeRoles([newRole]),
+      primaryRole: newRole,
+      updatedAt: now,
+    })
     .where(eq(usersTable.id, targetId))
     .run();
   const afterRow = db.select().from(usersTable).where(eq(usersTable.id, targetId)).get()!;
@@ -89,7 +98,7 @@ export function changeRole(
     action: "role.change",
     entityType: "user",
     entityId: targetId,
-    before: { role: before.role },
+    before: { role: before.primaryRole },
     after: { role: newRole },
   });
   return { user: toPublic(afterRow), audit };
@@ -154,17 +163,18 @@ export function setManager(
     throw new UserServiceError("self_manager", "A user cannot be their own manager");
   }
   const manager = db
-    .select({ id: usersTable.id, role: usersTable.role })
+    .select({ id: usersTable.id, roles: usersTable.roles })
     .from(usersTable)
     .where(eq(usersTable.id, newManagerId))
     .get();
   if (!manager) {
     throw new UserServiceError("invalid_manager", `Manager ${newManagerId} does not exist`);
   }
-  if (manager.role !== "approver") {
+  const managerRoles = parseRoles(manager.roles);
+  if (!managerRoles.includes("approver")) {
     throw new UserServiceError(
       "invalid_manager",
-      `Manager must be an Approver; user has role '${manager.role}'`,
+      `Manager must be an Approver; user has role '${derivePrimaryRole(managerRoles)}'`,
       400
     );
   }
@@ -256,7 +266,7 @@ export async function hardDeleteUser(
     id: target.id,
     email: target.email,
     name: target.name,
-    role: target.role,
+    role: target.primaryRole,
     status: target.status,
   };
   db.transaction((tx) => {

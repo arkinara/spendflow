@@ -27,9 +27,9 @@ import type { Role } from "../src/types.js";
 
 export const DEMO = {
   password: "demo1234",
-  employee: { id: "u-emp-1", email: "aulia@spendflow.example", role: "employee" as Role, name: "Aulia Pratiwi", department: "Operations" },
-  approver: { id: "u-mgr-1", email: "dewi.anggraeni@spendflow.example", role: "approver" as Role, name: "Dewi Anggraeni", department: "Operations" },
-  finance: { id: "u-fin-1", email: "ridwan.saputra@spendflow.example", role: "finance" as Role, name: "Ridwan Saputra", department: "Finance" },
+  employee: { id: "u-emp-1", email: "aulia@spendflow.example", role: "employee" as Role, roles: ["employee"] as Role[], name: "Aulia Pratiwi", department: "Operations" },
+  approver: { id: "u-mgr-1", email: "dewi.anggraeni@spendflow.example", role: "approver" as Role, roles: ["approver"] as Role[], name: "Dewi Anggraeni", department: "Operations" },
+  finance: { id: "u-fin-1", email: "ridwan.saputra@spendflow.example", role: "finance" as Role, roles: ["finance"] as Role[], name: "Ridwan Saputra", department: "Finance" },
 };
 
 export interface Harness {
@@ -272,6 +272,7 @@ export async function provisionSeedUser(
     name: string;
     email: string;
     role: Role;
+    roles?: Role[];
     managerId?: string;
     department?: string;
   },
@@ -282,6 +283,7 @@ export async function provisionSeedUser(
     email: opts.email,
     password: DEMO.password,
     role: opts.role,
+    roles: opts.roles ?? [opts.role],
     managerId: opts.managerId ?? null,
     department: opts.department ?? null,
   });

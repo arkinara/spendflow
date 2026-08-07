@@ -10,6 +10,7 @@ import type { Auth } from "../auth/index.js";
 import type { Env } from "../config.js";
 import { EmailConfigError, sendInviteEmail } from "../email/resend.js";
 import { ROLES, type PublicUser, type Role } from "../types.js";
+import { parseRoles, serializeRoles } from "./roles.js";
 import { writeAudit } from "./audit.js";
 
 /**
@@ -68,13 +69,17 @@ function logInviteEmail(email: string, token: string, url: string) {
 }
 
 function toPublic(row: typeof usersTable.$inferSelect): PublicUser {
+  const roles = parseRoles(row.roles);
+  const primaryRole = row.primaryRole as Role;
   return {
     id: row.id,
     name: row.name,
     email: row.email,
     emailVerified: row.emailVerified,
     image: row.image,
-    role: row.role,
+    role: primaryRole,
+    roles,
+    primaryRole,
     managerId: row.managerId,
     department: row.department,
     costCenter: row.costCenter,
@@ -144,7 +149,8 @@ export async function createInviteForUser(
         email,
         emailVerified: false,
         image: null,
-        role,
+        roles: serializeRoles([role]),
+        primaryRole: role,
         managerId,
         department: input.department ?? null,
         costCenter: input.costCenter ?? null,
@@ -258,7 +264,7 @@ export function getInviteDetails(db: DB, token: string): InviteDetails {
   return {
     email: user.email,
     name: user.name,
-    role: user.role,
+    role: user.primaryRole as Role,
     managerId: user.managerId,
     department: user.department,
     costCenter: user.costCenter,

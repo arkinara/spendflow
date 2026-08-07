@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { Auth } from "./auth/index.js";
-import { dataScopeFor, requireRole, requireUser } from "./auth/permissions.js";
+import { dataScopeFor, requireAnyRole, requireUser } from "./auth/permissions.js";
 import type { DB } from "./db/index.js";
 import type { Env } from "./config.js";
 import {
@@ -146,12 +146,12 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   /* ---------------------------------------------------- admin: users ------ */
 
   app.get("/api/admin/users", async (c) => {
-    await requireRole(auth, c.req.raw.headers, "finance");
+    await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     return c.json({ users: listUsers(db) });
   });
 
   app.patch("/api/admin/users/:id/role", async (c) => {
-    const actor = await requireRole(auth, c.req.raw.headers, "finance");
+    const actor = await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     const body = await c.req.json().catch(() => ({}));
     const parsed = roleSchema.safeParse(body.role ?? body);
     if (!parsed.success) {
@@ -168,7 +168,7 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   });
 
   app.patch("/api/admin/users/:id/manager", async (c) => {
-    const actor = await requireRole(auth, c.req.raw.headers, "finance");
+    const actor = await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     const body = await c.req.json().catch(() => ({}));
     const parsed = setManagerSchema.safeParse(body);
     if (!parsed.success) {
@@ -189,7 +189,7 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   });
 
   app.get("/api/admin/users/:id/audit", async (c) => {
-    await requireRole(auth, c.req.raw.headers, "finance");
+    await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     const entries = auditForEntity(db, "user", c.req.param("id"));
     return c.json({ entries });
   });

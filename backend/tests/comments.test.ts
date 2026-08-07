@@ -41,6 +41,7 @@ beforeEach(async () => {
     email: OUTSIDER.email,
     password: DEMO.password,
     role: "employee",
+    roles: ["employee"],
     managerId: null,
     department: "Unrelated",
   });

@@ -100,7 +100,7 @@ export function listCommentAuthors(
   const ids = claimParticipantIds(db, claim);
   if (ids.length === 0) return [];
   return db
-    .select({ id: usersTable.id, name: usersTable.name, role: usersTable.role })
+    .select({ id: usersTable.id, name: usersTable.name, role: usersTable.primaryRole })
     .from(usersTable)
     .where(inArray(usersTable.id, ids))
     .all();

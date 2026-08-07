@@ -115,7 +115,7 @@ export function claimsRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     const claim = getClaim(deps.db, c.req.param("id"));
     if (!claim) return jsonError(c, 404, "not_found", "Claim not found");
     const allowed =
-      claim.employeeId === ctx.user.id || ctx.user.role === "finance";
+      claim.employeeId === ctx.user.id || ctx.user.roles.includes("finance");
     if (!allowed) {
       return jsonError(c, 403, "forbidden", "Not allowed to view this claim");
     }

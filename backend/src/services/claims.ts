@@ -22,6 +22,7 @@ import {
 import type { DB } from "../db/index.js";
 import { writeAudit } from "./audit.js";
 import { writeNotification } from "./notifications.js";
+import { parseRoles } from "./roles.js";
 import {
   evaluateClaim,
   type ClaimPolicySummary,
@@ -761,8 +762,8 @@ function notifyFirstApprover(
     const financeUsers = db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.role, "finance"))
-      .all();
+      .all()
+      .filter((u) => parseRoles(u.roles).includes("finance"));
     for (const fu of financeUsers) {
       writeNotification(db, {
         recipientId: fu.id,

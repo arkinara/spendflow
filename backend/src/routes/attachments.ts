@@ -69,7 +69,7 @@ export function attachmentRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     const { row, bytes } = await resolveAttachmentForDownload(
       deps.db,
       c.req.param("id"),
-      { id: ctx.user.id, role: ctx.user.role },
+      { id: ctx.user.id, roles: ctx.user.roles },
       { uploadsDirOverride: deps.env.uploadsDir ?? null }
     );
     return new Response(bytes, {

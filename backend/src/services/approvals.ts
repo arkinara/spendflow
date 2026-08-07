@@ -25,6 +25,8 @@ import {
   type RoutingStep,
 } from "./approval-engine.js";
 import { loadApprovalRoutes } from "./config.js";
+import { parseRoles } from "./roles.js";
+import type { Role } from "../types.js";
 import {
   loadClaimOrThrow,
   toClaimRow,
@@ -88,7 +90,7 @@ export interface ApproverClaimDetail extends ClaimRow {
 function inboxStepCandidates(
   db: DB,
   userId: string,
-  role: string
+  roles: Role[]
 ): { specificStepIds: string[]; asFinance: boolean } {
   const specific = db
     .select({ id: approvalStepsTable.id })
@@ -96,7 +98,7 @@ function inboxStepCandidates(
     .where(eq(approvalStepsTable.approverId, userId))
     .all()
     .map((r) => r.id);
-  return { specificStepIds: specific, asFinance: role === "finance" };
+  return { specificStepIds: specific, asFinance: roles.includes("finance") };
 }
 
 /**
@@ -107,7 +109,7 @@ function inboxStepCandidates(
 export function approverInbox(
   db: DB,
   approverId: string,
-  approverRole: string,
+  approverRoles: Role[],
   opts: { sortBy?: "submitted_at" | "amount"; sortDir?: "asc" | "desc" } = {}
 ): InboxItem[] {
   const { sortBy = "submitted_at", sortDir = "desc" } = opts;
@@ -120,7 +122,7 @@ export function approverInbox(
   const { specificStepIds, asFinance } = inboxStepCandidates(
     db,
     approverId,
-    approverRole
+    approverRoles
   );
 
   const out: InboxItem[] = [];
@@ -197,7 +199,7 @@ export function approverInbox(
 export function getApproverClaimDetail(
   db: DB,
   approverId: string,
-  approverRole: string,
+  approverRoles: Role[],
   claimId: string
 ): ApproverClaimDetail {
   const claim = loadClaimOrThrow(db, claimId);
@@ -215,8 +217,8 @@ export function getApproverClaimDetail(
   const currentStep = steps[claim.currentStepIndex] ?? null;
 
   // Approver must be permitted to view a claim at their step (or be finance).
-  const permitted = canDecideStep(db, approverId, approverRole, claim.employeeId, currentStep) ||
-    approverRole === "finance";
+  const permitted = canDecideStep(db, approverId, approverRoles, claim.employeeId, currentStep) ||
+    approverRoles.includes("finance");
   if (!permitted) {
     throw new ApprovalError(403, "forbidden", "This claim is not at your step");
   }
@@ -232,7 +234,7 @@ export function getApproverClaimDetail(
 function canDecideStep(
   db: DB,
   approverId: string,
-  approverRole: string,
+  approverRoles: Role[],
   employeeId: string,
   step: RoutingStep | null
 ): boolean {
@@ -241,7 +243,7 @@ function canDecideStep(
     step,
     managerOf(db, employeeId)
   );
-  if (requiresFinanceRole) return approverRole === "finance";
+  if (requiresFinanceRole) return approverRoles.includes("finance");
   return userIds.includes(approverId);
 }
 
@@ -264,7 +266,7 @@ function managerOf(db: DB, employeeId: string): string | null {
 export function recordDecision(
   db: DB,
   approverId: string,
-  approverRole: string,
+  approverRoles: Role[],
   claimId: string,
   input: DecisionInput
 ): {
@@ -313,7 +315,7 @@ export function recordDecision(
       );
     }
 
-    if (!canDecideStepTx(tx, approverId, approverRole, claim.employeeId, currentStep)) {
+    if (!canDecideStepTx(tx, approverId, approverRoles, claim.employeeId, currentStep)) {
       throw new ApprovalError(
         409,
         "stale_decision",
@@ -464,7 +466,7 @@ function toClaimRowTx(db: DB, id: string): ClaimRow {
 function canDecideStepTx(
   db: DB,
   approverId: string,
-  approverRole: string,
+  approverRoles: Role[],
   employeeId: string,
   step: RoutingStep
 ): boolean {
@@ -472,7 +474,7 @@ function canDecideStepTx(
     step,
     managerOfTx(db, employeeId)
   );
-  if (requiresFinanceRole) return approverRole === "finance";
+  if (requiresFinanceRole) return approverRoles.includes("finance");
   return userIds.includes(approverId);
 }
 
@@ -494,8 +496,8 @@ function notifyFinance(
   const financeUsers = db
     .select()
     .from(usersTable)
-    .where(eq(usersTable.role, "finance"))
-    .all();
+    .all()
+    .filter((u) => parseRoles(u.roles).includes("finance"));
   for (const fu of financeUsers) {
     writeNotification(db, {
       recipientId: fu.id,
@@ -521,8 +523,8 @@ function notifyNextApprover(
     ? db
         .select()
         .from(usersTable)
-        .where(eq(usersTable.role, "finance"))
         .all()
+        .filter((u) => parseRoles(u.roles).includes("finance"))
         .map((u) => u.id)
     : userIds;
   for (const rid of recipients) {

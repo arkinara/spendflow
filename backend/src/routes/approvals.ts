@@ -14,7 +14,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { Auth } from "../auth/index.js";
-import { AuthError, requireUser } from "../auth/permissions.js";
+import { AuthError, requireAnyRole } from "../auth/permissions.js";
 import type { DB } from "../db/index.js";
 import type { Env } from "../config.js";
 import {
@@ -34,26 +34,26 @@ export function approvalRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
   const router = new Hono();
 
   router.get("/api/approver/inbox", async (c) => {
-    const ctx = await requireUser(deps.auth, c.req.raw.headers);
+    const ctx = await requireAnyRole(deps.auth, c.req.raw.headers, ["approver", "finance"]);
     const sortBy = (c.req.query("sort_by") as "submitted_at" | "amount" | undefined) ?? "submitted_at";
     const sortDir = (c.req.query("sort_dir") as "asc" | "desc" | undefined) ?? "desc";
-    const items = approverInbox(deps.db, ctx.user.id, ctx.user.role, { sortBy, sortDir });
+    const items = approverInbox(deps.db, ctx.user.id, ctx.user.roles, { sortBy, sortDir });
     return c.json({ items });
   });
 
   router.get("/api/approver/claims/:id", async (c) => {
-    const ctx = await requireUser(deps.auth, c.req.raw.headers);
+    const ctx = await requireAnyRole(deps.auth, c.req.raw.headers, ["approver", "finance"]);
     const detail = getApproverClaimDetail(
       deps.db,
       ctx.user.id,
-      ctx.user.role,
+      ctx.user.roles,
       c.req.param("id")
     );
     return c.json({ claim: detail });
   });
 
   router.post("/api/approver/claims/:id/decisions", async (c) => {
-    const ctx = await requireUser(deps.auth, c.req.raw.headers);
+    const ctx = await requireAnyRole(deps.auth, c.req.raw.headers, ["approver", "finance"]);
     const body = await c.req.json().catch(() => ({}));
     const parsed = decisionSchema.safeParse(body);
     if (!parsed.success) {
@@ -62,7 +62,7 @@ export function approvalRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     const result = recordDecision(
       deps.db,
       ctx.user.id,
-      ctx.user.role,
+      ctx.user.roles,
       c.req.param("id"),
       parsed.data
     );

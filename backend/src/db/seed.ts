@@ -26,6 +26,7 @@ const SEED_USERS: Array<{
   name: string;
   email: string;
   role: Role;
+  roles: Role[];
   managerId?: string;
   department?: string;
 }> = [
@@ -34,6 +35,7 @@ const SEED_USERS: Array<{
     name: "Dewi Anggraeni",
     email: "dewi.anggraeni@spendflow.example",
     role: "approver",
+    roles: ["approver"],
     department: "Operations",
   },
   {
@@ -41,6 +43,7 @@ const SEED_USERS: Array<{
     name: "Aulia Pratiwi",
     email: "aulia.pratiwi@spendflow.example",
     role: "employee",
+    roles: ["employee"],
     managerId: "u-mgr-1",
     department: "Operations",
   },
@@ -49,6 +52,7 @@ const SEED_USERS: Array<{
     name: "Ridwan Saputra",
     email: "ridwan.saputra@spendflow.example",
     role: "finance",
+    roles: ["finance"],
     department: "Finance",
   },
 ];
@@ -158,6 +162,7 @@ async function main() {
       email: u.email,
       password: SEED_PASSWORD,
       role: u.role,
+      roles: u.roles,
       managerId: u.managerId ?? null,
       department: u.department ?? null,
     });

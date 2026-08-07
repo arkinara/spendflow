@@ -36,6 +36,13 @@
       "when": 1786011664798,
       "tag": "0004_pending_status",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786083748377,
+      "tag": "0005_multirole",
+      "breakpoints": true
     }
   ]
 }

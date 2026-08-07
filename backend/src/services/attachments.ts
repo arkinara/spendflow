@@ -20,6 +20,7 @@ import {
   usersTable,
 } from "../db/schema.js";
 import type { DB } from "../db/index.js";
+import type { Role } from "../types.js";
 import { writeAudit } from "./audit.js";
 import { getOwnedClaim, ClaimError } from "./claims.js";
 
@@ -240,7 +241,7 @@ export async function storeAttachment(
 export async function resolveAttachmentForDownload(
   db: DB,
   attachmentId: string,
-  viewer: { id: string; role: string },
+  viewer: { id: string; roles: Role[] },
   opts: { uploadsDirOverride?: string | null } = {}
 ): Promise<{ row: StoredAttachment; absPath: string; bytes: Buffer }> {
   const row = db
@@ -274,7 +275,7 @@ export async function resolveAttachmentForDownload(
 
   const allowed =
     claim.employeeId === viewer.id ||
-    viewer.role === "finance" ||
+    viewer.roles.includes("finance") ||
     isCurrentApprover(db, claim, viewer.id);
   if (!allowed) {
     throw new AttachmentError(

@@ -13,7 +13,10 @@ export interface PublicUser {
   email: string;
   emailVerified: boolean;
   image: string | null;
+  /** Single-role compat view — the derived primary role (#44). */
   role: Role;
+  roles: Role[];
+  primaryRole: Role;
   managerId: string | null;
   department: string | null;
   costCenter: string | null;

@@ -80,6 +80,7 @@ describe("POST /api/admin/users/:id/delete", () => {
       email: "disabled@spendflow.example",
       password: DEMO.password,
       role: "employee",
+      roles: ["employee"],
       status: "disabled",
     });
     const res = await deleteUser(cookie, "u-disabled", DEMO.password);
