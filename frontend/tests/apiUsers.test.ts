@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   listUsers,
   changeUserRole,
+  changeUserRoles,
   setUserManager,
   bulkChangeRole,
   deactivate,
@@ -125,7 +126,7 @@ describe("changeUserRole", () => {
     expect(url).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
     expect(init).toMatchObject({ method: "PATCH", credentials: "include" });
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      role: "approver",
+      roles: ["approver"],
       status: "active",
     });
     expect(result.role).toBe("approver");
@@ -136,7 +137,6 @@ describe("changeUserRole", () => {
     await changeUserRole("u/slash", "finance");
     expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/users/u%2Fslash/role`);
   });
-
   it("throws a 400 invalid_role typed error", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(400, {
@@ -173,6 +173,42 @@ describe("changeUserRole", () => {
     expect(result.role).toBe("approver");
     expect(result.primaryRole).toBe("approver");
     expect(result.roles).toEqual(["approver", "employee"]);
+  });
+});
+
+describe("changeUserRoles (#53)", () => {
+  it("PATCHes the full roles array and returns the updated user", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        user: backendUser({
+          role: "approver",
+          roles: ["employee", "approver"],
+          primaryRole: "approver",
+        }),
+        audit: {},
+      }),
+    );
+    const result = await changeUserRoles("u-emp-1", ["employee", "approver"]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
+    expect(init).toMatchObject({ method: "PATCH", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      roles: ["employee", "approver"],
+      status: "active",
+    });
+    expect(result.roles).toEqual(["employee", "approver"]);
+    expect(result.primaryRole).toBe("approver");
+  });
+
+  it("sends an empty array verbatim so the BE can 400 it (never coerced client-side)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(400, {
+        error: { code: "invalid_body", message: "roles must contain at least one role" },
+      }),
+    );
+    const err = await changeUserRoles("u-emp-1", []).catch((e) => e);
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect((err as UsersApiError).code).toBe("invalid_body");
   });
 });
 
@@ -292,7 +328,7 @@ describe("deactivate / reactivate (#33)", () => {
     const [patchUrl, init] = fetchMock.mock.calls[1];
     expect(patchUrl).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      role: "employee",
+      roles: ["employee"],
       status: "disabled",
     });
     expect(result.status).toBe("disabled");
@@ -308,7 +344,7 @@ describe("deactivate / reactivate (#33)", () => {
     const [patchUrl, init] = fetchMock.mock.calls[1];
     expect(patchUrl).toBe(`${BE_URL}/api/admin/users/u-emp-1/role`);
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      role: "employee",
+      roles: ["employee"],
       status: "active",
     });
     // The BE doesn't persist the flag; the client reconciles the response.
@@ -330,7 +366,7 @@ describe("deactivate / reactivate (#33)", () => {
 
     const [, init] = fetchMock.mock.calls[1];
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      role: "finance",
+      roles: ["finance"],
       status: "disabled",
     });
     expect(result.role).toBe("finance");

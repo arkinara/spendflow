@@ -49,6 +49,7 @@ vi.mock("next/link", () => ({
 const usersMocks = vi.hoisted(() => ({
   listUsers: vi.fn(),
   changeUserRole: vi.fn(),
+  changeUserRoles: vi.fn(),
   setUserManager: vi.fn(),
   bulkChangeRole: vi.fn(),
   deactivate: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     BulkPartialFailureError: actual.BulkPartialFailureError,
     listUsers: usersMocks.listUsers,
     changeUserRole: usersMocks.changeUserRole,
+    changeUserRoles: usersMocks.changeUserRoles,
     setUserManager: usersMocks.setUserManager,
     bulkChangeRole: usersMocks.bulkChangeRole,
     deactivate: usersMocks.deactivate,
@@ -210,6 +212,15 @@ async function pickOption(dialog: HTMLElement, selectLabel: RegExp, optionLabel:
   fireEvent.click(within(option).getByRole("button"));
 }
 
+/** Toggle a RolesMultiSelect chip (#53). Each chip carries an aria-label of
+ *  "Label selected" / "Label not selected" from its aria-pressed state. */
+function toggleRole(dialog: HTMLElement, roleLabel: string, currentlySelected: boolean) {
+  const chip = within(dialog).getByRole("button", {
+    name: new RegExp(`^${roleLabel} ${currentlySelected ? "selected" : "not selected"}$`, "i"),
+  });
+  fireEvent.click(chip);
+}
+
 beforeEach(() => {
   localStorage.clear();
   seedFinance();
@@ -218,6 +229,7 @@ beforeEach(() => {
   navMocks.search = "";
   usersMocks.listUsers.mockReset();
   usersMocks.changeUserRole.mockReset();
+  usersMocks.changeUserRoles.mockReset();
   usersMocks.setUserManager.mockReset();
   usersMocks.bulkChangeRole.mockReset();
   usersMocks.deactivate.mockReset();
@@ -283,28 +295,100 @@ describe("User directory — list render", () => {
     renderPage();
     expect(await screen.findByText(/no users yet/i)).toBeInTheDocument();
   });
+
+  it("renders every role as a chip for multi-role users (single-role rows keep one pill)", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      FINANCE,
+      backendUser({
+        id: "u-multi",
+        name: "Hana Permata",
+        email: "hana.permata@spendflow.example",
+        role: "finance",
+        roles: ["employee", "approver", "finance"],
+        primaryRole: "finance",
+        managerId: null,
+      }),
+    ]);
+    renderPage();
+    await waitForReady(/Hana Permata/);
+
+    // All three roles render as a chip group in the row's Role column (#53).
+    const row = rowFor("Hana Permata");
+    for (const label of ["Employee", "Approver", "Finance Admin"]) {
+      expect(within(row).getByText(label)).toBeInTheDocument();
+    }
+    // A legacy user without `roles` still renders exactly one pill (back-compat).
+    expect(within(rowFor("Ridwan Saputra")).getAllByText("Finance Admin")).toHaveLength(1);
+  });
 });
 
 describe("User directory — role change dialog", () => {
   it("changes a role, closes the dialog, and refreshes the list", async () => {
     renderPage();
     await waitForReady(/Aulia Pratiwi/);
-    const rows = screen.getAllByRole("button", { name: /^change role/i });
-    fireEvent.click(rows[0]);
+    fireEvent.click(within(rowFor("Aulia Pratiwi")).getByRole("button", { name: /change role/i }));
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("heading", { name: /change role/i })).toBeInTheDocument();
     expect(within(dialog).getByText(/their current role is/i)).toBeInTheDocument();
 
-    await pickOption(dialog, /new role/i, /approver/i);
+    // Chip multi-select (#53): Aulia starts as an employee-only row, so the
+    // Employee chip is selected. Add Approver, then drop Employee → the submit
+    // fires the multi-role changeUserRoles with exactly ["approver"].
+    toggleRole(dialog, "Approver", false);
+    toggleRole(dialog, "Employee", true);
     fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
 
     await waitFor(() =>
-      expect(usersMocks.changeUserRole).toHaveBeenCalledWith(expect.any(String), "approver")
+      expect(usersMocks.changeUserRoles).toHaveBeenCalledWith("u-emp-1", ["approver"])
     );
     // The list refreshes automatically after the mutation.
     await waitFor(() => expect(usersMocks.listUsers).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("pre-fills the chips from a multi-role user and submits the full set", async () => {
+    usersMocks.listUsers.mockResolvedValue([
+      FINANCE,
+      backendUser({
+        id: "u-multi",
+        name: "Hana Permata",
+        email: "hana.permata@spendflow.example",
+        role: "approver",
+        roles: ["employee", "approver"],
+        primaryRole: "approver",
+        managerId: null,
+      }),
+    ]);
+    renderPage();
+    await waitForReady(/Hana Permata/);
+
+    const row = rowFor("Hana Permata");
+    fireEvent.click(within(row).getByRole("button", { name: /change role/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    // Both held roles pre-checked as chips.
+    expect(within(dialog).getByRole("button", { name: /^employee selected$/i })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(within(dialog).getByRole("button", { name: /^approver selected$/i })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(within(dialog).getByRole("button", { name: /^finance admin not selected$/i })).toBeInTheDocument();
+
+    // Add finance → 3 roles submitted as one array.
+    toggleRole(dialog, "Finance Admin", false);
+    fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
+
+    await waitFor(() =>
+      expect(usersMocks.changeUserRoles).toHaveBeenCalledWith("u-multi", [
+        "employee",
+        "approver",
+        "finance",
+      ])
+    );
   });
 });
 
@@ -1162,7 +1246,7 @@ describe("User directory — 403 access denied", () => {
   });
 
   it("a 403 on a mutation renders the denied panel", async () => {
-    usersMocks.changeUserRole.mockRejectedValue(
+    usersMocks.changeUserRoles.mockRejectedValue(
       new UsersApiError(403, "forbidden", "Finance admins only."),
     );
     renderPage();
@@ -1171,7 +1255,7 @@ describe("User directory — 403 access denied", () => {
     const row = rowFor("Aulia Pratiwi");
     fireEvent.click(within(row).getByRole("button", { name: /change role/i }));
     const dialog = await screen.findByRole("dialog");
-    await pickOption(dialog, /new role/i, /approver/i);
+    toggleRole(dialog, "Approver", false);
     fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
 
     expect(
@@ -1354,7 +1438,9 @@ describe("User directory — Add User dialog", () => {
     fireEvent.change(within(dialog).getByLabelText(/name/i), {
       target: { value: "Citra Lestari" },
     });
-    await pickOption(dialog, /role/i, /approver/i);
+    // Chip multi-select (#53): default is employee; swap it for approver.
+    toggleRole(dialog, "Approver", false);
+    toggleRole(dialog, "Employee", true);
     fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
 
     await waitFor(() =>
@@ -1362,10 +1448,12 @@ describe("User directory — Add User dialog", () => {
         expect.objectContaining({
           email: "citra.lestari@spendflow.example",
           name: "Citra Lestari",
-          role: "approver",
+          roles: ["approver"],
         })
       )
     );
+    // The legacy single-role `role` field is no longer sent (#53).
+    expect(usersMocks.createUser.mock.calls[0][0]).not.toHaveProperty("role");
 
     // Success → dialog closes + success toast.
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -1376,6 +1464,88 @@ describe("User directory — Add User dialog", () => {
     await waitFor(() => expect(queryRow("Citra Lestari")).not.toBeNull());
     expect(within(rowFor("Citra Lestari")).getByText("Pending")).toBeInTheDocument();
     expect(usersMocks.listUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults to the employee role when no chips are toggled", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    await waitFor(() =>
+      expect(usersMocks.createUser).toHaveBeenCalledWith(
+        expect.objectContaining({ roles: ["employee"] })
+      )
+    );
+    expect(usersMocks.createUser.mock.calls[0][0]).not.toHaveProperty("role");
+  });
+
+  it("derives the primaryRole preview as chips are toggled (#53)", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    // Single role: no primary-role dropdown is shown yet.
+    expect(within(dialog).queryByLabelText(/primary role/i)).not.toBeInTheDocument();
+
+    // Approver on → 2 roles → dropdown appears, derived to the highest
+    // privilege so far (approver).
+    toggleRole(dialog, "Approver", false);
+    expect(
+      within(dialog).getByLabelText(/primary role/i)
+    ).toHaveTextContent("Approver");
+
+    // Finance on → derived primary bumps to Finance Admin.
+    toggleRole(dialog, "Finance Admin", false);
+    expect(
+      within(dialog).getByLabelText(/primary role/i)
+    ).toHaveTextContent("Finance Admin");
+
+    // Dropping finance reverts to the next-highest (approver).
+    toggleRole(dialog, "Finance Admin", true);
+    expect(
+      within(dialog).getByLabelText(/primary role/i)
+    ).toHaveTextContent("Approver");
+  });
+
+  it("accepts a multi-role selection and submits the full roles array", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    // Default: only the employee chip is checked.
+    expect(
+      within(dialog).getByRole("button", { name: /^employee selected$/i })
+    ).toHaveAttribute("aria-pressed", "true");
+
+    toggleRole(dialog, "Approver", false);
+    toggleRole(dialog, "Finance Admin", false);
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    await waitFor(() =>
+      expect(usersMocks.createUser).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: "citra.lestari@spendflow.example",
+          name: "Citra Lestari",
+          roles: ["employee", "approver", "finance"],
+        })
+      )
+    );
+    expect(usersMocks.createUser.mock.calls[0][0]).not.toHaveProperty("role");
   });
 
   it("surfaces a BE 409 email_exists inline and keeps the dialog open", async () => {

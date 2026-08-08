@@ -59,6 +59,7 @@ import { Select } from "@/components/ui/Select";
 import { TextArea } from "@/components/ui/TextArea";
 import { TextField } from "@/components/ui/TextField";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { RolesMultiSelect } from "@/components/ui/RolesMultiSelect";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
@@ -66,7 +67,7 @@ import { useSnackbar } from "@/components/ui/Snackbar";
 import { useRole } from "@/lib/auth/session";
 import { useUsers, useUserAudit } from "@/lib/hooks/useUsers";
 import {
-  changeUserRole,
+  changeUserRoles,
   setUserManager,
   UsersApiError,
   BulkPartialFailureError,
@@ -228,6 +229,22 @@ function RolePill({ role }: { role: Role }) {
     >
       {ROLE_LABEL[role]}
     </span>
+  );
+}
+
+/** Row display for a user's full role set (#53). `BackendUser.roles` is
+ *  optional on the wire type (the BE emits it from #44 onward; older mocks
+ *  only carry `role`), so it falls back to the single-role compat field.
+ *  Multi-role users render one chip per role; single-role users render the
+ *  same pill as before. */
+function RolesCell({ user }: { user: BackendUser }) {
+  const roles = user.roles ?? [user.role];
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {roles.map((r) => (
+        <RolePill key={r} role={r} />
+      ))}
+    </div>
   );
 }
 
@@ -617,9 +634,12 @@ function UsersTab({
     clearSelection();
   }
 
-  async function handleRoleSaved(target: BackendUser, newRole: Role) {
-    await changeUserRole(target.id, newRole);
-    show(`Role for ${target.name} changed to ${ROLE_LABEL[newRole]}.`, { tone: "success" });
+  async function handleRoleSaved(target: BackendUser, newRoles: Role[]) {
+    await changeUserRoles(target.id, newRoles);
+    show(
+      `Roles for ${target.name} changed to ${newRoles.map((r) => ROLE_LABEL[r]).join(", ")}.`,
+      { tone: "success" }
+    );
     setRoleTarget(null);
     refresh();
   }
@@ -783,7 +803,7 @@ function UsersTab({
                 header: "Role",
                 sortable: true,
                 sortValue: (u) => u.role,
-                render: (u) => <RolePill role={u.role} />,
+                render: (u) => <RolesCell user={u} />,
               },
               {
                 key: "status",
@@ -1182,16 +1202,16 @@ function RoleChangeDialog({
   open: boolean;
   target: BackendUser | null;
   onClose: () => void;
-  onSaved: (target: BackendUser, newRole: Role) => Promise<void>;
+  onSaved: (target: BackendUser, newRoles: Role[]) => Promise<void>;
   onForbidden: () => void;
 }) {
-  const [role, setRole] = React.useState<Role>("employee");
+  const [roles, setRoles] = React.useState<Role[]>(["employee"]);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (open && target) {
-      setRole(target.role);
+      setRoles(target.roles ?? [target.role]);
       setFormError(null);
       setSubmitting(false);
     }
@@ -1202,19 +1222,23 @@ function RoleChangeDialog({
     setFormError(null);
     setSubmitting(true);
     try {
-      await onSaved(target, role);
+      await onSaved(target, roles);
     } catch (err) {
       if (err instanceof UsersApiError && err.status === 403) {
         onForbidden();
         return;
       }
       setFormError(
-        err instanceof Error ? err.message : "Could not change the role. Check your connection and try again."
+        err instanceof Error ? err.message : "Could not change the roles. Check your connection and try again."
       );
     } finally {
       setSubmitting(false);
     }
   }
+
+  const currentRoles = target
+    ? (target.roles ?? [target.role]).map((r) => ROLE_LABEL[r]).join(", ")
+    : "";
 
   return (
     <Dialog
@@ -1223,7 +1247,7 @@ function RoleChangeDialog({
       title="Change role"
       description={
         target
-          ? `Change ${target.name}'s role. Their current role is ${ROLE_LABEL[target.role]}.`
+          ? `Change ${target.name}'s roles. Their current role is ${currentRoles}.`
           : ""
       }
       icon={
@@ -1244,12 +1268,11 @@ function RoleChangeDialog({
     >
       <div className="space-y-4">
         {formError && <FormErrorBanner message={formError} />}
-        <Select
-          label="New role"
+        <RolesMultiSelect
+          label="Roles"
           required
-          options={ROLE_OPTIONS}
-          value={role}
-          onChange={(v) => setRole(v as Role)}
+          roles={roles}
+          onChange={setRoles}
         />
       </div>
     </Dialog>
@@ -1418,7 +1441,7 @@ function AddUserDialog({
 }) {
   const [email, setEmail] = React.useState("");
   const [name, setName] = React.useState("");
-  const [role, setRole] = React.useState<Role>("employee");
+  const [roles, setRoles] = React.useState<Role[]>(["employee"]);
   const [managerId, setManagerId] = React.useState("");
   const [department, setDepartment] = React.useState("");
   const [jobTitle, setJobTitle] = React.useState("");
@@ -1429,7 +1452,7 @@ function AddUserDialog({
     if (open) {
       setEmail("");
       setName("");
-      setRole("employee");
+      setRoles(["employee"]);
       setManagerId("");
       setDepartment("");
       setJobTitle("");
@@ -1464,7 +1487,7 @@ function AddUserDialog({
       await createUser({
         email: trimmedEmail,
         name: trimmedName,
-        role,
+        roles,
         managerId: managerId === "" ? undefined : managerId,
         department: department.trim() || undefined,
         jobTitle: jobTitle.trim() || undefined,
@@ -1537,14 +1560,13 @@ function AddUserDialog({
           autoComplete="off"
           required
         />
+        <RolesMultiSelect
+          label="Roles"
+          required
+          roles={roles}
+          onChange={setRoles}
+        />
         <div className="grid gap-4 sm:grid-cols-2">
-          <Select
-            label="Role"
-            required
-            options={ROLE_OPTIONS}
-            value={role}
-            onChange={(v) => setRole(v as Role)}
-          />
           <Select
             label="Manager"
             options={managerOptions}
