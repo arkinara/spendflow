@@ -100,6 +100,33 @@ There are three ways to change the active role:
 The **theme toggle** (sun/moon icon in the app bar) switches light/dark; the choice is
 remembered in `localStorage` (`spendflow.theme`).
 
+## Multi-role sessions (#45)
+
+A signed-in user may hold more than one role. The session payload (hydrated
+from `GET /api/me` into the `SessionProvider`) carries:
+
+- **`roles`** — the full role set, e.g. `["employee","approver"]`.
+- **`primaryRole`** — the derived single role (`finance` > `approver` >
+  `employee`); drives the post-login landing target and the deny-redirect home.
+
+Behaviour:
+
+- **Navigation (`getNavItems`)** concatenates each held role's section, leading
+  with the `primaryRole`'s section, then any additional roles in a stable
+  canonical order. Entries are de-duplicated by `href`, so a link shared
+  between roles never appears twice. An empty `roles` list yields no nav
+  entries (and the guard bounces the session to `/login`).
+- **Route guard (`<RouteGuard>`)** admits when **any** held role intersects the
+  route's allow-list. A denied route redirects to `ROLE_HOME[primaryRole]`
+  (never a bare/broken page). A session whose `primaryRole` is not in `roles`,
+  or whose `roles` is empty, is treated as invalid and sent to `/login` rather
+  than silently let through.
+- **`canAccess(roles, pathname)`** mirrors the guard for non-React call sites.
+
+This means an `employee + approver` user can walk between `/employee/*` and
+`/approver/*` in a single session without re-authenticating, but is still
+denied `/finance/*` until `finance` is added to their role set.
+
 ## Navigation map
 
 ```

@@ -191,3 +191,77 @@ describe("RouteGuard multi-role access (#45)", () => {
     });
   });
 });
+
+describe("RouteGuard cross-role flows (#47)", () => {
+  it("a triple-role user reaches employee, approver, and finance sections in one session", async () => {
+    seed("employee", {
+      roles: ["employee", "approver", "finance"],
+      primaryRole: "employee",
+    });
+
+    // Employee section: initial render renders content.
+    mocks.pathname = "/employee";
+    const { rerender } = renderGuard(["employee"]);
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+
+    // Approver section: same session, rerender against the approver allow-list.
+    mocks.pathname = "/approver";
+    rerender(
+      <ThemeProvider>
+        <SessionProvider>
+          <SnackbarProvider>
+            <RouteGuard allowedRoles={["approver"]}>
+              <div>SECRET CONTENT</div>
+            </RouteGuard>
+          </SnackbarProvider>
+        </SessionProvider>
+      </ThemeProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+
+    // Finance section: same session again — all three reachable, no redirect.
+    mocks.pathname = "/finance/payments";
+    rerender(
+      <ThemeProvider>
+        <SessionProvider>
+          <SnackbarProvider>
+            <RouteGuard allowedRoles={["finance"]}>
+              <div>SECRET CONTENT</div>
+            </RouteGuard>
+          </SnackbarProvider>
+        </SessionProvider>
+      </ThemeProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+    expect(mocks.replace).not.toHaveBeenCalled();
+  });
+
+  it("cross-role deny: [employee, approver] primaryRole approver denied /finance → approver home", async () => {
+    // Holds employee + approver; finance is NOT held. Deny target must be the
+    // primaryRole (approver) home, not the other held role's home.
+    seed("approver", { roles: ["employee", "approver"], primaryRole: "approver" });
+    mocks.pathname = "/finance";
+    renderGuard(["finance"]);
+    await waitFor(() => {
+      expect(mocks.replace).toHaveBeenCalledWith("/approver");
+    });
+    expect(screen.queryByText("SECRET CONTENT")).not.toBeInTheDocument();
+  });
+
+  it("primaryRole swap within a held set changes the deny redirect target", async () => {
+    // Same held set [employee, approver], but primaryRole = employee this time:
+    // denied on /finance, redirect lands on /employee (the primary home).
+    seed("employee", { roles: ["employee", "approver"], primaryRole: "employee" });
+    mocks.pathname = "/finance";
+    renderGuard(["finance"]);
+    await waitFor(() => {
+      expect(mocks.replace).toHaveBeenCalledWith("/employee");
+    });
+  });
+});

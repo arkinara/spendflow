@@ -124,4 +124,28 @@ describe("getNavItems (multi-role, #45)", () => {
     const exceptions = items.find((i) => i.href === "/finance/exceptions");
     expect(exceptions?.badge).toBe(7);
   });
+
+  it("concatenates Finance + Approver sections when the user holds both (no employee)", () => {
+    const roles: Role[] = ["finance", "approver"];
+    const items = getNavItems(roles, "finance");
+    const hrefs = items.map((i) => i.href);
+    // Finance leads (primary), approver section follows; employee absent.
+    expect(hrefs[0]).toBe("/finance");
+    expect(hrefs).toContain("/approver");
+    expect(hrefs).toContain("/finance/payments");
+    expect(hrefs).not.toContain("/employee");
+    expect(hrefs).not.toContain("/employee/claims");
+  });
+
+  it("the full union of sections is present regardless of which held role is primary", () => {
+    const roles: Role[] = ["employee", "approver", "finance"];
+    for (const primary of roles) {
+      const hrefs = getNavItems(roles, primary).map((i) => i.href);
+      expect(hrefs).toContain("/employee/claims");
+      expect(hrefs).toContain("/approver");
+      expect(hrefs).toContain("/finance/payments");
+      // Leading entry always tracks the chosen primary.
+      expect(hrefs[0]).toBe(`/${primary}`);
+    }
+  });
 });

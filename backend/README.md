@@ -139,6 +139,40 @@ Every role-restricted route handler calls one of these **before** touching data,
 and a denied action returns only an `{ error: { code, message } }` envelope —
 never partial data.
 
+## Multi-role users (#44)
+
+A user may hold more than one role. The data model is:
+
+- **`users.roles`** — a JSON-encoded `text` array, e.g. `["employee","approver"]`.
+  Always non-empty for a real user (the empty default exists only so a fresh
+  insert never violates `NOT NULL`).
+- **`users.primary_role`** — the derived single role, written on every role
+  mutation. Precedence is **`finance` > `approver` > `employee`**. Legacy
+  single-role call sites (and the `role` field on `/api/me`) read this.
+
+`GET /api/me` returns both `roles` (the full set) and `primaryRole` (the
+derived role). Authorisation guards (`requireRole` / `requireAnyRole`) admit
+on any overlap between the caller's `roles[]` and the allowed list, so a user
+holding `["employee","approver"]` passes both the employee and approver
+guards.
+
+**Segregation-of-duties (SoD) guard (#46).** At submission time the resolved
+approval route is walked: if any step would land at the submitter's own desk
+(self-approval), or a `submitter_manager` step can't resolve because the
+submitter has no manager, the claim is written as `blocked_sod` (not
+`pending`) with `blocked_reason` set and an audit entry
+`claim.blocked_sod` whose `after.code` is `self_approval` or `no_manager`.
+`blocked_sod` claims surface in the Finance exception queue. A multi-role
+approver who is also an employee can therefore submit their own claim — it
+flows normally as long as someone else sits at every step.
+
+**Creating a multi-role user.** Multi-role sets are provisioned through the
+`provisionUser({ roles, ... })` service helper (used by the seeder and tests).
+The HTTP admin endpoints (`POST /api/admin/users`, `PATCH
+/api/admin/users/:id/role`) currently accept a single `role` and replace the
+set, so a true multi-role set is a seed/service-time configuration as of #44.
+The `roles[]` column is forward-compatible with a future multi-role admin UI.
+
 ## Schema notes (important)
 
 The `users` table carries the full PRD column set:
