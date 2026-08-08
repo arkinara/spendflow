@@ -63,13 +63,13 @@ describe("users / roles / reporting-line admin API", () => {
     expect(row?.primaryRole).toBe("approver");
     expect(row?.roles).toBe('["approver"]');
 
-    // Audit log captured actor + before/after.
+    // Audit log captured actor + before/after (multi-role shape #53).
     const audit = lastAuditFor(DEMO.employee.id);
     expect(audit).toBeDefined();
     expect(audit.action).toBe("role.change");
     expect(audit.actorId).toBe(DEMO.finance.id);
-    expect(JSON.parse(audit.before)).toEqual({ role: "employee" });
-    expect(JSON.parse(audit.after)).toEqual({ role: "approver" });
+    expect(JSON.parse(audit.before)).toEqual({ roles: ["employee"], primaryRole: "employee" });
+    expect(JSON.parse(audit.after)).toEqual({ roles: ["approver"], primaryRole: "approver" });
   });
 
   it("assigning a manager to an Employee is retrievable via the API and recorded", async () => {

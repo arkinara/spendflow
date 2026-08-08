@@ -20,7 +20,10 @@ export class UserServiceError extends Error {
       | "self_manager"
       | "cycle"
       | "cannot_delete_active_user"
-      | "invalid_password",
+      | "invalid_password"
+      | "cannot_demote_last_finance"
+      | "cannot_remove_only_approver_with_reports"
+      | "cannot_demote_self_sole_finance",
     message: string,
     /** Optional explicit HTTP status; defaults per-code otherwise (400/404). */
     public status?: number
@@ -68,26 +71,100 @@ function loadOrFail(db: DB, id: string) {
   return row;
 }
 
-/** Change a user's role (replaces the role set) and audit before/after. */
-export function changeRole(
+/** Count active users whose derived primary role is `finance`. Multi-role
+ *  users with `finance` in their `roles` array always have `primaryRole =
+ *  "finance"` (derivePrimaryRole precedence), so this filter catches them. */
+function countActiveFinanceAdmins(db: DB): number {
+  return db
+    .select({ id: usersTable.id, status: usersTable.status, primaryRole: usersTable.primaryRole })
+    .from(usersTable)
+    .where(eq(usersTable.primaryRole, "finance"))
+    .all()
+    .filter((r) => r.status === "active").length;
+}
+
+/** Validate a `roles` payload: non-empty array, every entry a known Role.
+ *  Throws `invalid_role` on failure. Returns the deduped array. */
+function normalizeRoles(roles: unknown): Role[] {
+  if (!Array.isArray(roles) || roles.length === 0) {
+    throw new UserServiceError("invalid_role", "Roles must be a non-empty array");
+  }
+  const seen = new Set<Role>();
+  for (const r of roles) {
+    if (!ROLES.includes(r as Role)) {
+      throw new UserServiceError("invalid_role", `Role must be one of: ${ROLES.join(", ")}`);
+    }
+    seen.add(r as Role);
+  }
+  return Array.from(seen);
+}
+
+/**
+ * Replace a user's role set with `newRoles`, enforcing the multi-role
+ * invariants (#53): never empty, never drop the last Finance Admin, never
+ * strip `approver` from a user who still has direct reports, and never let
+ * the sole Finance Admin demote themselves. Audits `role.change` with
+ * before/after `{ roles, primaryRole }` so the multi-role diff is visible.
+ *
+ * Guards fire before any write; a failed guard leaves the row untouched.
+ */
+export function changeRoles(
   db: DB,
   targetId: string,
-  newRole: Role,
+  newRoles: Role[],
   actorId: string
 ): { user: PublicUser; audit: ReturnType<typeof writeAudit> } {
-  if (!ROLES.includes(newRole)) {
-    throw new UserServiceError("invalid_role", `Role must be one of: ${ROLES.join(", ")}`);
-  }
+  const dedupedRoles = normalizeRoles(newRoles);
   const before = loadOrFail(db, targetId);
-  if (before.primaryRole === newRole) {
-    const user = toPublic(before);
-    return { user, audit: noopAudit() };
+  const beforeRoles = parseRoles(before.roles);
+  const beforePrimary = before.primaryRole as Role;
+  const afterPrimary = derivePrimaryRole(dedupedRoles);
+
+  // Guard: cannot strip `approver` from a user who still has direct reports —
+  // their reports' submitter_manager routing would have nowhere to go.
+  if (beforeRoles.includes("approver") && !dedupedRoles.includes("approver")) {
+    const reports = db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.managerId, targetId))
+      .all();
+    if (reports.length > 0) {
+      throw new UserServiceError(
+        "cannot_remove_only_approver_with_reports",
+        `Cannot remove the approver role from a user with ${reports.length} direct report${reports.length === 1 ? "" : "s"}`,
+      );
+    }
   }
+
+  // Guard: cannot drop `finance` from the last active Finance Admin. When the
+  // actor is the sole admin demoting themselves this is also the path that
+  // fires (actor must hold the finance role to reach this route, so the only
+  // reachable "last finance" case is a self-demotion).
+  if (
+    beforeRoles.includes("finance") &&
+    !dedupedRoles.includes("finance") &&
+    countActiveFinanceAdmins(db) <= 1
+  ) {
+    throw new UserServiceError(
+      "cannot_demote_last_finance",
+      "Cannot remove the finance role from the last active Finance Admin",
+    );
+  }
+
+  // Idempotent no-op: same role set (order-independent) → return the row
+  // without writing a no-op audit entry.
+  const same =
+    beforeRoles.length === dedupedRoles.length &&
+    beforeRoles.every((r) => dedupedRoles.includes(r));
+  if (same) {
+    return { user: toPublic(before), audit: noopAudit() };
+  }
+
   const now = new Date();
   db.update(usersTable)
     .set({
-      roles: serializeRoles([newRole]),
-      primaryRole: newRole,
+      roles: serializeRoles(dedupedRoles),
+      primaryRole: afterPrimary,
       updatedAt: now,
     })
     .where(eq(usersTable.id, targetId))
@@ -98,10 +175,23 @@ export function changeRole(
     action: "role.change",
     entityType: "user",
     entityId: targetId,
-    before: { role: before.primaryRole },
-    after: { role: newRole },
+    before: { roles: beforeRoles, primaryRole: beforePrimary },
+    after: { roles: dedupedRoles, primaryRole: afterPrimary },
   });
   return { user: toPublic(afterRow), audit };
+}
+
+/** Legacy single-role wrapper around {@link changeRoles} (#53 back-compat). */
+export function changeRole(
+  db: DB,
+  targetId: string,
+  newRole: Role,
+  actorId: string
+): { user: PublicUser; audit: ReturnType<typeof writeAudit> } {
+  if (!ROLES.includes(newRole)) {
+    throw new UserServiceError("invalid_role", `Role must be one of: ${ROLES.join(", ")}`);
+  }
+  return changeRoles(db, targetId, [newRole], actorId);
 }
 
 /**

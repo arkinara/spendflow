@@ -91,12 +91,16 @@ export interface BackendUser {
   updatedAt: string;
 }
 
-/** Payload for `POST /api/admin/users` (#36) — a Finance Admin provisions a
- *  new user who must still accept their invite before signing in. */
+/** Payload for `POST /api/admin/users` (#36, multi-role #53) — a Finance
+ *  Admin provisions a new user who must still accept their invite before
+ *  signing in. Exactly one of `role` (legacy single-role) or `roles`
+ *  (multi-role) must be present; the BE rejects both-or-neither with 400
+ *  `invalid_body`. */
 export interface CreateUserInput {
   email: string;
   name: string;
-  role: Role;
+  role?: Role;
+  roles?: Role[];
   managerId?: string;
   department?: string;
   jobTitle?: string;
@@ -198,23 +202,39 @@ export async function listUsers(): Promise<BackendUser[]> {
   return body.users;
 }
 
-/** `PATCH /api/admin/users/:id/role`. 400 `invalid_role`/`not_found`. `status`
- *  is sent along with the role as a forward-compatible placeholder (#33); it
- *  defaults to `"active"` for callers (bulk/plain role change) that don't track
- *  per-user activation. */
-export async function changeUserRole(
+/** `PATCH /api/admin/users/:id/role` — multi-role variant (#53). Accepts a
+ *  full `roles` array (the BE replaces the role set). 400 `invalid_body` on
+ *  an empty/unknown-role array, 400 `cannot_demote_last_finance` if the
+ *  change would strip the last active Finance Admin, 400
+ *  `cannot_remove_only_approver_with_reports` if it would strip `approver`
+ *  from a user with direct reports. `status` rides along as a
+ *  forward-compatible placeholder (#33). */
+export async function changeUserRoles(
   userId: string,
-  newRole: Role,
+  newRoles: Role[],
   status: UserStatus = "active",
 ): Promise<BackendUser> {
   const body = await parseJson<{ user: BackendUser }>(
     await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ role: newRole, status }),
+      body: JSON.stringify({ roles: newRoles, status }),
     }),
   );
   return body.user;
+}
+
+/** `PATCH /api/admin/users/:id/role` — legacy single-role variant (#53
+ *  back-compat). Wraps {@link changeUserRoles} with a one-element array.
+ *  400 `invalid_role`/`not_found`. `status` is sent along with the role as a
+ *  forward-compatible placeholder (#33); it defaults to `"active"` for
+ *  callers (bulk/plain role change) that don't track per-user activation. */
+export async function changeUserRole(
+  userId: string,
+  newRole: Role,
+  status: UserStatus = "active",
+): Promise<BackendUser> {
+  return changeUserRoles(userId, [newRole], status);
 }
 
 /** Current row for a user (used by `deactivate`/`reactivate` to re-send the

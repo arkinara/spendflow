@@ -10,7 +10,7 @@ import type { Auth } from "../auth/index.js";
 import type { Env } from "../config.js";
 import { EmailConfigError, sendInviteEmail } from "../email/resend.js";
 import { ROLES, type PublicUser, type Role } from "../types.js";
-import { parseRoles, serializeRoles } from "./roles.js";
+import { derivePrimaryRole, parseRoles, serializeRoles } from "./roles.js";
 import { writeAudit } from "./audit.js";
 
 /**
@@ -93,6 +93,8 @@ export interface CreateInviteInput {
   email: string;
   name: string;
   role: Role;
+  /** Optional multi-role set (#53). Defaults to `[role]` when omitted. */
+  roles?: Role[];
   managerId?: string | null;
   department?: string | null;
   costCenter?: string | null;
@@ -103,6 +105,10 @@ export interface CreateInviteInput {
  * deliver the invitation email through Resend (falling back to the invite log
  * when email isn't configured or the API call fails). Returns the public user
  * plus the invite envelope; the token is only ever returned once, to the caller.
+ *
+ * Multi-role (#53): when `roles[]` is supplied it replaces the single-role
+ * view; `role` is still required as the legacy/audit label and falls back to
+ * `derivePrimaryRole(roles)` for the email + audit snapshot.
  */
 export async function createInviteForUser(
   db: DB,
@@ -111,11 +117,21 @@ export async function createInviteForUser(
   inviteUrlBase = process.env.FE_URL ?? "http://localhost:3000"
 ): Promise<{ user: PublicUser; invite: { token: string; sentAt: Date; expiresAt: Date } }> {
   const email = input.email.toLowerCase();
-  const role = input.role;
-
-  if (!ROLES.includes(role)) {
+  if (!ROLES.includes(input.role)) {
     throw new InviteError(400, "invalid_role", `Role must be one of: ${ROLES.join(", ")}`);
   }
+  // Validate the multi-role payload (if present) and derive the effective set
+  // + primary. Legacy single-role callers pass no `roles`, so effectiveRoles
+  // falls back to `[input.role]`.
+  const effectiveRoles: Role[] = input.roles && input.roles.length > 0
+    ? input.roles.filter((r): r is Role => ROLES.includes(r))
+    : [input.role];
+  if (input.roles && effectiveRoles.length === 0) {
+    throw new InviteError(400, "invalid_role", `Roles must be a non-empty array of: ${ROLES.join(", ")}`);
+  }
+  const primaryRole = input.roles && input.roles.length > 0
+    ? derivePrimaryRole(effectiveRoles)
+    : input.role;
   const existing = db
     .select({ id: usersTable.id })
     .from(usersTable)
@@ -149,8 +165,8 @@ export async function createInviteForUser(
         email,
         emailVerified: false,
         image: null,
-        roles: serializeRoles([role]),
-        primaryRole: role,
+        roles: serializeRoles(effectiveRoles),
+        primaryRole,
         managerId,
         department: input.department ?? null,
         costCenter: input.costCenter ?? null,
@@ -193,7 +209,7 @@ export async function createInviteForUser(
       action: "user.create",
       entityType: "user",
       entityId: userId,
-      after: { email, role, status: "pending" },
+      after: { email, role: primaryRole, roles: effectiveRoles, status: "pending" },
     });
   });
 
@@ -204,7 +220,7 @@ export async function createInviteForUser(
       await sendInviteEmail({
         to: email,
         name: input.name,
-        role,
+        role: primaryRole,
         inviteUrl,
         expiresInDays: INVITE_TTL_MS / (24 * 60 * 60 * 1000),
       });

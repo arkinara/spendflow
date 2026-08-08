@@ -25,15 +25,26 @@ import {
 } from "../services/invites.js";
 import { jsonError } from "./claims.js";
 
-const createUserSchema = z.object({
-  email: z.string().email(),
-  name: z.string().min(1),
-  role: z.enum(ROLES),
-  managerId: z.string().min(1).nullable().optional(),
-  department: z.string().nullable().optional(),
-  costCenter: z.string().nullable().optional(),
-  jobTitle: z.string().nullable().optional(),
-});
+const createUserSchema = z
+  .object({
+    email: z.string().email(),
+    name: z.string().min(1),
+    role: z.enum(ROLES).optional(),
+    roles: z.array(z.enum(ROLES)).optional(),
+    managerId: z.string().min(1).nullable().optional(),
+    department: z.string().nullable().optional(),
+    costCenter: z.string().nullable().optional(),
+    jobTitle: z.string().nullable().optional(),
+  })
+  // Exactly one of the legacy single-role field or the new roles[] array.
+  .refine(
+    (d) => (d.role !== undefined ? 1 : 0) + (d.roles !== undefined ? 1 : 0) === 1,
+    { message: "Provide exactly one of `role` or `roles`" },
+  )
+  .refine((d) => d.roles === undefined || d.roles.length > 0, {
+    message: "`roles` must be a non-empty array",
+    path: ["roles"],
+  });
 
 const acceptInviteSchema = z.object({
   password: z.string().min(8),
@@ -49,14 +60,15 @@ export function invitesRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     if (!parsed.success) {
       return jsonError(c, 400, "invalid_body", parsed.error.message);
     }
-    // Invite links are built from FE_URL (the frontend's public base), not the
-    // CORS origin — they serve different purposes.
-    const inviteUrlBase = deps.env.feUrl;
+    // Normalize the role/roles payload: legacy single-role callers send `role`,
+    // new multi-role callers send `roles[]`. `createInviteForUser` reads both
+    // (role is required for the audit + email label, roles overrides the set).
+    const role = parsed.data.role ?? parsed.data.roles![0];
     const { user, invite } = await createInviteForUser(
       deps.db,
-      parsed.data,
+      { ...parsed.data, role, roles: parsed.data.roles },
       ctx.user.id,
-      inviteUrlBase
+      deps.env.feUrl,
     );
     return c.json({ user, invite }, 201);
   });

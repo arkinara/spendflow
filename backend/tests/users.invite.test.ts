@@ -106,7 +106,7 @@ describe("POST /api/admin/users", () => {
       .all();
     expect(audit).toHaveLength(1);
     expect(audit[0].actorId).toBe(DEMO.finance.id);
-    expect(JSON.parse(audit[0].after)).toEqual({ email: "newhire@spendflow.example", role: "employee", status: "pending" });
+    expect(JSON.parse(audit[0].after)).toEqual({ email: "newhire@spendflow.example", role: "employee", roles: ["employee"], status: "pending" });
 
     // Mocked email appended to the invite log.
     expect(existsSync(INVITE_LOG)).toBe(true);

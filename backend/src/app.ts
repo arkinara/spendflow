@@ -7,8 +7,7 @@ import { dataScopeFor, requireAnyRole, requireUser } from "./auth/permissions.js
 import type { DB } from "./db/index.js";
 import type { Env } from "./config.js";
 import {
-  changeRole,
-  asRole,
+  changeRoles,
   listUsers,
   setManager,
   UserServiceError,
@@ -43,6 +42,21 @@ export interface AppDeps {
 }
 
 const roleSchema = z.enum(["employee", "approver", "finance"]);
+const roleChangeSchema = z
+  .object({
+    role: roleSchema.optional(),
+    roles: z.array(roleSchema).optional(),
+    // Forward-compat placeholder (#33 status ride-along); ignored by the service.
+    status: z.enum(["active", "disabled", "pending"]).optional(),
+  })
+  .refine(
+    (d) => (d.role !== undefined ? 1 : 0) + (d.roles !== undefined ? 1 : 0) === 1,
+    { message: "Provide exactly one of `role` or `roles`" },
+  )
+  .refine((d) => d.roles === undefined || d.roles.length > 0, {
+    message: "`roles` must be a non-empty array",
+    path: ["roles"],
+  });
 const setManagerSchema = z.object({
   managerId: z.string().min(1).nullable(),
 });
@@ -153,17 +167,17 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   app.patch("/api/admin/users/:id/role", async (c) => {
     const actor = await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     const body = await c.req.json().catch(() => ({}));
-    const parsed = roleSchema.safeParse(body.role ?? body);
+    const parsed = roleChangeSchema.safeParse(body);
     if (!parsed.success) {
       return jsonError(
         c,
         400,
-        "invalid_role",
-        "Role must be one of: employee, approver, finance"
+        "invalid_body",
+        parsed.error.message,
       );
     }
-    const role = asRole(parsed.data)!;
-    const { user, audit } = changeRole(db, c.req.param("id"), role, actor.user.id);
+    const roles = parsed.data.roles ?? [parsed.data.role!];
+    const { user, audit } = changeRoles(db, c.req.param("id"), roles, actor.user.id);
     return c.json({ user, audit });
   });
 
