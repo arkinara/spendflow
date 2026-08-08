@@ -130,11 +130,20 @@ describe("LoginPage flow (BE-backed)", () => {
 
   it("signs in against the BE on valid Employee creds and routes to /employee", async () => {
     const user = userEvent.setup();
+    // `signIn` re-reads /api/me after a successful POST (that endpoint is the
+    // only one that returns the normalized user), so the mock has to flip from
+    // "no session" to "signed in".
+    let signedIn = false;
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/me")) return jsonRes(401, { error: { message: "Unauthorized" } });
+      if (url.includes("/api/me")) {
+        return signedIn
+          ? jsonRes(200, { user: EMPLOYEE })
+          : jsonRes(401, { error: { message: "Unauthorized" } });
+      }
       if (url.includes("/api/auth/sign-in/email")) {
-        return jsonRes(200, { user: EMPLOYEE, session: { id: "s1" }, token: "t" });
+        signedIn = true;
+        return jsonRes(200, { user: { id: EMPLOYEE.id }, token: "t" });
       }
       return jsonRes(200, {});
     });
@@ -194,13 +203,19 @@ describe("LoginPage flow (BE-backed)", () => {
   it("the Finance preset pre-fills the form; sign-in still runs the real email+password path", async () => {
     const user = userEvent.setup();
     vi.stubEnv("NEXT_PUBLIC_SPENDFLOW_DEV_PRESETS", "1");
+    let signedIn = false;
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/me")) return jsonRes(401, { error: { message: "Unauthorized" } });
+      if (url.includes("/api/me")) {
+        return signedIn
+          ? jsonRes(200, { user: FINANCE })
+          : jsonRes(401, { error: { message: "Unauthorized" } });
+      }
       if (url.includes("/api/auth/sign-in/email")) {
         const body = JSON.parse((init?.body as string) ?? "{}");
         if (body.email === FINANCE.email) {
-          return jsonRes(200, { user: FINANCE, session: { id: "s2" }, token: "t2" });
+          signedIn = true;
+          return jsonRes(200, { user: { id: FINANCE.id }, token: "t2" });
         }
         return jsonRes(401, { error: { message: "Invalid email or password." } });
       }
@@ -229,11 +244,17 @@ describe("LoginPage flow (BE-backed)", () => {
 
   it("multi-role sign-in lands on primaryRole's home (#45)", async () => {
     const user = userEvent.setup();
+    let signedIn = false;
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/me")) return jsonRes(401, { error: { message: "Unauthorized" } });
+      if (url.includes("/api/me")) {
+        return signedIn
+          ? jsonRes(200, { user: MULTI_APPROVER })
+          : jsonRes(401, { error: { message: "Unauthorized" } });
+      }
       if (url.includes("/api/auth/sign-in/email")) {
-        return jsonRes(200, { user: MULTI_APPROVER, session: { id: "s3" }, token: "t3" });
+        signedIn = true;
+        return jsonRes(200, { user: { id: MULTI_APPROVER.id }, token: "t3" });
       }
       return jsonRes(200, {});
     });

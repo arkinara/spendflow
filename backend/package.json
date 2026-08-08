@@ -35,5 +35,8 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.9"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
   }
 }

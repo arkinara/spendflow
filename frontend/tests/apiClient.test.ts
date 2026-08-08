@@ -31,18 +31,36 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe("signIn", () => {
-  it("POSTs credentials to the Better Auth login URL and returns the parsed user", async () => {
+  it("POSTs credentials to the Better Auth login URL, then reads the user back from /api/me", async () => {
     const user = {
       id: "u-emp-1",
       email: "aulia.pratiwi@spendflow.example",
       name: "Aulia Pratiwi",
       role: "employee",
+      roles: ["employee"],
+      primaryRole: "employee",
     };
-    fetchMock.mockResolvedValue(jsonResponse(200, { user, session: { id: "s1" }, token: "t" }));
+    // Better Auth answers with its raw user row — no derived `role`, `roles`
+    // as a JSON string — so only `/api/me` yields the normalized shape.
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+      String(input).includes("/api/me")
+        ? jsonResponse(200, { user })
+        : jsonResponse(200, {
+            user: {
+              id: user.id,
+              email: user.email,
+              name: user.name,
+              roles: '["employee"]',
+              primaryRole: "employee",
+            },
+            token: "t",
+          }),
+    );
 
     const result = await signIn("aulia.pratiwi@spendflow.example", "demo1234");
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toBe(`${BE_URL}/api/me`);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${BE_URL}/api/auth/sign-in/email`);
     expect(init).toMatchObject({

@@ -138,8 +138,10 @@ describe("SessionProvider signIn", () => {
     fetchMock
       // initial /api/me on mount
       .mockResolvedValueOnce(jsonRes(401, { error: { message: "Unauthorized" } }))
-      // signIn call
-      .mockResolvedValueOnce(jsonRes(200, { user: EMPLOYEE, session: { id: "s1" }, token: "t" }));
+      // signIn call — Better Auth's raw payload, no derived `role`
+      .mockResolvedValueOnce(jsonRes(200, { user: { id: EMPLOYEE.id }, token: "t" }))
+      // session read-back from /api/me
+      .mockResolvedValueOnce(jsonRes(200, { user: EMPLOYEE }));
 
     renderProbe();
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("unauthenticated"));

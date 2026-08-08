@@ -3,6 +3,27 @@ import { vi, afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 import type { Role } from "@/lib/types";
 
+// Node >= 22 ships its own `localStorage` global that stays undefined unless
+// `--localstorage-file` is passed; because it already exists on globalThis,
+// jsdom's implementation never lands and every test sees `undefined`. A
+// Map-backed Storage is enough for what the suite does (seed / read / clear).
+if (!globalThis.localStorage) {
+  const store = new Map<string, string>();
+  const storage: Storage = {
+    get length() {
+      return store.size;
+    },
+    key: (i) => [...store.keys()][i] ?? null,
+    getItem: (k) => store.get(k) ?? null,
+    setItem: (k, v) => void store.set(k, String(v)),
+    removeItem: (k) => void store.delete(k),
+    clear: () => store.clear(),
+  };
+  // defineProperty rather than vi.stubGlobal: test files call
+  // vi.unstubAllGlobals() in their own afterEach, which would strip a stub.
+  Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
+}
+
 afterEach(() => {
   cleanup();
   localStorage.clear();

@@ -84,9 +84,12 @@ export async function signIn(email: string, password: string): Promise<AuthUser>
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) throw new AuthError(res.status, await readErrorMessage(res));
-  const body = (await res.json().catch(() => ({}))) as { user?: AuthUser } & Record<string, unknown>;
-  const user = body.user ?? (body as unknown as AuthUser);
-  if (!user || typeof user !== "object" || !user.id || !user.role) {
+  // Better Auth answers with its raw user row: no derived `role`, and `roles`
+  // as a JSON *string*. `/api/me` is the single place that shape is normalized
+  // (see backend `getCurrentUser`), so read the session back instead of
+  // duplicating the derivation here.
+  const user = await getCurrentUser();
+  if (!user) {
     throw new AuthError(res.status, "Sign-in response did not include a user.");
   }
   return user;
