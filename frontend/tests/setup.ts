@@ -47,14 +47,26 @@ const baselineFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit)
         { status: 401, headers: { "content-type": "application/json" } },
       );
     }
-    let sess: { userId?: string; role?: Role } = {};
+    let sess: {
+      userId?: string;
+      role?: Role;
+      roles?: Role[];
+      primaryRole?: Role;
+    } = {};
     try {
       sess = JSON.parse(raw);
     } catch {
       sess = {};
     }
+    // Hydrate the full multi-role AuthUser shape (#45): default missing
+    // `roles`/`primaryRole` from the legacy `role` field so existing
+    // single-role test seeds keep working unchanged.
+    const primaryRole: Role | undefined = sess.primaryRole ?? sess.role;
+    const roles: Role[] = sess.roles ?? (primaryRole ? [primaryRole] : []);
     return new Response(
-      JSON.stringify({ user: { id: sess.userId, role: sess.role } }),
+      JSON.stringify({
+        user: { id: sess.userId, role: primaryRole, roles, primaryRole },
+      }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
   }

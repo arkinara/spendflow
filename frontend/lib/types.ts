@@ -40,7 +40,17 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  /**
+   * Derived single-role view — always equal to {@link primaryRole}. Kept so
+   * call sites that haven't migrated to the multi-role model (display reads,
+   * role pills, audit branching) keep compiling unchanged. New authorization
+   * code should read {@link roles} / {@link primaryRole} instead (#45).
+   */
   role: Role;
+  /** Every role the user holds (#44 BE, #45 FE). Source of truth for authz. */
+  roles: Role[];
+  /** The role the user lands on after sign-in; always a member of {@link roles}. */
+  primaryRole: Role;
   jobTitle: string;
   department: string;
   managerId?: string;

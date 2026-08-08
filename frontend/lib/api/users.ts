@@ -68,7 +68,12 @@ export type { UserAuditEntry };
  *  never includes the password hash. `status` is the soft-activation flag
  *  (#33): the FE sends it in PATCH bodies as a forward-compatible placeholder,
  *  but the BE does not persist it yet — treat the field as client-side state
- *  until a real deactivate endpoint lands. */
+ *  until a real deactivate endpoint lands.
+ *
+ *  `roles`/`primaryRole` mirror the BE `PublicUser` from #44 onward; optional
+ *  on the FE wire type so the admin client tolerates partial test mocks and
+ *  any BE drift. Callers that need the multi-role view should default missing
+ *  fields from `role` (the single-role compat field the BE still emits). */
 export interface BackendUser {
   id: string;
   name: string;
@@ -76,6 +81,8 @@ export interface BackendUser {
   emailVerified: boolean;
   image: string | null;
   role: Role;
+  roles?: Role[];
+  primaryRole?: Role;
   managerId: string | null;
   department: string | null;
   costCenter: string | null;

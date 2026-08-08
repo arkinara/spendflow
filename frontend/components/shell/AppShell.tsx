@@ -16,7 +16,7 @@ export interface AppShellProps {
 }
 
 export function AppShell({ action, children }: AppShellProps) {
-  const { role, user } = useRole();
+  const { roles, primaryRole, user } = useRole();
   const { signOut } = useSession();
   const router = useRouter();
   // Polls GET /api/notifications/unread-count every 30s (paused while the tab
@@ -25,8 +25,8 @@ export function AppShell({ action, children }: AppShellProps) {
   const unread = useUnreadCount();
   // Live open-flag count for the Exceptions nav badge (#37). Null when not
   // Finance, while loading, or on dashboard/queue load failure — badge hidden.
-  const openExceptionCount = useOpenExceptionCount(role === "finance");
-  const items: NavItem[] = getNavItems(role, openExceptionCount);
+  const openExceptionCount = useOpenExceptionCount(roles.includes("finance"));
+  const items: NavItem[] = getNavItems(roles, primaryRole, openExceptionCount);
 
   const handleSignOut = React.useCallback(() => {
     signOut();
@@ -39,7 +39,7 @@ export function AppShell({ action, children }: AppShellProps) {
         unreadCount={unread}
         action={action}
         user={{ name: user.name, subtitle: user.jobTitle, color: user.avatarColor }}
-        homeHref={ROLE_HOME[role]}
+        homeHref={ROLE_HOME[primaryRole]}
         onSignOut={handleSignOut}
       />
       <NavBar items={items} />

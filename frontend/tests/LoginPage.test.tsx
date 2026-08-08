@@ -50,6 +50,15 @@ const FINANCE = {
   name: "Ridwan Saputra",
   role: "finance",
 };
+/** Multi-role approver+employee whose primaryRole is approver (#45). */
+const MULTI_APPROVER = {
+  id: "u-mgr-1",
+  email: "dewi.anggraeni@spendflow.example",
+  name: "Dewi Anggraeni",
+  role: "approver",
+  roles: ["approver", "employee"],
+  primaryRole: "approver",
+};
 
 function renderLogin() {
   return render(
@@ -216,5 +225,30 @@ describe("LoginPage flow (BE-backed)", () => {
     )!;
     const body = JSON.parse((signInCall[1] as RequestInit).body as string);
     expect(body.email).toBe(FINANCE.email);
+  });
+
+  it("multi-role sign-in lands on primaryRole's home (#45)", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/me")) return jsonRes(401, { error: { message: "Unauthorized" } });
+      if (url.includes("/api/auth/sign-in/email")) {
+        return jsonRes(200, { user: MULTI_APPROVER, session: { id: "s3" }, token: "t3" });
+      }
+      return jsonRes(200, {});
+    });
+
+    renderLogin();
+    const email = await screen.findByLabelText(/work email/i);
+    const password = screen.getByLabelText(/^password/i);
+    await user.clear(email);
+    await user.type(email, MULTI_APPROVER.email);
+    await user.clear(password);
+    await user.type(password, "demo1234");
+    await user.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    // primaryRole is approver → lands on /approver even though the user also
+    // holds the employee role.
+    await waitFor(() => expect(mocks.push).toHaveBeenCalledWith(ROLE_HOME.approver));
   });
 });

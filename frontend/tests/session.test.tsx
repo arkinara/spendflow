@@ -50,7 +50,10 @@ function Probe() {
     <div>
       <span data-testid="status">{ctx.status}</span>
       <span data-testid="role">{ctx.session?.role ?? "none"}</span>
+      <span data-testid="primaryRole">{ctx.session?.primaryRole ?? "none"}</span>
+      <span data-testid="roles">{ctx.session?.roles?.join(",") ?? "none"}</span>
       <span data-testid="user">{ctx.user?.name ?? "none"}</span>
+      <span data-testid="userRoles">{ctx.user?.roles?.join(",") ?? "none"}</span>
       <span data-testid="last">{last ? (last.ok ? `ok:${last.role}` : `err:${last.error}`) : "none"}</span>
       <button
         data-testid="sign-in"
@@ -95,8 +98,32 @@ describe("SessionProvider initial load", () => {
     renderProbe();
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
     expect(screen.getByTestId("role").textContent).toBe("employee");
+    // Multi-role hydration (#45): when the BE omits roles/primaryRole, both
+    // are derived from the legacy single `role` field.
+    expect(screen.getByTestId("primaryRole").textContent).toBe("employee");
+    expect(screen.getByTestId("roles").textContent).toBe("employee");
+    expect(screen.getByTestId("userRoles").textContent).toBe("employee");
     // Display name comes from the mock fixture (enrichment by id), matching the BE user.
     expect(screen.getByTestId("user").textContent).toBe("Aulia Pratiwi");
+  });
+
+  it("hydrates a full multi-role payload (roles + primaryRole) from /api/me (#45)", async () => {
+    const MULTI = {
+      id: "u-mgr-1",
+      email: "dewi.anggraeni@spendflow.example",
+      name: "Dewi Anggraeni",
+      role: "approver",
+      roles: ["approver", "employee"],
+      primaryRole: "approver",
+      department: "Operations",
+    };
+    fetchMock.mockResolvedValue(jsonRes(200, { user: MULTI }));
+    renderProbe();
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("authenticated"));
+    expect(screen.getByTestId("role").textContent).toBe("approver");
+    expect(screen.getByTestId("primaryRole").textContent).toBe("approver");
+    expect(screen.getByTestId("roles").textContent).toBe("approver,employee");
+    expect(screen.getByTestId("userRoles").textContent).toBe("approver,employee");
   });
 
   it("enters the error state when /api/me throws (network failure)", async () => {

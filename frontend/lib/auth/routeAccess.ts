@@ -28,8 +28,15 @@ export function routeAccess(pathname: string): RouteAccess {
   return "auth";
 }
 
-export function canAccess(role: Role, pathname: string): boolean {
+/**
+ * Multi-role access check (#45): admits the caller if any of their `roles`
+ * intersects the pathname's allowed list. `roles: []` matches nothing, so an
+ * empty-role session is rejected everywhere (the guard then treats it as an
+ * invalid session and bounces to /login rather than silently letting it
+ * through).
+ */
+export function canAccess(roles: Role[], pathname: string): boolean {
   const access = routeAccess(pathname);
   if (access === "public" || access === "auth") return true;
-  return access.includes(role);
+  return access.some((r) => roles.includes(r));
 }

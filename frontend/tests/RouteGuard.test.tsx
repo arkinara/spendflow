@@ -20,11 +20,21 @@ import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import { RouteGuard } from "@/components/shell/RouteGuard";
 
-function seed(role: Role) {
-  const userId = role === "employee" ? "u-emp-1" : role === "approver" ? "u-mgr-1" : "u-fin-1";
+/** Seed a session. Single-role by default; pass `roles` + `primaryRole` for a
+ *  multi-role session (#45). Mirrors the `tests/setup.ts` `/api/me` mock that
+ *  hydrates `roles`/`primaryRole` from this localStorage payload. */
+function seed(
+  role: Role,
+  opts: { roles?: Role[]; primaryRole?: Role; userId?: string } = {},
+) {
+  const userId =
+    opts.userId ??
+    (role === "employee" ? "u-emp-1" : role === "approver" ? "u-mgr-1" : "u-fin-1");
+  const primaryRole = opts.primaryRole ?? role;
+  const roles = opts.roles ?? [primaryRole];
   localStorage.setItem(
     SESSION_STORAGE_KEY,
-    JSON.stringify({ userId, role, issuedAt: Date.now() })
+    JSON.stringify({ userId, role, roles, primaryRole, issuedAt: Date.now() }),
   );
 }
 
@@ -38,7 +48,7 @@ function renderGuard(allowed: Role[]) {
           </RouteGuard>
         </SnackbarProvider>
       </SessionProvider>
-    </ThemeProvider>
+    </ThemeProvider>,
   );
 }
 
@@ -49,7 +59,7 @@ beforeEach(() => {
   mocks.pathname = "/finance";
 });
 
-describe("RouteGuard redirect behavior", () => {
+describe("RouteGuard redirect behavior (single-role)", () => {
   it("redirects an unauthenticated user to /login with a next param", async () => {
     // no seeded session
     renderGuard(["finance"]);
@@ -83,6 +93,101 @@ describe("RouteGuard redirect behavior", () => {
     renderGuard(["employee"]);
     await waitFor(() => {
       expect(mocks.replace).toHaveBeenCalledWith("/approver");
+    });
+  });
+});
+
+describe("RouteGuard multi-role access (#45)", () => {
+  it("a multi-role user can access both /employee and /approver routes", async () => {
+    seed("approver", { roles: ["approver", "employee"], primaryRole: "approver" });
+    mocks.pathname = "/employee";
+    const { rerender } = renderGuard(["employee"]);
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+
+    // Re-render against the approver route with the same session.
+    mocks.pathname = "/approver";
+    rerender(
+      <ThemeProvider>
+        <SessionProvider>
+          <SnackbarProvider>
+            <RouteGuard allowedRoles={["approver"]}>
+              <div>SECRET CONTENT</div>
+            </RouteGuard>
+          </SnackbarProvider>
+        </SessionProvider>
+      </ThemeProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+    expect(mocks.replace).not.toHaveBeenCalled();
+  });
+
+  it("a single-role Employee cannot reach the Approver route (role must be present, not implied)", async () => {
+    seed("employee");
+    mocks.pathname = "/approver";
+    renderGuard(["approver"]);
+    await waitFor(() => {
+      expect(mocks.replace).toHaveBeenCalledWith("/employee");
+    });
+    expect(screen.queryByText("SECRET CONTENT")).not.toBeInTheDocument();
+  });
+
+  it("a denied multi-role user is redirected to their primaryRole's home", async () => {
+    // Holds employee + approver, primaryRole employee → denied on /finance,
+    // redirected to the employee home (not the approver home).
+    seed("employee", { roles: ["employee", "approver"], primaryRole: "employee" });
+    mocks.pathname = "/finance";
+    renderGuard(["finance"]);
+    await waitFor(() => {
+      expect(mocks.replace).toHaveBeenCalledWith("/employee");
+    });
+  });
+
+  it("a finance + employee multi-role user reaches /finance and /employee", async () => {
+    seed("finance", { roles: ["finance", "employee"], primaryRole: "finance" });
+    mocks.pathname = "/finance";
+    renderGuard(["finance"]);
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+
+    mocks.pathname = "/employee";
+    render(
+      <ThemeProvider>
+        <SessionProvider>
+          <SnackbarProvider>
+            <RouteGuard allowedRoles={["employee"]}>
+              <div>SECRET CONTENT</div>
+            </RouteGuard>
+          </SnackbarProvider>
+        </SessionProvider>
+      </ThemeProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("SECRET CONTENT")).toBeInTheDocument();
+    });
+  });
+
+  it("an empty-roles session is rejected and bounced to /login (never silently let through)", async () => {
+    seed("employee", { roles: [], primaryRole: "employee" });
+    mocks.pathname = "/employee";
+    renderGuard(["employee"]);
+    await waitFor(() => {
+      expect(mocks.replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent("/employee")}`);
+    });
+    expect(screen.queryByText("SECRET CONTENT")).not.toBeInTheDocument();
+  });
+
+  it("a session whose primaryRole is not in roles is treated as invalid and sent to /login", async () => {
+    // Corrupt invariant: primaryRole finance but roles only lists employee.
+    seed("employee", { roles: ["employee"], primaryRole: "finance" });
+    mocks.pathname = "/finance";
+    renderGuard(["finance"]);
+    await waitFor(() => {
+      expect(mocks.replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent("/finance")}`);
     });
   });
 });

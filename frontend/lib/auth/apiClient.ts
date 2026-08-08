@@ -27,12 +27,17 @@ export class AuthError extends Error {
   }
 }
 
-/** Authenticated user shape returned by the backend (`GET /api/me`). */
+/** Authenticated user shape returned by the backend (`GET /api/me`).
+ *  `roles`/`primaryRole` land from #44 onward; kept optional on the wire so
+ *  the hydrator (`session.applyUser`) can default them from `role` when an
+ *  older BE or a partial test mock omits them. Production BE always sends both. */
 export interface AuthUser {
   id: string;
   email: string;
   name: string;
   role: Role;
+  roles?: Role[];
+  primaryRole?: Role;
   jobTitle?: string | null;
   department?: string | null;
   managerId?: string | null;

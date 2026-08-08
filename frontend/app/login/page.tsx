@@ -54,9 +54,11 @@ function LoginForm() {
     const result = await signIn(email, password);
     if (result.ok) {
       // Honour the `next` target RouteGuard/401 handler attached, but never
-      // bounce back to "/" (the landing page that sent us here).
+      // bounce back to "/" (the landing page that sent us here). Lands on the
+      // primary role's home (#45) — a multi-role user gets their primary
+      // dashboard, with nav exposing every role they hold.
       const next = searchParams.get("next");
-      router.push(next && next !== "/" ? next : ROLE_HOME[result.role]);
+      router.push(next && next !== "/" ? next : ROLE_HOME[result.primaryRole]);
     } else {
       setError(result.error);
       setSubmitting(false);

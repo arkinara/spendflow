@@ -18,9 +18,13 @@ import { SessionError } from "./SessionError";
  * - loading → skeleton
  * - session-store failure → explicit error state (never an infinite skeleton)
  * - unauthenticated → redirect to /login?next=<path>
- * - authenticated but role not allowed → render a "not authorized" alert, then
- *   redirect to the role's home with a toast (never a blank/broken page)
- * - authenticated + allowed → render children
+ * - authenticated with `roles: []` (or primaryRole not in roles) → treated as
+ *   an invalid session and bounced to /login (#45 negative AC: never silently
+ *   let through, and never infinite-loop on the primaryRole home)
+ * - authenticated but no held role matches `allowedRoles` → render a
+ *   "not authorized" alert, then redirect to `ROLE_HOME[primaryRole]` with a
+ *   toast (never a blank/broken page)
+ * - authenticated + at least one held role matches → render children
  */
 export function RouteGuard({
   allowedRoles,
@@ -39,6 +43,20 @@ export function RouteGuard({
 
   const isPublic = allowedRoles == null;
 
+  // A session is structurally invalid if it has no roles at all, or its
+  // primaryRole isn't listed (the invariant the rest of the app relies on).
+  // Such a session can never satisfy any allow-list, so we bounce to /login
+  // instead of redirecting to a home that would just re-deny (infinite loop).
+  const sessionInvalid =
+    !!session &&
+    (session.roles.length === 0 || !session.roles.includes(session.primaryRole));
+
+  const allowed =
+    !!session &&
+    !sessionInvalid &&
+    !!allowedRoles &&
+    allowedRoles.some((r) => session.roles.includes(r));
+
   React.useEffect(() => {
     if (isPublic || redirected.current) return;
     if (status === "loading" || status === "error") return;
@@ -48,14 +66,20 @@ export function RouteGuard({
       router.replace(`/login?next=${encodeURIComponent(pathname)}`);
       return;
     }
-    if (session && !allowedRoles.includes(session.role)) {
+    if (session && sessionInvalid) {
+      redirected.current = true;
+      setRedirecting(true);
+      router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+      return;
+    }
+    if (session && !allowed) {
       redirected.current = true;
       setDenyRole(true);
       setRedirecting(true);
       show("You're not authorized to view that page.", { tone: "error" });
-      router.replace(ROLE_HOME[session.role]);
+      router.replace(ROLE_HOME[session.primaryRole]);
     }
-  }, [status, session, allowedRoles, isPublic, pathname, router, show]);
+  }, [status, session, sessionInvalid, allowed, allowedRoles, isPublic, pathname, router, show]);
 
   if (isPublic) return <>{children}</>;
   if (status === "error") return <SessionError />;
@@ -79,6 +103,6 @@ export function RouteGuard({
     );
   }
   if (status === "loading" || redirecting) return <AppShellSkeleton />;
-  if (!session || !allowedRoles.includes(session.role)) return <AppShellSkeleton />;
+  if (!session || !allowed) return <AppShellSkeleton />;
   return <>{children}</>;
 }

@@ -20,6 +20,13 @@ import type { Role } from "@/lib/types";
  * to Dashboard + Claims per the #1 ticket spec; Approver and Finance Admin each
  * get the items relevant to their workflow.
  *
+ * Multi-role (#45): `getNavItems` now takes the full `roles[]` set and
+ * concatenates each role's section so a user holding several roles sees every
+ * link they're entitled to. The primary role's section is rendered first
+ * (matching the post-login landing target); additional roles follow in a stable
+ * canonical order (`employee` → `approver` → `finance`). Entries are
+ * de-duplicated by `href` so a link shared between roles never appears twice.
+ *
  * The Finance "Exceptions" badge is NOT computed here — it is fed the live
  * open-flag count by the caller (`AppShell` reads it from
  * `openExceptionStore`, whose source is `GET /api/finance/exceptions`, ticket
@@ -34,10 +41,11 @@ export interface NavDef {
   badge?: number;
 }
 
-export function getNavItems(
-  role: Role,
-  openExceptionCount?: number | null,
-): NavDef[] {
+/** Canonical render order for additional (non-primary) roles. */
+const ROLE_ORDER: Role[] = ["employee", "approver", "finance"];
+
+/** Nav section for a single role (no de-dup — the composer below handles it). */
+function navForRole(role: Role, openExceptionCount?: number | null): NavDef[] {
   switch (role) {
     case "employee":
       return [
@@ -73,4 +81,37 @@ export function getNavItems(
         { label: "Reports", href: "/reports", icon: BarChart3 },
       ];
   }
+}
+
+/**
+ * Build the nav for a user holding `roles`. The primary role's section leads
+ * (matching the `ROLE_HOME[primaryRole]` landing target), then any additional
+ * roles in canonical order. De-duplicated by `href` (first occurrence wins).
+ *
+ * Only roles actually present in `roles` render — `primaryRole` is used for
+ * ordering, not as an implicit grant. An empty `roles` list (invalid session,
+ * bounced by `RouteGuard` to /login) therefore yields no nav entries.
+ */
+export function getNavItems(
+  roles: Role[],
+  primaryRole: Role,
+  openExceptionCount?: number | null,
+): NavDef[] {
+  // Lead with the primary role, then the remaining held roles in stable order.
+  // Both lines are filtered against `roles` so a drifted/empty session never
+  // shows nav for a role the user doesn't actually hold.
+  const ordered = [
+    primaryRole,
+    ...ROLE_ORDER.filter((r) => r !== primaryRole),
+  ].filter((r) => roles.includes(r));
+  const seen = new Set<string>();
+  const out: NavDef[] = [];
+  for (const role of ordered) {
+    for (const item of navForRole(role, openExceptionCount)) {
+      if (seen.has(item.href)) continue;
+      seen.add(item.href);
+      out.push(item);
+    }
+  }
+  return out;
 }

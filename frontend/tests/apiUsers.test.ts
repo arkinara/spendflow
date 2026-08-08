@@ -158,6 +158,22 @@ describe("changeUserRole", () => {
       code: "not_found",
     });
   });
+
+  it("surfaces the multi-role fields (roles + primaryRole) when the BE returns them (#45)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        user: backendUser({
+          role: "approver",
+          roles: ["approver", "employee"],
+          primaryRole: "approver",
+        }),
+      }),
+    );
+    const result = await changeUserRole("u-mgr-1", "approver");
+    expect(result.role).toBe("approver");
+    expect(result.primaryRole).toBe("approver");
+    expect(result.roles).toEqual(["approver", "employee"]);
+  });
 });
 
 describe("setUserManager", () => {

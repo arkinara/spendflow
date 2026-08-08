@@ -65,13 +65,23 @@ export const ROLE_LABEL: Record<Role, string> = {
 
 export interface MockSession {
   userId: string;
+  /**
+   * Derived single-role view (= {@link primaryRole}). Kept for back-compat
+   * with call sites that haven't migrated to the multi-role model (#45).
+   */
   role: Role;
+  /** Every role the user holds. Source of truth for route guarding + nav. */
+  roles: Role[];
+  /** The role the user lands on after sign-in; always a member of {@link roles}. */
+  primaryRole: Role;
   issuedAt: number;
 }
 
 export type SessionStatus = "loading" | "authenticated" | "unauthenticated" | "error";
 
-export type SignInResult = { ok: true; role: Role } | { ok: false; error: string };
+export type SignInResult =
+  | { ok: true; role: Role; primaryRole: Role }
+  | { ok: false; error: string };
 
 /**
  * Phase 1 bridge: the BE user carries role + identity, but display fields
@@ -79,16 +89,37 @@ export type SignInResult = { ok: true; role: Role } | { ok: false; error: string
  * retires the mocks. We enrich by id so the AppBar renders the
  * seeded persona data unchanged. The seeded BE user ids (`u-emp-1`, `u-mgr-1`,
  * `u-fin-1`) intentionally match the mock fixture ids.
+ *
+ * Multi-role hydration (#45): the BE `AuthUser` carries `roles[]` +
+ * `primaryRole`; both are optional on the FE wire type so we default missing
+ * values from the legacy single `role` field. The returned {@link User} always
+ * has fully-populated `roles`/`primaryRole` so downstream readers never guard.
  */
 function toDisplayUser(authUser: AuthUser): User {
   const mock = getUser(authUser.id);
-  if (mock) return mock;
+  if (mock) {
+    // Re-derive the multi-role view from the live BE payload so a fixture
+    // (single-role) never overrides a real multi-role session. Mock fixtures
+    // only backfill display fields (jobTitle, avatarColor, department).
+    const primaryRole = authUser.primaryRole ?? authUser.role;
+    const roles = authUser.roles ?? [primaryRole];
+    return {
+      ...mock,
+      role: primaryRole,
+      roles,
+      primaryRole,
+    };
+  }
+  const primaryRole = authUser.primaryRole ?? authUser.role;
+  const roles = authUser.roles ?? [primaryRole];
   return {
     id: authUser.id,
     name: authUser.name || authUser.email,
     email: authUser.email,
-    role: authUser.role,
-    jobTitle: authUser.jobTitle || ROLE_LABEL[authUser.role],
+    role: primaryRole,
+    roles,
+    primaryRole,
+    jobTitle: authUser.jobTitle || ROLE_LABEL[primaryRole],
     department: authUser.department || "",
     managerId: authUser.managerId || undefined,
     avatarColor: "primary",
@@ -116,13 +147,16 @@ export function useSession(): SessionContextValue {
  * Backwards-compatible guarded-tree role hook. Used inside the guarded app tree
  * where a session is guaranteed to exist. Any role change requires a full
  * re-auth through `signIn` — there is no in-session role swap.
+ *
+ * Returns the full multi-role view (`roles`, `primaryRole`) plus the legacy
+ * single `role` alias (= `primaryRole`) so existing destructures keep working.
  */
-export function useRole(): { role: Role; user: User } {
+export function useRole(): { role: Role; roles: Role[]; primaryRole: Role; user: User } {
   const { session, user } = useSession();
   if (!session || !user) {
     throw new Error("useRole requires an authenticated session");
   }
-  return { role: session.role, user };
+  return { role: session.role, roles: session.roles, primaryRole: session.primaryRole, user };
 }
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
@@ -131,8 +165,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = React.useState<User | null>(null);
 
   const applyUser = React.useCallback((authUser: AuthUser) => {
+    const primaryRole = authUser.primaryRole ?? authUser.role;
+    const roles = authUser.roles ?? [primaryRole];
     setUser(toDisplayUser(authUser));
-    setSession({ userId: authUser.id, role: authUser.role, issuedAt: Date.now() });
+    setSession({
+      userId: authUser.id,
+      role: primaryRole,
+      roles,
+      primaryRole,
+      issuedAt: Date.now(),
+    });
     setStatus("authenticated");
   }, []);
 
@@ -185,7 +227,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       try {
         const authUser = await apiSignIn(email, password);
         applyUser(authUser);
-        return { ok: true, role: authUser.role };
+        return { ok: true, role: authUser.primaryRole ?? authUser.role, primaryRole: authUser.primaryRole ?? authUser.role };
       } catch (err) {
         reset();
         const message =
