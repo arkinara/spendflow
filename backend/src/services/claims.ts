@@ -12,6 +12,7 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   approvalActionsTable,
+  approvalStepsTable,
   categoriesTable,
   claimLineItemsTable,
   claimsTable,
@@ -45,7 +46,12 @@ export class ClaimError extends Error {
       | "no_line_items"
       | "invalid_line"
       | "unknown_category"
-      | "routing_failed",
+      | "routing_failed"
+      | "not_blocked"
+      | "still_blocked"
+      | "invalid_manager"
+      | "invalid_approver"
+      | "invalid_step",
     message: string
   ) {
     super(message);
@@ -935,6 +941,216 @@ export function resubmitClaim(
   assertOwnedBy(row, employeeId);
   assertStatus(row, ["action_required"]);
   return applySubmission(db, toClaimRow(db, row), employeeId, "resubmitted");
+}
+
+/* ----------------------------------------------------- finance unblock (#48) */
+
+export interface UnblockInput {
+  resolution: string;
+  action: "assign_manager" | "reassign_step";
+  managerId?: string;
+  stepId?: string;
+  newApproverId?: string;
+}
+
+/**
+ * Resolve a `blocked_sod` claim (#46) by reassigning the route so it no longer
+ * violates segregation of duties, then returning the claim to `pending`.
+ *
+ * Two actions:
+ *  - `assign_manager`: stamp a new `managerId` on the submitter (unblocks a
+ *    `no_manager` route) and re-resolve. The change persists on the user.
+ *  - `reassign_step`: repoint a specific step's `approverId` to a new approver
+ *    (unblocks a `self_approval` step) and re-resolve. The change persists on
+ *    the route (see honest caveat in #48 — a copy-on-unblock is out of scope).
+ *
+ * Defence in depth: after mutating, the full route is re-resolved through
+ * {@link resolveRouteSteps}. If the new assignment still trips SoD (e.g.
+ * Finance picks themselves), the mutation is rolled back (the transaction
+ * re-throws as a `still_blocked` ClaimError) and the claim stays blocked.
+ *
+ * `financeId` is the Finance Admin actor (audit). `body.resolution` is a
+ * required free-text justification recorded on the audit entry.
+ */
+export function unblockClaim(
+  db: DB,
+  claimId: string,
+  financeId: string,
+  body: UnblockInput
+): { claim: ClaimRow } {
+  const row = loadClaimOrThrow(db, claimId);
+  if (row.status !== "blocked_sod") {
+    throw new ClaimError(
+      409,
+      "not_blocked",
+      `Claim is ${row.status}; cannot unblock (expected blocked_sod)`
+    );
+  }
+
+  const submitter = db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, row.employeeId))
+    .get();
+  if (!submitter) {
+    throw new ClaimError(404, "not_found", `Submitter for claim ${claimId} not found`);
+  }
+
+  // Steps the claim was submitted against — the reassign_step action patches
+  // one of these in place.
+  const routeSteps = db
+    .select()
+    .from(approvalStepsTable)
+    .where(eq(approvalStepsTable.routeId, row.approvalRouteId!))
+    .orderBy(asc(approvalStepsTable.orderIndex))
+    .all();
+
+  // Validate the action's references before touching any state so a bad id
+  // never leaves a half-applied mutation.
+  let newManagerId: string | null = null;
+  let stepToReassign: (typeof approvalStepsTable.$inferSelect) | null = null;
+  let newApproverId: string | null = null;
+
+  if (body.action === "assign_manager") {
+    const manager = db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.id, body.managerId!))
+      .get();
+    if (
+      !manager ||
+      manager.status !== "active" ||
+      !parseRoles(manager.roles).includes("approver")
+    ) {
+      throw new ClaimError(
+        404,
+        "invalid_manager",
+        `Manager ${body.managerId} is not an active approver`
+      );
+    }
+    newManagerId = body.managerId!;
+  } else {
+    stepToReassign = routeSteps.find((s) => s.id === body.stepId) ?? null;
+    if (!stepToReassign) {
+      throw new ClaimError(
+        404,
+        "invalid_step",
+        `Step ${body.stepId} is not on this claim's route`
+      );
+    }
+    const approver = db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.id, body.newApproverId!))
+      .get();
+    if (
+      !approver ||
+      approver.status !== "active" ||
+      !parseRoles(approver.roles).includes("approver")
+    ) {
+      throw new ClaimError(
+        404,
+        "invalid_approver",
+        `Approver ${body.newApproverId} is not an active approver`
+      );
+    }
+    newApproverId = body.newApproverId!;
+  }
+
+  const now = new Date();
+
+  db.transaction((tx) => {
+    // Apply the reassignment inside the tx so a SoD re-trigger rolls it back.
+    if (body.action === "assign_manager") {
+      tx.update(usersTable)
+        .set({ managerId: newManagerId, updatedAt: now })
+        .where(eq(usersTable.id, submitter.id))
+        .run();
+    } else {
+      tx.update(approvalStepsTable)
+        .set({ approverId: newApproverId!, updatedAt: now })
+        .where(eq(approvalStepsTable.id, stepToReassign!.id))
+        .run();
+    }
+
+    // Reflect the mutation in the step view the SoD check walks, so a
+    // still-conflicting assignment (self-approval, etc.) is caught here.
+    const routingSteps: RoutingStep[] = routeSteps.map((s) => ({
+      id: s.id,
+      approverType: s.approverType,
+      approverId:
+        body.action === "reassign_step" && s.id === stepToReassign!.id
+          ? newApproverId
+          : s.approverId,
+      label: s.label,
+      orderIndex: s.orderIndex,
+    }));
+    const resolvedSubmitter = {
+      id: submitter.id,
+      managerId:
+        body.action === "assign_manager" ? newManagerId! : submitter.managerId,
+    };
+
+    try {
+      resolveRouteSteps(tx, routingSteps, resolvedSubmitter);
+    } catch (err) {
+      if (err instanceof SoDError) {
+        // Re-throw as a typed ClaimError: the transaction rolls back the
+        // managerId / approverId mutation AND the HTTP layer maps it to 409.
+        throw new ClaimError(409, "still_blocked", err.message);
+      }
+      throw err;
+    }
+
+    // Success: return the claim to pending and clear the SoD block.
+    tx.update(claimsTable)
+      .set({
+        status: "pending",
+        currentStepIndex: 0,
+        blockedReason: null,
+        submittedAt: now,
+        decidedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(claimsTable.id, claimId))
+      .run();
+
+    writeAudit(tx, {
+      actorId: financeId,
+      action: "claim.unblocked",
+      entityType: "claim",
+      entityId: claimId,
+      before: {
+        status: "blocked_sod",
+        blocked_reason: row.blockedReason,
+      },
+      after: {
+        status: "pending",
+        resolution: body.resolution,
+        action: body.action,
+        routeId: row.approvalRouteId,
+        ...(body.action === "assign_manager"
+          ? { managerId: newManagerId }
+          : { stepId: body.stepId, newApproverId }),
+      },
+    });
+
+    // Notify the new first-step approver so the re-routed claim surfaces in
+    // their inbox immediately (mirrors the submit path).
+    const updatedRow = tx
+      .select()
+      .from(claimsTable)
+      .where(eq(claimsTable.id, claimId))
+      .get()!;
+    notifyFirstApprover(
+      tx,
+      toClaimRow(tx, updatedRow),
+      routingSteps[0],
+      body.action === "assign_manager" ? newManagerId : submitter.managerId
+    );
+  });
+
+  return { claim: toClaimRow(db, loadClaimOrThrow(db, claimId)) };
 }
 
 /* ----------------------------------------------------------- withdraw ---- */

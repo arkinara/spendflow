@@ -21,7 +21,9 @@
  * ========================================================================== */
 
 import { eq, inArray } from "drizzle-orm";
+import { asc } from "drizzle-orm";
 import {
+  approvalStepsTable,
   claimLineItemsTable,
   claimsTable,
   paymentsTable,
@@ -65,9 +67,23 @@ function flaggedLineItems(claim: ClaimRow) {
 
 /* --------------------------------------------------------- exception queue -- */
 
+export interface RouteStepSummary {
+  id: string;
+  label: string;
+  approverType: "submitter_manager" | "specific_user" | "finance";
+  approverId: string | null;
+}
+
 export interface ExceptionQueueItem extends ClaimRow {
   employeeName: string;
   openFlagCount: number;
+  /**
+   * The route's ordered steps, surfaced only on `blocked_sod` items so the
+   * Finance Admin's unblock dialog (#48) can render the step picker for the
+   * `reassign_step` action without a second round trip. Absent on flagged
+   * approved claims (they don't need a step picker).
+   */
+  routeSteps?: RouteStepSummary[];
 }
 
 /**
@@ -93,12 +109,28 @@ export function getFinanceExceptions(db: DB): ExceptionQueueItem[] {
       .where(eq(usersTable.id, claim.employeeId))
       .get();
     if (row.status === "blocked_sod") {
-      // SoD-blocked claims surface with the block reason; openFlagCount is 0
-      // (their lines were never policy-evaluated for approval surfacing).
+      // SoD-blocked claims surface with the block reason + their route steps so
+      // the unblock dialog (#48) can offer the reassign_step action. openFlagCount
+      // is 0 (their lines were never policy-evaluated for approval surfacing).
+      const routeSteps: RouteStepSummary[] = claim.approvalRouteId
+        ? db
+            .select()
+            .from(approvalStepsTable)
+            .where(eq(approvalStepsTable.routeId, claim.approvalRouteId))
+            .orderBy(asc(approvalStepsTable.orderIndex))
+            .all()
+            .map((s) => ({
+              id: s.id,
+              label: s.label,
+              approverType: s.approverType,
+              approverId: s.approverId,
+            }))
+        : [];
       out.push({
         ...claim,
         employeeName: employee?.name ?? "",
         openFlagCount: 0,
+        routeSteps,
       });
       continue;
     }

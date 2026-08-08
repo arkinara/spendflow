@@ -39,11 +39,37 @@ import {
   reorderRouteSteps,
 } from "../services/admin.js";
 import { hardDeleteUser } from "../services/users.js";
+import { unblockClaim } from "../services/claims.js";
 import { jsonError } from "./claims.js";
 
 const userDeleteSchema = z.object({
   password: z.string(),
 });
+
+/**
+ * #48 — Finance Admin unblocks a `blocked_sod` claim. Body is refined per
+ * action: `assign_manager` requires `managerId`; `reassign_step` requires
+ * `stepId` + `newApproverId`. `resolution` is a required free-text
+ * justification recorded on the audit entry (never empty).
+ */
+const unblockSchema = z
+  .object({
+    resolution: z.string().min(1, "Resolution is required for audit"),
+    action: z.enum(["assign_manager", "reassign_step"]),
+    managerId: z.string().optional(),
+    stepId: z.string().optional(),
+    newApproverId: z.string().optional(),
+  })
+  .refine(
+    (d) =>
+      d.action === "assign_manager"
+        ? !!d.managerId
+        : !!d.stepId && !!d.newApproverId,
+    {
+      message:
+        "assign_manager requires managerId; reassign_step requires stepId + newApproverId",
+    }
+  );
 
 const categoryCreateSchema = z.object({
   name: z.string().min(1),
@@ -209,6 +235,19 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
       ctx.user.id
     );
     return c.body(null, 204);
+  });
+
+  /* ------------------------------------------- claim SoD unblock (#48) */
+
+  router.patch("/api/admin/claims/:id/unblock", async (c) => {
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = unblockSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonError(c, 400, "invalid_body", parsed.error.message);
+    }
+    const result = unblockClaim(deps.db, c.req.param("id"), ctx.user.id, parsed.data);
+    return c.json({ claim: result.claim });
   });
 
   return router;
