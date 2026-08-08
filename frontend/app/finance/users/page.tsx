@@ -58,7 +58,6 @@ import { Select } from "@/components/ui/Select";
 import { TextArea } from "@/components/ui/TextArea";
 import { TextField } from "@/components/ui/TextField";
 import { StatusChip } from "@/components/ui/StatusChip";
-import { RolesMultiSelect } from "@/components/ui/RolesMultiSelect";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
@@ -77,6 +76,7 @@ import { formatRelativeTime } from "@/lib/format";
 import { DeleteUserDialog } from "@/app/finance/users/DeleteUserDialog";
 import { AddUserDialog } from "@/app/finance/users/AddUserDialog";
 import { SetManagerDialog } from "@/app/finance/users/SetManagerDialog";
+import { RoleChangeDialog } from "@/app/finance/users/RoleChangeDialog";
 
 const ROLE_LABEL: Record<Role, string> = {
   employee: "Employee",
@@ -1190,91 +1190,4 @@ function BulkChangeRoleDialog({
   );
 }
 
-/* ====================================================== role change dialog == */
 
-function RoleChangeDialog({
-  open,
-  target,
-  onClose,
-  onSaved,
-  onForbidden,
-}: {
-  open: boolean;
-  target: BackendUser | null;
-  onClose: () => void;
-  onSaved: (target: BackendUser, newRoles: Role[]) => Promise<void>;
-  onForbidden: () => void;
-}) {
-  const [roles, setRoles] = React.useState<Role[]>(["employee"]);
-  const [formError, setFormError] = React.useState<string | null>(null);
-  const [submitting, setSubmitting] = React.useState(false);
-
-  React.useEffect(() => {
-    if (open && target) {
-      setRoles(target.roles ?? [target.role]);
-      setFormError(null);
-      setSubmitting(false);
-    }
-  }, [open, target]);
-
-  async function submit() {
-    if (!target) return;
-    setFormError(null);
-    setSubmitting(true);
-    try {
-      await onSaved(target, roles);
-    } catch (err) {
-      if (err instanceof UsersApiError && err.status === 403) {
-        onForbidden();
-        return;
-      }
-      setFormError(
-        err instanceof Error ? err.message : "Could not change the roles. Check your connection and try again."
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const currentRoles = target
-    ? (target.roles ?? [target.role]).map((r) => ROLE_LABEL[r]).join(", ")
-    : "";
-
-  return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      title="Change role"
-      description={
-        target
-          ? `Change ${target.name}'s roles. Their current role is ${currentRoles}.`
-          : ""
-      }
-      icon={
-        <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-primary">
-          <ShieldCheck className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-        </span>
-      }
-      footer={
-        <>
-          <Button variant="text" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={submitting}>
-            {submitting ? "Saving…" : "Change role"}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        {formError && <FormErrorBanner message={formError} />}
-        <RolesMultiSelect
-          label="Roles"
-          required
-          roles={roles}
-          onChange={setRoles}
-        />
-      </div>
-    </Dialog>
-  );
-}
