@@ -56,7 +56,7 @@ def list_items():
     q = '''{
       node(id: "%s") {
         ... on ProjectV2 {
-          items(first: 50) {
+          items(first: 100) {
             nodes {
               id
               content { ... on Issue { number title state } }
