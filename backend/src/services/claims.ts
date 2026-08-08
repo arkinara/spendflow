@@ -28,7 +28,7 @@ import {
   type ClaimPolicySummary,
   type PolicyWarning,
 } from "./policy.js";
-import { resolveApprovalRoute, RoutingError } from "./approval-engine.js";
+import { resolveApprovalRoute, RoutingError, type RoutingStep } from "./approval-engine.js";
 import {
   listActiveCategories,
   listActivePolicies,
@@ -50,6 +50,24 @@ export class ClaimError extends Error {
   ) {
     super(message);
     this.name = "ClaimError";
+  }
+}
+
+/**
+ * Segregation-of-duties violation (ticket #46). Thrown by `resolveRouteSteps`
+ * when a route step would resolve to the submitter (self-approval) or to null
+ * (no manager on a submitter_manager step). Caught inside `applySubmission`,
+ * which lands the claim in `blocked_sod` instead of `pending`. Status 409 is
+ * surfaced only if the error escapes the submit flow (defence in depth).
+ */
+export class SoDError extends Error {
+  public status = 409;
+  constructor(
+    public code: "self_approval" | "no_manager",
+    message: string
+  ) {
+    super(message);
+    this.name = "SoDError";
   }
 }
 
@@ -119,6 +137,7 @@ export interface ClaimRow {
   approvalRouteId: string | null;
   currentStepIndex: number;
   policyException: ClaimPolicySummary | null;
+  blockedReason: string | null;
   submittedAt: Date | null;
   decidedAt: Date | null;
   createdAt: Date;
@@ -210,6 +229,7 @@ export function toClaimRow(
     policyException: row.policyException
       ? (JSON.parse(row.policyException) as ClaimPolicySummary)
       : null,
+    blockedReason: row.blockedReason ?? null,
     submittedAt: row.submittedAt,
     decidedAt: row.decidedAt,
     createdAt: row.createdAt,
@@ -598,6 +618,70 @@ export function removeLineItem(
 
 /* ------------------------------------------------------- submit/resubmit -- */
 
+/**
+ * Walk a resolved route's ordered steps and resolve each to a concrete
+ * `approverId`, enforcing segregation-of-duties (#46):
+ *  - `specific_user` → `step.approverId`; if it equals the submitter, throw
+ *    `SoDError("self_approval")`.
+ *  - `submitter_manager` → `submitter.managerId`; if `null`, throw
+ *    `SoDError("no_manager")`; if it equals the submitter (defence in depth —
+ *    the UI self-manager guard should already prevent this), throw
+ *    `self_approval`.
+ *  - `finance` → any active finance admin; the step is group-routed, so SoD
+ *    fires only when the submitter is the sole finance user (no one else can
+ *    action it). Otherwise the first non-submitter finance user is picked.
+ *
+ * Returns the steps with `resolvedApproverId` attached. Throws on the first
+ * conflicting step; multi-step conflicts are not aggregated.
+ */
+export function resolveRouteSteps(
+  db: DB,
+  steps: RoutingStep[],
+  submitter: { id: string; managerId: string | null }
+): Array<RoutingStep & { resolvedApproverId: string | null }> {
+  const out: Array<RoutingStep & { resolvedApproverId: string | null }> = [];
+  for (const step of steps) {
+    let resolvedApproverId: string | null = null;
+    if (step.approverType === "specific_user") {
+      resolvedApproverId = step.approverId ?? null;
+    } else if (step.approverType === "submitter_manager") {
+      resolvedApproverId = submitter.managerId;
+      if (resolvedApproverId === null) {
+        throw new SoDError(
+          "no_manager",
+          `Submitter has no manager; cannot route step "${step.label}"`
+        );
+      }
+    } else if (step.approverType === "finance") {
+      const others = db
+        .select()
+        .from(usersTable)
+        .all()
+        .filter(
+          (u) =>
+            parseRoles(u.roles).includes("finance") &&
+            u.status === "active" &&
+            u.id !== submitter.id
+        );
+      if (others.length === 0) {
+        throw new SoDError(
+          "self_approval",
+          `Step "${step.label}" routes to the submitter (sole finance admin)`
+        );
+      }
+      resolvedApproverId = others[0].id;
+    }
+    if (resolvedApproverId === submitter.id) {
+      throw new SoDError(
+        "self_approval",
+        `Step "${step.label}" routes to the submitter`
+      );
+    }
+    out.push({ ...step, resolvedApproverId });
+  }
+  return out;
+}
+
 function buildPolicyInputs(claim: ClaimRow) {
   return claim.lineItems.map((l) => ({
     id: l.id,
@@ -647,9 +731,9 @@ function applySubmission(
     .where(eq(usersTable.id, employeeId))
     .get();
   const routes = loadApprovalRoutes(db);
-  let resolved;
+  let routeMatch;
   try {
-    resolved = resolveApprovalRoute(
+    routeMatch = resolveApprovalRoute(
       {
         totalAmount: claim.lineItems.reduce((s, l) => s + l.amount, 0),
         categoryIds: Array.from(
@@ -666,6 +750,23 @@ function applySubmission(
     throw err;
   }
 
+  // Segregation-of-duties check (#46): walk the resolved steps and reject any
+  // that would land at the submitter's own desk (or can't resolve at all). On
+  // conflict the claim is written as `blocked_sod` instead of `pending`.
+  let sodBlock: SoDError | null = null;
+  try {
+    resolveRouteSteps(db, routeMatch.steps, {
+      id: employeeId,
+      managerId: employee?.managerId ?? null,
+    });
+  } catch (err) {
+    if (err instanceof SoDError) {
+      sodBlock = err;
+    } else {
+      throw err;
+    }
+  }
+
   const now = new Date();
   const warningsByLine = new Map<string, PolicyWarning[]>();
   for (const w of warnings) {
@@ -675,18 +776,34 @@ function applySubmission(
   }
 
   db.transaction((tx) => {
-    tx.update(claimsTable)
-      .set({
-        status: "pending",
-        approvalRouteId: resolved.route.id,
-        currentStepIndex: 0,
-        policyException: summary ? JSON.stringify(summary) : null,
-        submittedAt: now,
-        decidedAt: null,
-        updatedAt: now,
-      })
-      .where(eq(claimsTable.id, claim.id))
-      .run();
+    if (sodBlock) {
+      tx.update(claimsTable)
+        .set({
+          status: "blocked_sod",
+          approvalRouteId: routeMatch.route.id,
+          currentStepIndex: 0,
+          policyException: summary ? JSON.stringify(summary) : null,
+          blockedReason: sodBlock.message,
+          submittedAt: now,
+          decidedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(claimsTable.id, claim.id))
+        .run();
+    } else {
+      tx.update(claimsTable)
+        .set({
+          status: "pending",
+          approvalRouteId: routeMatch.route.id,
+          currentStepIndex: 0,
+          policyException: summary ? JSON.stringify(summary) : null,
+          submittedAt: now,
+          decidedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(claimsTable.id, claim.id))
+        .run();
+    }
 
     // Overwrite (idempotent) policy flags per line.
     for (const line of claim.lineItems) {
@@ -704,7 +821,7 @@ function applySubmission(
       .values({
         id: newId("act"),
         claimId: claim.id,
-        stepId: resolved.steps[0]?.id ?? null,
+        stepId: routeMatch.steps[0]?.id ?? null,
         actorId: employeeId,
         action: actionLabel,
         comment: null,
@@ -712,18 +829,35 @@ function applySubmission(
       })
       .run();
 
-    writeAudit(tx, {
-      actorId: employeeId,
-      action: `claim.${actionLabel}`,
-      entityType: "claim",
-      entityId: claim.id,
-      before: { status: claim.status },
-      after: { status: "pending", routeId: resolved.route.id },
-    });
+    if (sodBlock) {
+      writeAudit(tx, {
+        actorId: employeeId,
+        action: "claim.blocked_sod",
+        entityType: "claim",
+        entityId: claim.id,
+        before: { status: claim.status },
+        after: {
+          status: "blocked_sod",
+          routeId: routeMatch.route.id,
+          code: sodBlock.code,
+          reason: sodBlock.message,
+        },
+      });
+    } else {
+      writeAudit(tx, {
+        actorId: employeeId,
+        action: `claim.${actionLabel}`,
+        entityType: "claim",
+        entityId: claim.id,
+        before: { status: claim.status },
+        after: { status: "pending", routeId: routeMatch.route.id },
+      });
 
-    // Notify the first-step approver (resolved best-effort: manager / specific
-    // user / every finance user). Non-blocking if the approver can't resolve.
-    notifyFirstApprover(tx, claim, resolved.steps[0], employee?.managerId ?? null);
+      // Notify the first-step approver (resolved best-effort: manager /
+      // specific user / every finance user). Non-blocking if the approver
+      // can't resolve. Skipped when the claim is blocked (no live step).
+      notifyFirstApprover(tx, claim, routeMatch.steps[0], employee?.managerId ?? null);
+    }
   });
 
   return {

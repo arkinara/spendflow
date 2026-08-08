@@ -15,6 +15,7 @@ import type { DB } from "../db/index.js";
 import type { Env } from "../config.js";
 import {
   ClaimError,
+  SoDError,
   addLineItem,
   createClaim,
   deleteClaim,
@@ -233,6 +234,14 @@ export function claimsRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 /** Map service-layer errors to JSON responses (mounted once on the app). */
 export function claimErrorHandler(err: unknown, c: Context) {
   if (err instanceof ClaimError) {
+    return jsonError(
+      c,
+      err.status as ContentfulStatusCode,
+      err.code,
+      err.message
+    );
+  }
+  if (err instanceof SoDError) {
     return jsonError(
       c,
       err.status as ContentfulStatusCode,

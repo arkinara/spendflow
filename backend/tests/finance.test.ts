@@ -11,6 +11,7 @@ import {
   authedPost,
   bootstrap,
   login,
+  provisionSeedUser,
   type Harness,
 } from "./helpers.js";
 
@@ -101,6 +102,43 @@ describe("exception queue", () => {
     res = await authedGet(h.app, "/api/finance/exceptions", financeCookie);
     body = await res.json();
     expect(body.items.map((i: { id: string }) => i.id)).not.toContain(claimId);
+  });
+
+  // (#46) a SoD-blocked claim surfaces in the exception queue with its reason.
+  it("includes a blocked_sod claim with its blocked reason", async () => {
+    // Employee with no manager + the default submitter_manager fallback route
+    // → submission lands in blocked_sod (no_manager).
+    await provisionSeedUser(h, {
+      id: "u-fin-nomgr",
+      name: "Finance SoD Probe",
+      email: "fin-nomgr@spendflow.example",
+      role: "employee",
+    });
+    const cookie = (await login(h.app, "fin-nomgr@spendflow.example")).cookie!;
+    const createRes = await authedPost(h.app, "/api/claims", cookie, {
+      title: "Blocked by SoD",
+      lineItems: [{ categoryId: "taxi", date: "2026-08-01", amount: 30_000 }],
+    });
+    const created = await createRes.json();
+    const submitRes = await authedPost(
+      h.app,
+      `/api/claims/${created.claim.id}/submit`,
+      cookie,
+      {}
+    );
+    expect(submitRes.status).toBe(200);
+    expect((await submitRes.json()).claim.status).toBe("blocked_sod");
+
+    const res = await authedGet(h.app, "/api/finance/exceptions", financeCookie);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const ids = body.items.map((i: { id: string }) => i.id);
+    expect(ids).toContain(created.claim.id);
+    const item = body.items.find(
+      (i: { id: string }) => i.id === created.claim.id
+    );
+    expect(item.status).toBe("blocked_sod");
+    expect(item.blockedReason).toContain("no manager");
   });
 });
 

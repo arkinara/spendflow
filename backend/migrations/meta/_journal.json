@@ -43,6 +43,13 @@
       "when": 1786083748377,
       "tag": "0005_multirole",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786170000000,
+      "tag": "0006_blocked_sod",
+      "breakpoints": true
     }
   ]
 }

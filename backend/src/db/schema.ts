@@ -268,6 +268,7 @@ export const CLAIM_STATUSES = [
   "rejected",
   "processing",
   "paid",
+  "blocked_sod",
 ] as const;
 export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
 
@@ -298,6 +299,9 @@ export const claimsTable = sqliteTable(
     // Aggregated policy warning summary persisted at submit time (JSON). Used
     // by downstream exception review. Null when no warnings fired.
     policyException: text("policy_exception"),
+    // SoD block reason (ticket #46). Set when submission resolves a route step
+    // to the submitter (or needs a manager the submitter lacks); null otherwise.
+    blockedReason: text("blocked_reason"),
     submittedAt: integer("submitted_at", { mode: "timestamp" }),
     decidedAt: integer("decided_at", { mode: "timestamp" }),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),

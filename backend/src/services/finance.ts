@@ -20,7 +20,7 @@
  *    claim, created at Processing and updated in place at Paid.
  * ========================================================================== */
 
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   claimLineItemsTable,
   claimsTable,
@@ -72,27 +72,38 @@ export interface ExceptionQueueItem extends ClaimRow {
 
 /**
  * Fully approved claims that still carry at least one open line-item policy
- * flag. A claim drops out automatically once every flag on it is resolved
- * (cleared), since the filter is evaluated live against current line-item
- * state rather than a persisted "has exception" bit.
+ * flag, plus any SoD-blocked claims (#46). A flagged claim drops out once every
+ * flag on it is cleared; a `blocked_sod` claim drops out once Finance clears it
+ * (status moves back to pending). The filter is evaluated live against current
+ * line-item state rather than a persisted "has exception" bit.
  */
 export function getFinanceExceptions(db: DB): ExceptionQueueItem[] {
-  const approved = db
+  const rows = db
     .select()
     .from(claimsTable)
-    .where(eq(claimsTable.status, "approved"))
+    .where(inArray(claimsTable.status, ["approved", "blocked_sod"]))
     .all();
 
   const out: ExceptionQueueItem[] = [];
-  for (const row of approved) {
+  for (const row of rows) {
     const claim = toClaimRow(db, row);
-    const flagged = flaggedLineItems(claim);
-    if (flagged.length === 0) continue;
     const employee = db
       .select()
       .from(usersTable)
       .where(eq(usersTable.id, claim.employeeId))
       .get();
+    if (row.status === "blocked_sod") {
+      // SoD-blocked claims surface with the block reason; openFlagCount is 0
+      // (their lines were never policy-evaluated for approval surfacing).
+      out.push({
+        ...claim,
+        employeeName: employee?.name ?? "",
+        openFlagCount: 0,
+      });
+      continue;
+    }
+    const flagged = flaggedLineItems(claim);
+    if (flagged.length === 0) continue;
     out.push({
       ...claim,
       employeeName: employee?.name ?? "",
