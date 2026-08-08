@@ -48,6 +48,7 @@ const STATUS_META: Record<ClaimStatus, StatusMeta> = {
   processing: { icon: Loader, tone: "info", hint: "Payment in flight" },
   paid: { icon: Wallet, tone: "success", hint: "Reimbursed" },
   rejected: { icon: XCircle, tone: "neutral", hint: "Not reimbursable" },
+  blocked_sod: { icon: AlertTriangle, tone: "error", hint: "Blocked — contact Finance" },
 };
 
 const CARD_TONE: Record<Tone, string> = {

@@ -19,7 +19,8 @@ export type ClaimStatus =
   | "approved"
   | "processing"
   | "paid"
-  | "rejected";
+  | "rejected"
+  | "blocked_sod";
 
 export type PaymentStatus =
   | "queued"
@@ -235,9 +236,14 @@ export interface Claim {
    * considered fully approved (see {@link routingStepsForClaim}). Phase 1 has a
    * single line-manager approver at step 0; high-value or exception-flagged
    * claims also pass through "Finance review" at step 1. Undefined is treated
-   * as 0 so existing fixtures stay valid without re-seeding.
+   *  as 0 so existing fixtures stay valid without re-seeding.
    */
   currentStepIndex?: number;
+  /**
+   * Reason a `blocked_sod` claim was held by the segregation-of-duties check
+   * (#46). Surfaced in the exceptions queue + the unblock dialog (#48).
+   */
+  blockedReason?: string;
 }
 
 export interface Payment {

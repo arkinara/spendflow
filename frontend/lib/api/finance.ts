@@ -21,6 +21,7 @@
 
 import { apiFetch } from "@/lib/api/fetch";
 import { toFEClaim, type BackendClaim } from "@/lib/api/claims";
+import { UsersApiError } from "@/lib/api/users";
 import type {
   Claim,
   ClaimPayment,
@@ -43,6 +44,18 @@ export class FinanceApiError extends Error {
 /* --------------------------------------------------------------- backend types */
 
 /**
+ * One step of the route a `blocked_sod` claim was submitted against (#48).
+ * Surfaced on exception items so the unblock dialog's `reassign_step` action
+ * can offer the step picker without a second round trip.
+ */
+export interface FinanceRouteStep {
+  id: string;
+  label: string;
+  approverType: "submitter_manager" | "specific_user" | "finance";
+  approverId: string | null;
+}
+
+/**
  * JSON shape returned by the BE's `ExceptionQueueItem` serialiser. A full
  * `ClaimRow` (claim + lineItems) enriched with the employee's display name and
  * the count of open line-item policy flags. See `services/finance.ts`.
@@ -50,6 +63,8 @@ export class FinanceApiError extends Error {
 export interface BackendExceptionItem extends BackendClaim {
   employeeName: string;
   openFlagCount: number;
+  /** Present only on `blocked_sod` items — powers the unblock dialog (#48). */
+  routeSteps?: FinanceRouteStep[];
 }
 
 /** `PaymentRow` from `services/finance.ts` (ISO date strings over the wire). */
@@ -94,6 +109,8 @@ export interface BackendPaymentQueueItem {
 export interface FinanceExceptionItem extends Claim {
   employeeName: string;
   openFlagCount: number;
+  /** Present only on `blocked_sod` rows — powers the unblock dialog (#48). */
+  routeSteps?: FinanceRouteStep[];
 }
 
 /**
@@ -162,6 +179,21 @@ export interface MarkProcessingInput {
   reference: string;
 }
 
+/**
+ * Body for `PATCH /api/admin/claims/:id/unblock` (#48). A Finance Admin
+ * re-routes a `blocked_sod` claim by either assigning a manager to the
+ * submitter (`assign_manager` → `managerId`) or repointing one route step's
+ * approver (`reassign_step` → `stepId` + `newApproverId`). `resolution` is the
+ * required free-text justification recorded on the audit entry.
+ */
+export interface UnblockClaimInput {
+  resolution: string;
+  action: "assign_manager" | "reassign_step";
+  managerId?: string;
+  stepId?: string;
+  newApproverId?: string;
+}
+
 export interface ResolveExceptionResult {
   claim: Claim;
   action: ExceptionAction;
@@ -174,7 +206,17 @@ export interface PaymentTransitionResult {
 
 /* --------------------------------------------------------------- error helper */
 
-async function readError(res: Response): Promise<never> {
+/** Constructor shape shared by the typed API errors (status + code + message). */
+type ApiErrorCtor = new (
+  status: number,
+  code: string,
+  message: string
+) => { status: number; code: string; message: string };
+
+async function readError(
+  res: Response,
+  ErrorCtor: ApiErrorCtor = FinanceApiError
+): Promise<never> {
   let code = "internal";
   let message = `Request failed (${res.status}).`;
   try {
@@ -191,18 +233,21 @@ async function readError(res: Response): Promise<never> {
   } catch {
     // non-JSON body — keep the status-derived fallback
   }
-  throw new FinanceApiError(res.status, code, message);
+  throw new ErrorCtor(res.status, code, message);
 }
 
-/** Read + parse a JSON envelope, throwing `FinanceApiError` on non-2xx. */
-async function parseJson<T>(res: Response): Promise<T> {
-  if (!res.ok) await readError(res);
+/** Read + parse a JSON envelope, throwing the typed API error on non-2xx. */
+async function parseJson<T>(
+  res: Response,
+  ErrorCtor: ApiErrorCtor = FinanceApiError
+): Promise<T> {
+  if (!res.ok) await readError(res, ErrorCtor);
   const text = await res.text();
   if (!text) return {} as T;
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new FinanceApiError(res.status, "internal", "Invalid JSON response from backend.");
+    throw new ErrorCtor(res.status, "internal", "Invalid JSON response from backend.");
   }
 }
 
@@ -255,6 +300,7 @@ export function toFinanceExceptionItem(
     ...toFEClaim(item),
     employeeName: item.employeeName,
     openFlagCount: item.openFlagCount,
+    routeSteps: item.routeSteps,
   };
 }
 
@@ -437,4 +483,36 @@ export async function markPaid(claimId: string): Promise<PaymentTransitionResult
     ),
   );
   return { claim: toFEClaim(body.claim), payment: toFEPayment(body.payment) };
+}
+
+/**
+ * `PATCH /api/admin/claims/:id/unblock` (#48) — Finance Admin re-routes a
+ * `blocked_sod` claim so it returns to `pending`. Two actions, mirroring the
+ * BE service (`services/claims.ts:unblockClaim`):
+ *   - `assign_manager`: stamp a manager on the submitter (`managerId`)
+ *   - `reassign_step`: repoint one route step's approver (`stepId` +
+ *     `newApproverId`)
+ * `resolution` is a required audit justification. Errors are thrown as
+ * `UsersApiError` (the endpoint lives in the admin vertical): 400
+ * `invalid_body`, 404 `not_found` / `invalid_manager` / `invalid_step` /
+ * `invalid_approver`, 403 `forbidden`, 409 `not_blocked`, and 409
+ * `still_blocked` — the last one carries the BE's SoD message verbatim so the
+ * unblock dialog can surface "That reassignment would still violate SoD".
+ */
+export async function unblockClaim(
+  claimId: string,
+  input: UnblockClaimInput,
+): Promise<{ claim: BackendClaim }> {
+  const body = await parseJson<{ claim: BackendClaim }>(
+    await apiFetch(
+      `/api/admin/claims/${encodeURIComponent(claimId)}/unblock`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    ),
+    UsersApiError,
+  );
+  return { claim: body.claim };
 }

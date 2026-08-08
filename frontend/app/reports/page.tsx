@@ -146,6 +146,7 @@ function statusLabel(s: ClaimStatus): string {
     case "processing": return "Processing";
     case "paid": return "Paid";
     case "rejected": return "Rejected";
+    case "blocked_sod": return "SoD Blocked";
   }
 }
 

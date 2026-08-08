@@ -62,6 +62,7 @@ export const STATUS_LABELS: Record<ClaimStatus, string> = {
   processing: "Processing",
   paid: "Paid",
   rejected: "Rejected",
+  blocked_sod: "SoD Blocked",
 };
 
 /** Resolve the paid timestamp for a claim: the `paid` approval action first. */

@@ -61,6 +61,7 @@ function backendClaim(overrides: Partial<BackendClaim> = {}): BackendClaim {
     approvalRouteId: null,
     currentStepIndex: 0,
     policyException: null,
+    blockedReason: null,
     submittedAt: "2026-08-01T09:00:00Z",
     decidedAt: null,
     createdAt: "2026-07-31T09:00:00Z",

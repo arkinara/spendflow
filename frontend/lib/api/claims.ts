@@ -87,6 +87,8 @@ export interface BackendClaim {
   approvalRouteId: string | null;
   currentStepIndex: number;
   policyException: BackendPolicySummary | null;
+  /** SoD block reason (non-null only while the claim is `blocked_sod`). */
+  blockedReason: string | null;
   submittedAt: string | null;
   decidedAt: string | null;
   createdAt: string;
@@ -215,6 +217,7 @@ export function toFEClaim(b: BackendClaim): Claim {
     approvals: [],
     exception,
     currentStepIndex: b.currentStepIndex,
+    blockedReason: b.blockedReason ?? undefined,
   };
 }
 

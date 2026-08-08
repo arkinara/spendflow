@@ -15,13 +15,17 @@
  * ========================================================================== */
 
 import * as React from "react";
+import { toFEClaim } from "@/lib/api/claims";
 import {
   getExceptions,
   getPayments,
+  unblockClaim as unblockClaimApi,
   FinanceApiError,
   type FinanceExceptionItem,
   type FinancePaymentItem,
+  type UnblockClaimInput,
 } from "@/lib/api/finance";
+import type { Claim } from "@/lib/types";
 
 /* --------------------------------------------------------------- shared core */
 
@@ -51,8 +55,16 @@ function codeOf(err: unknown): string | undefined {
  * Generic async-list hook. Re-runs on every `attempt` bump (initial mount,
  * `retry`, `refresh`); a stale attempt's resolved value is ignored once the
  * effect is cleaned up so a slow response can't overwrite a fresh one.
+ *
+ * `mutate` is the internal cache seam the exception hook uses to drop a row
+ * after an unblock without forcing a refetch (#48). It is intentionally not
+ * part of the public `UseFinanceList<T>` contract.
  */
-function useAsyncList<T>(load: () => Promise<T[]>): UseFinanceList<T> {
+interface InternalAsyncList<T> extends UseFinanceList<T> {
+  mutate: (updater: (items: T[]) => T[]) => void;
+}
+
+function useAsyncList<T>(load: () => Promise<T[]>): InternalAsyncList<T> {
   const [state, setState] = React.useState<FinanceListState<T>>({
     status: "loading",
   });
@@ -89,14 +101,49 @@ function useAsyncList<T>(load: () => Promise<T[]>): UseFinanceList<T> {
 
   const refresh = React.useCallback(() => setAttempt((n) => n + 1), []);
 
-  return { state, retry, refresh };
+  const mutate = React.useCallback(
+    (updater: (items: T[]) => T[]) => {
+      setState((prev) =>
+        prev.status === "ready"
+          ? { status: "ready", items: updater(prev.items) }
+          : prev,
+      );
+    },
+    [],
+  );
+
+  return { state, retry, refresh, mutate };
 }
 
 /* --------------------------------------------------------------- exceptions */
 
+/** `useFinanceExceptions` surface — adds the unblock mutator (#48). */
+export interface UseFinanceExceptions extends UseFinanceList<FinanceExceptionItem> {
+  /**
+   * Unblock a `blocked_sod` claim (#48). On success the row is removed from
+   * the local cache so the table re-renders without a refetch; on failure the
+   * typed error rethrows untouched so the dialog can surface the BE's
+   * message inline (e.g. a 409 `still_blocked`).
+   */
+  unblockClaim: (claimId: string, body: UnblockClaimInput) => Promise<Claim>;
+}
+
 /** Claims with an open policy flag that are in Finance's hands to resolve. */
-export function useFinanceExceptions(): UseFinanceList<FinanceExceptionItem> {
-  return useAsyncList(React.useCallback(() => getExceptions(), []));
+export function useFinanceExceptions(): UseFinanceExceptions {
+  const { state, retry, refresh, mutate } = useAsyncList(
+    React.useCallback(() => getExceptions(), []),
+  );
+
+  const unblockClaim = React.useCallback(
+    async (claimId: string, body: UnblockClaimInput): Promise<Claim> => {
+      const { claim } = await unblockClaimApi(claimId, body);
+      mutate((items) => items.filter((i) => i.id !== claimId));
+      return toFEClaim(claim);
+    },
+    [mutate],
+  );
+
+  return { state, retry, refresh, unblockClaim };
 }
 
 /* --------------------------------------------------------------- payments board */

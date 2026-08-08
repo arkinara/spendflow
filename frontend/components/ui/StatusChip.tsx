@@ -28,6 +28,9 @@ const CLAIM_SPECS: Record<ClaimStatus, ChipSpec> = {
   processing: { label: "Processing", tone: "info", icon: Loader },
   paid: { label: "Paid", tone: "success", icon: Wallet },
   rejected: { label: "Rejected", tone: "neutral", icon: XCircle },
+  // #46: held by the segregation-of-duties guard — flagged to Finance so it
+  // reads as "needs attention, not paid-out" (info tone + clock, #48).
+  blocked_sod: { label: "SoD Blocked", tone: "info", icon: Clock },
 };
 
 const PAYMENT_SPECS: Record<PaymentStatus, ChipSpec> = {

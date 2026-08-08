@@ -80,6 +80,7 @@ function exceptionItem(
       message: "Hotel exceeds per-night cap.",
       count: 1,
     },
+    blockedReason: null,
     submittedAt: "2026-07-25T09:00:00Z",
     decidedAt: "2026-07-26T09:00:00Z",
     createdAt: "2026-07-24T09:00:00Z",

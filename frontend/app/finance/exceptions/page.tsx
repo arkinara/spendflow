@@ -15,6 +15,7 @@ import {
   Car,
   Route as RouteIcon,
   Receipt,
+  Unlock,
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
@@ -34,7 +35,9 @@ import {
   FinanceApiError,
   type FinanceExceptionItem,
   type ExceptionAction,
+  type UnblockClaimInput,
 } from "@/lib/api/finance";
+import { UnblockClaimDialog } from "./UnblockClaimDialog";
 import {
   evaluateLinePolicy,
   violationsForLine,
@@ -75,9 +78,10 @@ const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {
 
 export default function ExceptionsPage() {
   const { show } = useSnackbar();
-  const { state, retry, refresh } = useFinanceExceptions();
+  const { state, retry, refresh, unblockClaim } = useFinanceExceptions();
 
   const [active, setActive] = React.useState<FinanceExceptionItem | null>(null);
+  const [unblockTarget, setUnblockTarget] = React.useState<FinanceExceptionItem | null>(null);
   const [pendingAction, setPendingAction] = React.useState<ExceptionAction | null>(null);
   const [note, setNote] = React.useState("");
   const [noteError, setNoteError] = React.useState<string>();
@@ -146,6 +150,21 @@ export default function ExceptionsPage() {
     }
   }
 
+  /**
+   * #48: the UnblockClaimDialog submit handler. On success the hook removes the
+   * row from the local queue (no refetch) — here we only toast + close + nudge
+   * the nav badge. On failure the hook rethrows untouched so the dialog can
+   * surface the BE's `still_blocked` message inline.
+   */
+  async function handleUnblock(claimId: string, body: UnblockClaimInput) {
+    await unblockClaim(claimId, body);
+    show(`${unblockTarget?.title} unblocked`, { tone: "success" });
+    setUnblockTarget(null);
+    // Re-publish the open-flag count so the nav badge decrements now, not
+    // after the next 30s poll (a blocked_sod claim leaves the queue too).
+    void refreshOpenExceptionCount();
+  }
+
   const itemCount = state.status === "ready" ? state.items.length : 0;
 
   return (
@@ -179,7 +198,7 @@ export default function ExceptionsPage() {
         {state.status === "ready" && (
           <Card padded={false}>
             <DataTable
-              columns={buildColumns(openResolve)}
+              columns={buildColumns(openResolve, (c) => setUnblockTarget(c))}
               data={state.items}
               rowKey={(c) => c.id}
               density="compact"
@@ -215,6 +234,14 @@ export default function ExceptionsPage() {
         onConfirm={confirmResolve}
       />
 
+      {unblockTarget ? (
+        <UnblockClaimDialog
+          claim={unblockTarget}
+          onClose={() => setUnblockTarget(null)}
+          onSubmit={handleUnblock}
+        />
+      ) : null}
+
       <Dialog
         open={!!conflict}
         onClose={() => setConflict(null)}
@@ -246,6 +273,7 @@ export default function ExceptionsPage() {
 
 function buildColumns(
   onResolve: (c: FinanceExceptionItem) => void,
+  onUnblock?: (c: FinanceExceptionItem) => void,
 ): Column<FinanceExceptionItem>[] {
   return [
     {
@@ -322,9 +350,24 @@ function buildColumns(
           <Button href={`/claims/${c.id}/audit`} variant="text" size="sm">
             Audit
           </Button>
-          <Button size="sm" onClick={() => onResolve(c)}>
-            Resolve
-          </Button>
+          {c.status === "blocked_sod" ? (
+            // #48: SoD-blocked claims can't be overridden — Finance re-routes
+            // them instead. The button only renders when a handler is wired.
+            onUnblock ? (
+              <Button
+                size="sm"
+                variant="danger"
+                icon={Unlock}
+                onClick={() => onUnblock(c)}
+              >
+                Resolve SoD
+              </Button>
+            ) : null
+          ) : (
+            <Button size="sm" onClick={() => onResolve(c)}>
+              Resolve
+            </Button>
+          )}
         </div>
       ),
     },
