@@ -457,4 +457,70 @@ describe("SoD matrix (#47): submitter roles × step type → outcome", () => {
     const body = await submitRes.json();
     expect(body.claim.status).toBe("pending");
   });
+
+  // row: [employee, approver] + finance step with a peer finance → pending (multi-role routes finance step normally)
+  it("[employee, approver] × finance step (peer finance) → pending", async () => {
+    await provisionSeedUser(h, {
+      id: "u-finance-peer",
+      name: "Finance Peer",
+      email: "finpeer@spendflow.example",
+      role: "finance",
+      roles: ["finance"],
+    });
+    const cookie = await seedSubmitter(
+      "u-fx-emp-approver",
+      ["employee", "approver"],
+      DEMO.approver.id
+    );
+    oneStepRoute("finance", null, "rt-matrix-fx-emp-approver");
+    const { body } = await submitAs(cookie);
+    expect(body.claim.status).toBe("pending");
+  });
+
+  // row: [approver] + specific_user pinned to a different approver → pending
+  it("[approver] × specific_user (other approver) → pending", async () => {
+    const cookie = await seedSubmitter(
+      "u-fx-appr-other",
+      ["approver"],
+      DEMO.approver.id
+    );
+    oneStepRoute("specific_user", DEMO.approver.id, "rt-matrix-fx-appr-other");
+    const { body } = await submitAs(cookie);
+    expect(body.claim.status).toBe("pending");
+  });
+
+  // row: [approver] + finance step with a peer finance → pending
+  it("[approver] × finance step (peer finance) → pending", async () => {
+    await provisionSeedUser(h, {
+      id: "u-finance-peer",
+      name: "Finance Peer",
+      email: "finpeer@spendflow.example",
+      role: "finance",
+      roles: ["finance"],
+    });
+    const cookie = await seedSubmitter(
+      "u-fx-appr-finstep",
+      ["approver"],
+      DEMO.approver.id
+    );
+    oneStepRoute("finance", null, "rt-matrix-fx-appr-finstep");
+    const { body } = await submitAs(cookie);
+    expect(body.claim.status).toBe("pending");
+  });
+
+  // row: [finance] (with manager) + submitter_manager → pending (finance user has a manager, route resolves normally)
+  it("[finance] × submitter_manager (has manager) → pending", async () => {
+    const cookie = await seedSubmitter("u-fx-fin", ["finance"], DEMO.approver.id);
+    oneStepRoute("submitter_manager", null, "rt-matrix-fx-fin-mgr");
+    const { body } = await submitAs(cookie);
+    expect(body.claim.status).toBe("pending");
+  });
+
+  // row: [finance] + specific_user pinned to a non-self approver → pending
+  it("[finance] × specific_user (other approver) → pending", async () => {
+    const cookie = await seedSubmitter("u-fx-fin", ["finance"], DEMO.approver.id);
+    oneStepRoute("specific_user", DEMO.approver.id, "rt-matrix-fx-fin-spec");
+    const { body } = await submitAs(cookie);
+    expect(body.claim.status).toBe("pending");
+  });
 });
