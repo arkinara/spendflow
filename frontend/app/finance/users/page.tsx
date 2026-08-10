@@ -42,8 +42,6 @@ import {
   AlertTriangle,
   RefreshCw,
   Users as UsersIcon,
-  History,
-  ChevronDown,
   Search,
   FilterX,
   Trash2,
@@ -54,7 +52,6 @@ import { Button } from "@/components/ui/Button";
 import { DataTable } from "@/components/ui/DataTable";
 import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { Dialog } from "@/components/ui/Dialog";
-import { Select } from "@/components/ui/Select";
 import { TextArea } from "@/components/ui/TextArea";
 import { TextField } from "@/components/ui/TextField";
 import { StatusChip } from "@/components/ui/StatusChip";
@@ -63,32 +60,26 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
 import { useSnackbar } from "@/components/ui/Snackbar";
 import { useRole } from "@/lib/auth/session";
-import { useUsers, useUserAudit } from "@/lib/hooks/useUsers";
+import { useUsers } from "@/lib/hooks/useUsers";
 import {
   changeUserRoles,
   setUserManager,
   UsersApiError,
-  BulkPartialFailureError,
   type BackendUser,
 } from "@/lib/api/users";
-import type { Role, UserAuditEntry } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/format";
+import type { Role } from "@/lib/types";
 import { DeleteUserDialog } from "@/app/finance/users/DeleteUserDialog";
 import { AddUserDialog } from "@/app/finance/users/AddUserDialog";
 import { SetManagerDialog } from "@/app/finance/users/SetManagerDialog";
 import { RoleChangeDialog } from "@/app/finance/users/RoleChangeDialog";
+import { BulkRoleChangeDialog } from "@/app/finance/users/BulkRoleChangeDialog";
+import { UsersAuditPanel } from "@/app/finance/users/UsersAuditPanel";
 
 const ROLE_LABEL: Record<Role, string> = {
   employee: "Employee",
   approver: "Approver",
   finance: "Finance Admin",
 };
-
-const ROLE_OPTIONS: { value: Role; label: string }[] = [
-  { value: "employee", label: "Employee" },
-  { value: "approver", label: "Approver" },
-  { value: "finance", label: "Finance Admin" },
-];
 
 /* ---------------------------------------------------------- search/filter (#35) */
 
@@ -249,200 +240,7 @@ function RolesCell({ user }: { user: BackendUser }) {
 }
 
 /* =============================================== recent activity audit (#34) */
-
-/** Humanized labels for the admin actions the BE records (#34). */
-const ACTION_LABEL: Record<string, string> = {
-  "role.change": "Role change",
-  "manager.change": "Manager change",
-  "status.change": "Status change",
-};
-
-/** Fallback humanizer for action codes without a known label, e.g.
- *  `"manager.clear"` → "Manager clear". */
-function humanizeAction(action: string): string {
-  if (ACTION_LABEL[action]) return ACTION_LABEL[action];
-  return action
-    .split(".")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-/** Collapsible "Recent activity" section (#34). Collapsed by default — the
- *  audit fan-out is deferred until the Finance Admin expands it, so the common
- *  path makes no extra network calls. Read-only: no edit, no delete, no
- *  rollback. `users` is the currently-rendered directory (used to resolve
- *  actor + target names and to derive the userIds fan-out set). */
-function RecentActivitySection({
-  users,
-  onForbidden,
-}: {
-  users: BackendUser[];
-  onForbidden: () => void;
-}) {
-  const [expanded, setExpanded] = React.useState(false);
-  const userIds = React.useMemo(() => users.map((u) => u.id), [users]);
-  const filters = expanded ? { userIds, limit: 50 } : null;
-  const { state, refresh } = useUserAudit(filters);
-
-  const userById = React.useMemo(
-    () => new Map(users.map((u) => [u.id, u])),
-    [users]
-  );
-
-  // A BE 403 on the audit fan-out flips the whole page to the denied panel,
-  // matching how `useUsers` handles a lost Finance-Admin session.
-  React.useEffect(() => {
-    if (state.status === "denied") onForbidden();
-  }, [state.status, onForbidden]);
-
-  return (
-    <Card padded={false}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant px-5 py-3">
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          aria-controls="recent-activity-panel"
-          className="flex items-center gap-2 text-sm font-semibold text-on-surface transition-colors hover:text-primary"
-        >
-          <History className="h-4 w-4 text-on-surface-variant" strokeWidth={1.75} aria-hidden />
-          Recent activity
-          <ChevronDown
-            className={`h-4 w-4 text-on-surface-variant transition-transform duration-200 ${
-              expanded ? "rotate-180" : ""
-            }`}
-            strokeWidth={1.75}
-            aria-hidden
-          />
-        </button>
-        {expanded && (
-          <Button variant="text" size="sm" icon={RefreshCw} onClick={refresh}>
-            Refresh
-          </Button>
-        )}
-      </div>
-
-      {expanded && (
-        <div id="recent-activity-panel" role="region" aria-label="Recent activity" className="p-5">
-          {state.status === "loading" && (
-            <div aria-busy="true" role="status" aria-label="Loading recent activity">
-              <Skeleton variant="list" lines={3} />
-            </div>
-          )}
-          {state.status === "error" && (
-            <div
-              role="alert"
-              className="flex flex-col items-center gap-3 px-4 py-10 text-center sm:flex-row sm:gap-6 sm:text-left"
-            >
-              <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-error-container text-error-container-foreground">
-                <AlertTriangle className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="font-medium text-on-surface">Couldn&apos;t load recent activity</p>
-                <p className="mt-1 text-sm text-on-surface-variant">{state.message}</p>
-              </div>
-              <Button variant="tonal" size="sm" icon={RefreshCw} onClick={refresh}>
-                Retry
-              </Button>
-            </div>
-          )}
-          {state.status === "ready" && state.entries.length === 0 && (
-            <EmptyState
-              icon={History}
-              title="No admin activity yet"
-              body="Role, manager, and status changes on the user directory will be recorded here."
-              variant="compact"
-            />
-          )}
-          {state.status === "ready" && state.entries.length > 0 && (
-            <ul className="space-y-2">
-              {state.entries.map((entry) => (
-                <AuditEntryRow key={entry.id} entry={entry} userById={userById} />
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-/** One audit entry: action label, actor (name · email), target user, a
- *  before → after JSON toggle, and a relative timestamp. Read-only. */
-function AuditEntryRow({
-  entry,
-  userById,
-}: {
-  entry: UserAuditEntry;
-  userById: Map<string, BackendUser>;
-}) {
-  const [showChanges, setShowChanges] = React.useState(false);
-
-  const actor = userById.get(entry.actorId);
-  const target = userById.get(entry.entityId);
-  const hasChanges = entry.before != null || entry.after != null;
-
-  return (
-    <li className="rounded-xl border border-outline-variant bg-surface-container px-4 py-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <p className="text-sm font-medium text-on-surface">{humanizeAction(entry.action)}</p>
-        <time className="text-xs text-on-surface-variant">
-          {formatRelativeTime(entry.createdAt)}
-        </time>
-      </div>
-      <p className="mt-0.5 text-xs text-on-surface-variant">
-        {actor ? (
-          <>
-            <span className="font-medium text-on-surface">{actor.name}</span> · {actor.email}
-          </>
-        ) : (
-          <span className="font-mono">{entry.actorId}</span>
-        )}
-        {" on "}
-        <span className="font-medium text-on-surface">{target?.name ?? entry.entityId}</span>
-      </p>
-      {hasChanges && (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setShowChanges((v) => !v)}
-            aria-expanded={showChanges}
-            className="inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:underline"
-          >
-            <ChevronDown
-              className={`h-3.5 w-3.5 transition-transform duration-200 ${
-                showChanges ? "rotate-180" : ""
-              }`}
-              strokeWidth={1.75}
-              aria-hidden
-            />
-            {showChanges ? "Hide changes" : "Show changes"}
-          </button>
-          {showChanges && (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <ChangeBlock label="Before" value={entry.before} />
-              <ChangeBlock label="After" value={entry.after} />
-            </div>
-          )}
-        </div>
-      )}
-    </li>
-  );
-}
-
-function ChangeBlock({ label, value }: { label: string; value: unknown }) {
-  return (
-    <div className="rounded-lg bg-surface-container-high px-3 py-2">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-on-surface-variant">
-        {label}
-      </p>
-      <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-on-surface">
-        {value === null || value === undefined ? "null" : JSON.stringify(value, null, 2)}
-      </pre>
-    </div>
-  );
-}
+/* UsersAuditPanel + AuditEntryRow extracted to their own file in #61 (#54c). */
 
 /* =================================================================== tab == */
 
@@ -915,7 +713,7 @@ function UsersTab({
       )}
 
       {state.status === "ready" && (
-        <RecentActivitySection users={rows} onForbidden={onForbidden} />
+        <UsersAuditPanel users={rows} onForbidden={onForbidden} />
       )}
 
       <RoleChangeDialog
@@ -935,7 +733,7 @@ function UsersTab({
         onForbidden={onForbidden}
       />
 
-      <BulkChangeRoleDialog
+      <BulkRoleChangeDialog
         open={bulkOpen}
         count={selectedCount}
         onClose={() => setBulkOpen(false)}
@@ -1081,113 +879,6 @@ function StatusChangeDialog({
 }
 
 /* ====================================================== bulk role dialog == */
-
-function BulkChangeRoleDialog({
-  open,
-  count,
-  onClose,
-  onSaved,
-  onForbidden,
-}: {
-  open: boolean;
-  count: number;
-  onClose: () => void;
-  onSaved: (newRole: Role) => Promise<void>;
-  onForbidden: () => void;
-}) {
-  const [role, setRole] = React.useState<Role>("employee");
-  const [formError, setFormError] = React.useState<React.ReactNode>(null);
-  const [submitting, setSubmitting] = React.useState(false);
-
-  React.useEffect(() => {
-    if (open) {
-      setRole("employee");
-      setFormError(null);
-      setSubmitting(false);
-    }
-  }, [open]);
-
-  async function submit() {
-    setFormError(null);
-    setSubmitting(true);
-    try {
-      await onSaved(role);
-    } catch (err) {
-      if (err instanceof BulkPartialFailureError) {
-        if (err.details.some((d) => d.error.status === 403)) {
-          onForbidden();
-          return;
-        }
-        const failed = err.details;
-        setFormError(
-          <div className="space-y-1.5">
-            <p className="font-medium">
-              {failed.length} of {count} users could not be updated.
-            </p>
-            <ul className="space-y-1">
-              {failed.map((d) => (
-                <li key={d.userId} className="flex items-start gap-2 text-xs">
-                  <span className="font-mono">{d.userId}</span>
-                  <span className="min-w-0 break-words text-error-container-foreground/80">
-                    — {d.error.message}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        );
-        return;
-      }
-      if (err instanceof UsersApiError && err.status === 403) {
-        onForbidden();
-        return;
-      }
-      setFormError(
-        err instanceof Error
-          ? err.message
-          : "Could not change roles. Check your connection and try again."
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      title="Bulk change role"
-      description={`Change the role of ${count} selected users to ${ROLE_LABEL[role]}?`}
-      icon={
-        <span className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-primary">
-          <ShieldCheck className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-        </span>
-      }
-      footer={
-        <>
-          <Button variant="text" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={submitting || count === 0}>
-            {submitting
-              ? "Changing roles…"
-              : `Change role for ${count} user${count === 1 ? "" : "s"}`}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        {formError && <FormErrorBanner message={formError} />}
-        <Select
-          label="New role"
-          required
-          options={ROLE_OPTIONS}
-          value={role}
-          onChange={(v) => setRole(v as Role)}
-        />
-      </div>
-    </Dialog>
-  );
-}
+/* BulkRoleChangeDialog extracted to its own file in #61 (#54c). */
 
 
