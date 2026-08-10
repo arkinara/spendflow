@@ -8,7 +8,7 @@ import { accountsTable, userInvitationsTable, usersTable } from "../db/schema.js
 import type { DB } from "../db/index.js";
 import type { Auth } from "../auth/index.js";
 import type { Env } from "../config.js";
-import { EmailConfigError, sendInviteEmail } from "../email/resend.js";
+import { EmailConfigError, isResendSandbox, sendInviteEmail } from "../email/resend.js";
 import { ROLES, type PublicUser, type Role } from "../types.js";
 import { derivePrimaryRole, parseRoles, serializeRoles } from "./roles.js";
 import { writeAudit } from "./audit.js";
@@ -110,12 +110,19 @@ export interface CreateInviteInput {
  * view; `role` is still required as the legacy/audit label and falls back to
  * `derivePrimaryRole(roles)` for the email + audit snapshot.
  */
+export interface CreateInviteResult {
+  user: PublicUser;
+  invite: { token: string; sentAt: Date; expiresAt: Date };
+  /** Only present in dev/sandbox mode, when delivery fell back to the invite log. */
+  devHint?: { sandbox: boolean; inviteUrl: string };
+}
+
 export async function createInviteForUser(
   db: DB,
   input: CreateInviteInput,
   actorId: string,
   inviteUrlBase = process.env.FE_URL ?? "http://localhost:3000"
-): Promise<{ user: PublicUser; invite: { token: string; sentAt: Date; expiresAt: Date } }> {
+): Promise<CreateInviteResult> {
   const email = input.email.toLowerCase();
   if (!ROLES.includes(input.role)) {
     throw new InviteError(400, "invalid_role", `Role must be one of: ${ROLES.join(", ")}`);
@@ -215,6 +222,7 @@ export async function createInviteForUser(
 
   const inviteUrl = `${inviteUrlBase.replace(/\/$/, "")}/invite/${token}`;
 
+  let devHint: { sandbox: boolean; inviteUrl: string } | undefined;
   if (process.env.RESEND_API_KEY) {
     try {
       await sendInviteEmail({
@@ -230,18 +238,21 @@ export async function createInviteForUser(
       logInviteEmail(email, token, inviteUrl);
       if (err instanceof EmailConfigError) {
         console.warn("email not configured; invite URL logged instead");
+        devHint = { sandbox: isResendSandbox(), inviteUrl };
       } else {
         console.error("Resend delivery failed; invite URL logged instead", err);
         throw err;
       }
     }
+  } else {
+    devHint = { sandbox: isResendSandbox(), inviteUrl };
   }
   // Best-effort log on every path (success or fallback) preserves the pre-#40
   // behavior where the invite URL is always recorded for dev / troubleshooting.
   logInviteEmail(email, token, inviteUrl);
 
   const user = db.select().from(usersTable).where(eq(usersTable.id, userId)).get()!;
-  return { user: toPublic(user), invite: { token, sentAt: now, expiresAt } };
+  return { user: toPublic(user), invite: { token, sentAt: now, expiresAt }, ...(devHint ? { devHint } : {}) };
 }
 
 export interface InviteDetails {

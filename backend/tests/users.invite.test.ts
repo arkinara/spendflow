@@ -17,6 +17,7 @@ import type { Role } from "../src/types.js";
 // log-fallback path because setup.ts unsets RESEND_API_KEY.
 const emailMocks = vi.hoisted(() => ({
   sendInviteEmail: vi.fn(),
+  isResendSandbox: vi.fn(() => true),
   EmailConfigError: class EmailConfigError extends Error {
     constructor(message: string) {
       super(message);
@@ -28,6 +29,7 @@ const emailMocks = vi.hoisted(() => ({
 vi.mock("@/email/resend", () => ({
   EmailConfigError: emailMocks.EmailConfigError,
   sendInviteEmail: emailMocks.sendInviteEmail,
+  isResendSandbox: emailMocks.isResendSandbox,
 }));
 
 let h: Harness;
@@ -77,13 +79,18 @@ describe("POST /api/admin/users", () => {
     const { res, body } = await createInvite("newhire@spendflow.example");
 
     expect(res.status).toBe(201);
-    const b = body as { user: Record<string, unknown>; invite: Record<string, unknown> };
+    const b = body as { user: Record<string, unknown>; invite: Record<string, unknown>; devHint?: { sandbox: boolean; inviteUrl: string } };
     expect(b.user.email).toBe("newhire@spendflow.example");
     expect(b.user.status).toBe("pending");
     expect(b.user.role).toBe("employee");
     // Never expose the credential hash.
     expect(b.user).not.toHaveProperty("passwordHash");
     expect(b.user).not.toHaveProperty("password_hash");
+    // No RESEND_API_KEY → log fallback → devHint surfaces the invite URL.
+    expect(b.devHint).toEqual({
+      sandbox: true,
+      inviteUrl: `http://localhost:3000/invite/${b.invite.token}`,
+    });
     // Token returned once, with expiry ~7 days out.
     expect(b.invite.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(new Date(b.invite.expiresAt as string).getTime()).toBeGreaterThan(
@@ -384,6 +391,9 @@ describe("POST /api/admin/users — email delivery via Resend (mocked)", () => {
     expect(res.status).toBe(201);
     expect(emailMocks.sendInviteEmail).toHaveBeenCalledTimes(1);
 
+    // Real send succeeded — devHint must be absent in non-sandbox mode.
+    expect((body as Record<string, unknown>)).not.toHaveProperty("devHint");
+
     const token = (body as { invite: { token: string } }).invite.token;
     expect(emailMocks.sendInviteEmail).toHaveBeenCalledWith({
       to: "mail@spendflow.example",
@@ -429,6 +439,11 @@ describe("POST /api/admin/users — email delivery via Resend (mocked)", () => {
     );
     const token = (body as { invite: { token: string } }).invite.token;
     expect(readFileSync(INVITE_LOG, "utf8")).toContain(`token=${token}`);
+    // EmailConfigError → log fallback → devHint still present.
+    expect((body as { devHint?: { sandbox: boolean; inviteUrl: string } }).devHint).toEqual({
+      sandbox: true,
+      inviteUrl: `http://localhost:3000/invite/${token}`,
+    });
     warn.mockRestore();
   });
 

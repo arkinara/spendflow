@@ -31,6 +31,15 @@ export interface SendInviteEmailInput {
 
 const DEFAULT_FROM = "SpendFlow <onboarding@resend.dev>";
 
+/**
+ * Placeholder sandbox detection (#57a). True unless an explicit
+ * `RESEND_DOMAIN_VERIFIED=1` flag marks the domain as verified. A real Resend
+ * API call to query verified domains is deferred to a follow-up ticket.
+ */
+export function isResendSandbox(): boolean {
+  return process.env.RESEND_DOMAIN_VERIFIED !== "1";
+}
+
 let client: Resend | null = null;
 
 function getClient(): Resend {

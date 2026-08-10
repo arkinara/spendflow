@@ -64,13 +64,13 @@ export function invitesRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     // new multi-role callers send `roles[]`. `createInviteForUser` reads both
     // (role is required for the audit + email label, roles overrides the set).
     const role = parsed.data.role ?? parsed.data.roles![0];
-    const { user, invite } = await createInviteForUser(
+    const { user, invite, devHint } = await createInviteForUser(
       deps.db,
       { ...parsed.data, role, roles: parsed.data.roles },
       ctx.user.id,
       deps.env.feUrl,
     );
-    return c.json({ user, invite }, 201);
+    return c.json({ user, invite, ...(devHint ? { devHint } : {}) }, 201);
   });
 
   router.get("/api/admin/invites/:token", (c) => {
