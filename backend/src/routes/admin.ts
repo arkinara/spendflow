@@ -17,6 +17,7 @@
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Auth } from "../auth/index.js";
 import { AuthError, requirePasswordReauth, requireRole } from "../auth/permissions.js";
 import type { DB } from "../db/index.js";
@@ -117,6 +118,63 @@ const routeEditSchema = routeCreateSchema.partial();
 const reorderSchema = z.object({
   stepIds: z.array(z.string().min(1)).min(1),
 });
+
+/* ------------------------------------------- dev invite log parsing (#66) --- */
+
+/** Absolute path to the invite-log fallback (repo: backend/logs/invites.log).
+ *  Overridable via `SPENDFLOW_INVITE_LOG` so tests point at a temp file. */
+const DEFAULT_INVITE_LOG_PATH = new URL("../../logs/invites.log", import.meta.url).pathname;
+
+/** Cap the tail read at 5KB so a huge log never blows up a dev request (#66). */
+const INVITE_LOG_TAIL_BYTES = 5120;
+
+/** One parsed `invites.log` line (see `logInviteEmail` in services/invites.ts). */
+export interface DevInviteEntry {
+  email: string;
+  inviteUrl: string;
+  sentAt: string;
+}
+
+const INVITE_LOG_LINE_RE = /^\[([^\]]+)\]\s+email=(\S+)\s+token=\S+\s+url=(\S+)\s*$/;
+
+function parseInviteLogLine(line: string): DevInviteEntry | null {
+  const m = INVITE_LOG_LINE_RE.exec(line.trim());
+  if (!m) return null;
+  return { email: m[2], inviteUrl: m[3], sentAt: m[1] };
+}
+
+/**
+ * Read the last 5 lines of `invites.log`, parsed to `{ email, inviteUrl,
+ * sentAt }`, newest first. Returns `null` when the log file doesn't exist
+ * (the route maps that to 404). The tail is capped at `INVITE_LOG_TAIL_BYTES`;
+ * if the read starts mid-line the partial first line is dropped.
+ */
+export function readRecentInviteEntries(): DevInviteEntry[] | null {
+  const path = process.env.SPENDFLOW_INVITE_LOG ?? DEFAULT_INVITE_LOG_PATH;
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const stat = fstatSync(fd);
+    const readFrom = Math.max(0, stat.size - INVITE_LOG_TAIL_BYTES);
+    const buf = Buffer.alloc(stat.size - readFrom);
+    readSync(fd, buf, 0, buf.length, readFrom);
+    const lines = buf.toString("utf8").split("\n").filter((l) => l.trim() !== "");
+    // A tail read that starts past byte 0 may split a line — drop that fragment.
+    const start = readFrom === 0 ? 0 : 1;
+    return lines
+      .slice(start)
+      .map(parseInviteLogLine)
+      .filter((e): e is DevInviteEntry => e !== null)
+      .slice(-5)
+      .reverse();
+  } finally {
+    closeSync(fd);
+  }
+}
 
 export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
   const router = new Hono();
@@ -265,6 +323,17 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     );
     const result = unblockClaim(deps.db, c.req.param("id"), ctx.user.id, parsed.data);
     return c.json({ claim: result.claim });
+  });
+
+  /* -------------------------- dev-only recent invite log (#66/#57b) ---------- */
+
+  router.get("/api/admin/dev/recent-invites", async (c) => {
+    await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const entries = readRecentInviteEntries();
+    if (entries === null) {
+      return jsonError(c, 404, "not_found", "Invite log not found.");
+    }
+    return c.json({ entries });
   });
 
   return router;
