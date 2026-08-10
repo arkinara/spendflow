@@ -1511,6 +1511,67 @@ describe("User directory — Add User dialog", () => {
     expect(usersMocks.listUsers).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the invite URL inline in the success toast when the BE returns a devHint (#57b)", async () => {
+    usersMocks.createUser.mockResolvedValue({
+      user: backendUser({
+        id: "u-new-1",
+        name: "Citra Lestari",
+        email: "citra.lestari@spendflow.example",
+        role: "approver",
+        managerId: null,
+        department: "Operations",
+        status: "pending",
+      }),
+      invite: {
+        token: "tok_secret",
+        sentAt: TS,
+        expiresAt: "2026-01-08T00:00:00Z",
+      },
+      devHint: {
+        sandbox: true,
+        inviteUrl: "http://localhost:3000/invite/devlink_token",
+      },
+    });
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    expect(
+      await screen.findByText(
+        /invitation sent to citra\.lestari@spendflow\.example — in dev, copy the link below: http:\/\/localhost:3000\/invite\/devlink_token/i
+      )
+    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("keeps the plain toast when the BE returns no devHint (production)", async () => {
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+    const dialog = await openAddDialog();
+
+    fireEvent.change(within(dialog).getByLabelText(/email/i), {
+      target: { value: "citra.lestari@spendflow.example" },
+    });
+    fireEvent.change(within(dialog).getByLabelText(/name/i), {
+      target: { value: "Citra Lestari" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /send invite/i }));
+
+    expect(
+      await screen.findByText(/invitation sent to citra\.lestari@spendflow\.example/i)
+    ).toBeInTheDocument();
+    // No dev-link copy leaks into the production toast.
+    expect(screen.queryByText(/in dev, copy the link below/i)).not.toBeInTheDocument();
+  });
+
   it("defaults to the employee role when no chips are toggled", async () => {
     renderPage();
     await waitForReady(/Aulia Pratiwi/);

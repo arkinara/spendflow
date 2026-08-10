@@ -624,6 +624,44 @@ describe("createUser (#36)", () => {
     });
   });
 
+  it("propagates the devHint from the BE when in sandbox mode (#57b)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(201, {
+        user: PENDING,
+        invite: INVITE,
+        devHint: {
+          sandbox: true,
+          inviteUrl: "http://localhost:3000/invite/devlink_token",
+        },
+      }),
+    );
+
+    const result = await createUser({
+      email: "citra.lestari@spendflow.example",
+      name: "Citra Lestari",
+      role: "approver",
+    });
+
+    expect(result.user).toMatchObject({ id: "u-new-1", status: "pending" });
+    expect(result.invite.token).toBe("tok_secret");
+    expect(result.devHint).toEqual({
+      sandbox: true,
+      inviteUrl: "http://localhost:3000/invite/devlink_token",
+    });
+  });
+
+  it("carries no devHint when the BE sends real email (production)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(201, { user: PENDING, invite: INVITE }));
+
+    const result = await createUser({
+      email: "citra.lestari@spendflow.example",
+      name: "Citra Lestari",
+      role: "approver",
+    });
+
+    expect(result).not.toHaveProperty("devHint");
+  });
+
   it("throws a 409 email_exists typed error for a duplicate email", async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(409, {

@@ -78,6 +78,20 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
   };
 });
 
+/** #57b: mock the admin client so the dev-only panel's fetch is assertable. */
+const adminMocks = vi.hoisted(() => ({
+  getRecentDevInvites: vi.fn(),
+}));
+
+vi.mock("@/lib/api/admin", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/admin")>();
+  return {
+    ...actual,
+    AdminApiError: actual.AdminApiError,
+    getRecentDevInvites: adminMocks.getRecentDevInvites,
+  };
+});
+
 import ExceptionsPage from "@/app/finance/exceptions/page";
 import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
@@ -308,6 +322,7 @@ beforeEach(() => {
   financeMocks.getPayments.mockReset();
   financeMocks.unblockClaim.mockReset();
   usersMocks.listUsers.mockReset();
+  adminMocks.getRecentDevInvites.mockReset();
   financeMocks.getExceptions.mockResolvedValue([]);
   financeMocks.getPayments.mockResolvedValue({
     approved: [],
@@ -315,6 +330,9 @@ beforeEach(() => {
     paid: [],
   });
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
+  adminMocks.getRecentDevInvites.mockResolvedValue([]);
+  // Dev flag defaults off so existing tests run the production path.
+  process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "";
 });
 
 afterEach(() => {
@@ -607,5 +625,90 @@ describe("Exception queue — unblock failure + dismissal", () => {
       within(reopened).getByLabelText(/resolution reason/i)
     ).toHaveValue("");
     expect(financeMocks.unblockClaim).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------- dev email panel (#57b) ========= */
+
+describe("Recent dev emails panel (#57b)", () => {
+  const DEV_ENTRIES = [
+    {
+      email: "dev1@spendflow.example",
+      inviteUrl: "http://localhost:3000/invite/dev1_token",
+      sentAt: "2026-08-10T11:05:44.888Z",
+    },
+    {
+      email: "dev2@spendflow.example",
+      inviteUrl: "http://localhost:3000/invite/dev2_token",
+      sentAt: "2026-08-10T11:05:44.542Z",
+    },
+  ];
+
+  it("renders the panel with per-row Copy buttons only when NEXT_PUBLIC_SPENDFLOW_DEV_MODE=true", async () => {
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "true";
+    adminMocks.getRecentDevInvites.mockResolvedValue(DEV_ENTRIES);
+    renderPage();
+    await waitForQueue(/exception queue/i);
+
+    const heading = await screen.findByRole("heading", { name: /recent dev emails/i });
+    expect(heading).toBeInTheDocument();
+
+    // Each entry surfaces email + a Copy link button.
+    expect(await screen.findByText(/dev1@spendflow\.example/i)).toBeInTheDocument();
+    expect(screen.getByText(/dev2@spendflow\.example/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /copy link for dev1@spendflow\.example/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /copy link for dev2@spendflow\.example/i })
+    ).toBeInTheDocument();
+
+    // Copy writes the URL to the clipboard and flips the button label.
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(navigator, { clipboard });
+    fireEvent.click(
+      screen.getByRole("button", { name: /copy link for dev1@spendflow\.example/i })
+    );
+    await waitFor(() =>
+      expect(clipboard.writeText).toHaveBeenCalledWith("http://localhost:3000/invite/dev1_token")
+    );
+    // The button's visible label flips to "Copied" (aria-label stays the row name).
+    expect(
+      await screen.findByRole("button", { name: /copy link for dev1@spendflow\.example/i })
+    ).toHaveTextContent(/copied/i);
+  });
+
+  it("renders an empty state when dev mode is on but the log has no entries", async () => {
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "true";
+    adminMocks.getRecentDevInvites.mockResolvedValue([]);
+    renderPage();
+
+    expect(await screen.findByText(/no sandbox invites yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /recent dev emails/i })).toBeInTheDocument();
+  });
+
+  it("renders an error state with a working Retry when the fetch fails", async () => {
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "true";
+    adminMocks.getRecentDevInvites
+      .mockRejectedValueOnce(new Error("Backend unreachable."))
+      .mockResolvedValueOnce(DEV_ENTRIES);
+    renderPage();
+
+    expect(await screen.findByText(/backend unreachable/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(await screen.findByText(/dev1@spendflow\.example/i)).toBeInTheDocument();
+    expect(adminMocks.getRecentDevInvites).toHaveBeenCalledTimes(2);
+  });
+
+  it("never renders the panel (or fetches) when dev mode is off", async () => {
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "";
+    renderPage();
+    await waitForQueue(/exception queue/i);
+
+    expect(
+      screen.queryByRole("heading", { name: /recent dev emails/i })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/no sandbox invites yet/i)).not.toBeInTheDocument();
+    expect(adminMocks.getRecentDevInvites).not.toHaveBeenCalled();
   });
 });

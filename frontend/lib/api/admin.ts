@@ -516,6 +516,28 @@ export async function deactivateRoute(id: string): Promise<AdminRoute> {
   return toFERoute(body.route);
 }
 
+/* ========================================================================= */
+/* Dev invite log (#66/#57b)                                                  */
+/* ========================================================================= */
+
+/** One parsed `backend/logs/invites.log` line, newest first. */
+export interface DevInviteEntry {
+  email: string;
+  inviteUrl: string;
+  sentAt: string;
+}
+
+/** `GET /api/admin/dev/recent-invites` (Finance role only) — the last 5
+ *  invite-log entries so devs can copy a sandbox invite URL without opening
+ *  the log file. Returns `{ entries: [...] }`; 404 `not_found` when the log
+ *  file doesn't exist yet. */
+export async function getRecentDevInvites(): Promise<DevInviteEntry[]> {
+  const body = await parseJson<{ entries: DevInviteEntry[] }>(
+    await apiFetch(`/api/admin/dev/recent-invites`, { method: "GET" }),
+  );
+  return body.entries ?? [];
+}
+
 /* ----------------------------------------------------------------- helpers */
 
 /** Build a human label for a route's match criteria (used when no free-text

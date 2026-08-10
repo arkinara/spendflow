@@ -66,6 +66,7 @@ import {
   setUserManager,
   UsersApiError,
   type BackendUser,
+  type CreateUserResult,
 } from "@/lib/api/users";
 import type { Role } from "@/lib/types";
 import { DeleteUserDialog } from "@/app/finance/users/DeleteUserDialog";
@@ -274,9 +275,18 @@ function UsersTab({
 
   const [addOpen, setAddOpen] = React.useState(false);
 
-  function handleUserCreated(email: string) {
+  function handleUserCreated(email: string, devHint?: CreateUserResult["devHint"]) {
     setAddOpen(false);
-    show(`Invitation sent to ${email}`, { tone: "success" });
+    if (devHint?.sandbox) {
+      // #57b: dev/sandbox delivery fell back to the invite log — surface the
+      // invite URL inline so devs don't need to open backend/logs/invites.log.
+      show(
+        `Invitation sent to ${email} — in dev, copy the link below: ${devHint.inviteUrl}`,
+        { tone: "success" }
+      );
+    } else {
+      show(`Invitation sent to ${email}`, { tone: "success" });
+    }
   }
 
   /* ------------------------------------------------ search + role filter (#35) */

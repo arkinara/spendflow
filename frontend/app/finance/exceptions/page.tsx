@@ -38,6 +38,7 @@ import {
   type UnblockClaimInput,
 } from "@/lib/api/finance";
 import { UnblockClaimDialog } from "./UnblockClaimDialog";
+import { RecentDevInvitesPanel } from "@/components/admin/RecentDevInvitesPanel";
 import {
   evaluateLinePolicy,
   violationsForLine,
@@ -217,6 +218,12 @@ export default function ExceptionsPage() {
               }
             />
           </Card>
+        )}
+
+        {/* #57b: dev-only "Recent dev emails" panel — never renders outside
+            NEXT_PUBLIC_SPENDFLOW_DEV_MODE=true (the panel self-guards too). */}
+        {process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE === "true" && (
+          <RecentDevInvitesPanel />
         )}
       </div>
 

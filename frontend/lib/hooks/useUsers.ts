@@ -41,6 +41,7 @@ import {
   UsersApiError,
   type BackendUser,
   type CreateUserInput,
+  type CreateUserResult,
   type UserAuditFilters,
 } from "@/lib/api/users";
 import type { Role, UserStatus, UserAuditEntry } from "@/lib/types";
@@ -82,9 +83,11 @@ export interface UseUsers {
   reactivate: (userId: string) => Promise<BackendUser>;
   /** Create a pending user + invite (#36): POSTs `createUser`, then prepends
    *  the new `status: "pending"` row to the local cache so it appears without a
-   *  refetch. On failure the cache stays unchanged and the error rethrows so the
-   *  dialog can surface it inline (e.g. 409 `email_exists`). */
-  createUser: (input: CreateUserInput) => Promise<BackendUser>;
+   *  refetch. Returns the full BE envelope (incl. `devHint` when in
+   *  dev/sandbox mode, #57b) so the AddUser toast can surface the invite URL.
+   *  On failure the cache stays unchanged and the error rethrows so the dialog
+   *  can surface it inline (e.g. 409 `email_exists`). */
+  createUser: (input: CreateUserInput) => Promise<CreateUserResult>;
   /** Hard-delete a user (#43): POSTs the actor's password via `deleteUser`,
    *  then removes the row from the cache so the table re-renders without a
    *  refetch. On failure the cache is untouched and the error rethrows so the
@@ -206,14 +209,14 @@ export function useUsers(): UseUsers {
    *  failure leave the cache untouched and rethrow for the dialog's inline
    *  error. */
   const createUser = React.useCallback(
-    async (input: CreateUserInput): Promise<BackendUser> => {
-      const { user } = await createUserApi(input);
+    async (input: CreateUserInput): Promise<CreateUserResult> => {
+      const result = await createUserApi(input);
       setState((prev) =>
         prev.status === "ready"
-          ? { status: "ready", rows: [user, ...prev.rows] }
+          ? { status: "ready", rows: [result.user, ...prev.rows] }
           : prev,
       );
-      return user;
+      return result;
     },
     [],
   );

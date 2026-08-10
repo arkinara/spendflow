@@ -13,6 +13,7 @@ import {
   editRoute,
   reorderRouteSteps,
   deactivateRoute,
+  getRecentDevInvites,
   toFECategory,
   toFEPolicy,
   toFERoute,
@@ -484,5 +485,48 @@ describe("summarizeMatch / approverTypeLabel", () => {
     expect(approverTypeLabel("submitter_manager")).toMatch(/manager/i);
     expect(approverTypeLabel("finance")).toMatch(/finance/i);
     expect(approverTypeLabel("specific_user")).toMatch(/named/i);
+  });
+});
+
+/* -------------------------------------------------- dev invite log (#66) ==== */
+
+describe("getRecentDevInvites (#66/#57b)", () => {
+  const ENTRIES = [
+    { email: "dev1@spendflow.example", inviteUrl: "http://localhost:3000/invite/tok_1", sentAt: "2026-08-10T11:05:44.888Z" },
+    { email: "dev2@spendflow.example", inviteUrl: "http://localhost:3000/invite/tok_2", sentAt: "2026-08-10T11:05:44.542Z" },
+  ];
+
+  it("GETs /api/admin/dev/recent-invites with credentials and returns the parsed entries", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { entries: ENTRIES }));
+
+    const result = await getRecentDevInvites();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/dev/recent-invites`);
+    expect(init).toMatchObject({ method: "GET", credentials: "include" });
+    expect(result).toEqual(ENTRIES);
+  });
+
+  it("defaults to an empty list when the BE omits the entries key", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, {}));
+    expect(await getRecentDevInvites()).toEqual([]);
+  });
+
+  it("throws a 403 forbidden typed error for a non-Finance-Admin caller", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(403, { error: { code: "forbidden", message: "Finance admins only." } }),
+    );
+    const err = await getRecentDevInvites().catch((e) => e);
+    expect(err).toBeInstanceOf(AdminApiError);
+    expect(err).toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  it("throws a 404 not_found typed error when the invite log doesn't exist yet", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(404, { error: { code: "not_found", message: "Invite log not found." } }),
+    );
+    const err = await getRecentDevInvites().catch((e) => e);
+    expect(err).toBeInstanceOf(AdminApiError);
+    expect(err).toMatchObject({ status: 404, code: "not_found" });
   });
 });

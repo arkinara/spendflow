@@ -113,6 +113,23 @@ export interface InviteToken {
   expiresAt: string;
 }
 
+/** Dev/sandbox delivery hint returned by `POST /api/admin/users` when the BE
+ *  fell back to writing the invite URL to `backend/logs/invites.log` (#57b) —
+ *  i.e. `RESEND_API_KEY` is unset or the delivery raised `EmailConfigError`.
+ *  Absent in production: real email sends carry no hint. */
+export interface DevHint {
+  sandbox: boolean;
+  inviteUrl: string;
+}
+
+/** Full envelope from `POST /api/admin/users` (#36, #57b). `devHint` is only
+ *  present in dev/sandbox mode. */
+export interface CreateUserResult {
+  user: BackendUser;
+  invite: InviteToken;
+  devHint?: DevHint;
+}
+
 /** Invite details from `GET /api/admin/invites/:token` (public, #36). The BE
  *  returns `costCenter` (the DB column the create flow persists); `jobTitle`
  *  is kept for the mock-era surface and is `null` from the real BE. */
@@ -398,12 +415,12 @@ export async function getUserAudit({
 /** `POST /api/admin/users` (#36) — create a `status: "pending"` user + invite.
  *  Finance Admin only (BE enforces with 403 `forbidden`). Returns the pending
  *  user plus the single-use invite envelope (`token`, `sentAt`, `expiresAt`).
+ *  In dev/sandbox mode the BE also returns `devHint` (#57b) with the invite
+ *  URL for the log fallback — surfaced by the AddUser dialog toast.
  *  Errors: 409 `email_exists`, 400 `invalid_body`/`invalid_role`/`not_found`
  *  (bad manager id). */
-export async function createUser(
-  input: CreateUserInput,
-): Promise<{ user: BackendUser; invite: InviteToken }> {
-  return parseJson<{ user: BackendUser; invite: InviteToken }>(
+export async function createUser(input: CreateUserInput): Promise<CreateUserResult> {
+  return parseJson<CreateUserResult>(
     await apiFetch(`/api/admin/users`, {
       method: "POST",
       headers: { "content-type": "application/json" },

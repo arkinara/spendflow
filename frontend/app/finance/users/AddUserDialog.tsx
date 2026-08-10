@@ -20,7 +20,12 @@ import { Select } from "@/components/ui/Select";
 import { TextField } from "@/components/ui/TextField";
 import { RolesMultiSelect } from "@/components/ui/RolesMultiSelect";
 import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
-import { UsersApiError, type BackendUser, type CreateUserInput } from "@/lib/api/users";
+import {
+  UsersApiError,
+  type BackendUser,
+  type CreateUserInput,
+  type CreateUserResult,
+} from "@/lib/api/users";
 import type { Role } from "@/lib/types";
 
 /** Simple email format check (the BE enforces the real policy; this is a
@@ -39,9 +44,9 @@ export function AddUserDialog({
   open: boolean;
   users: BackendUser[];
   currentUserId: string;
-  createUser: (input: CreateUserInput) => Promise<BackendUser>;
+  createUser: (input: CreateUserInput) => Promise<CreateUserResult>;
   onClose: () => void;
-  onCreated: (email: string) => void;
+  onCreated: (email: string, devHint?: CreateUserResult["devHint"]) => void;
   onForbidden: () => void;
 }) {
   const [email, setEmail] = React.useState("");
@@ -89,7 +94,7 @@ export function AddUserDialog({
     setFormError(null);
     setSubmitting(true);
     try {
-      await createUser({
+      const result = await createUser({
         email: trimmedEmail,
         name: trimmedName,
         roles,
@@ -97,7 +102,7 @@ export function AddUserDialog({
         department: department.trim() || undefined,
         jobTitle: jobTitle.trim() || undefined,
       });
-      onCreated(trimmedEmail);
+      onCreated(trimmedEmail, result.devHint);
     } catch (err) {
       if (err instanceof UsersApiError && err.status === 403) {
         onForbidden();
