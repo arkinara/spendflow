@@ -337,10 +337,23 @@ describe("User directory — role change dialog", () => {
     // fires the multi-role changeUserRoles with exactly ["approver"].
     toggleRole(dialog, "Approver", false);
     toggleRole(dialog, "Employee", true);
-    fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
+
+    // #64: submit stays disabled until a re-auth password is typed.
+    const submit = within(dialog).getByRole("button", { name: /change role/i });
+    expect(submit).toBeDisabled();
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
+    fireEvent.click(submit);
 
     await waitFor(() =>
-      expect(usersMocks.changeUserRoles).toHaveBeenCalledWith("u-emp-1", ["approver"])
+      expect(usersMocks.changeUserRoles).toHaveBeenCalledWith(
+        "u-emp-1",
+        ["approver"],
+        "active",
+        "demo1234"
+      )
     );
     // The list refreshes automatically after the mutation.
     await waitFor(() => expect(usersMocks.listUsers).toHaveBeenCalledTimes(2));
@@ -380,15 +393,43 @@ describe("User directory — role change dialog", () => {
 
     // Add finance → 3 roles submitted as one array.
     toggleRole(dialog, "Finance Admin", false);
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
     fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
 
     await waitFor(() =>
-      expect(usersMocks.changeUserRoles).toHaveBeenCalledWith("u-multi", [
-        "employee",
-        "approver",
-        "finance",
-      ])
+      expect(usersMocks.changeUserRoles).toHaveBeenCalledWith(
+        "u-multi",
+        ["employee", "approver", "finance"],
+        "active",
+        "demo1234"
+      )
     );
+  });
+
+  it("shows the BE's 401 message inline and keeps the dialog open on a wrong password", async () => {
+    usersMocks.changeUserRoles.mockRejectedValue(
+      new UsersApiError(401, "invalid_password", "Incorrect password")
+    );
+    renderPage();
+    await waitForReady(/Aulia Pratiwi/);
+
+    fireEvent.click(within(rowFor("Aulia Pratiwi")).getByRole("button", { name: /change role/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "wrong-password" } }
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
+
+    // BE's message surfaces verbatim; dialog stays open as the retry.
+    expect(await within(dialog).findByText(/incorrect password/i)).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("heading", { name: /change role/i })
+    ).toBeInTheDocument();
   });
 });
 
@@ -1256,6 +1297,10 @@ describe("User directory — 403 access denied", () => {
     fireEvent.click(within(row).getByRole("button", { name: /change role/i }));
     const dialog = await screen.findByRole("dialog");
     toggleRole(dialog, "Approver", false);
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
     fireEvent.click(within(dialog).getByRole("button", { name: /change role/i }));
 
     expect(

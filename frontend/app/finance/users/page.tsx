@@ -432,8 +432,14 @@ function UsersTab({
     clearSelection();
   }
 
-  async function handleRoleSaved(target: BackendUser, newRoles: Role[]) {
-    await changeUserRoles(target.id, newRoles);
+  async function handleRoleSaved(
+    target: BackendUser,
+    newRoles: Role[],
+    password: string,
+  ) {
+    // #64: forward the actor's re-auth password so the BE can verify it
+    // before the destructive role change.
+    await changeUserRoles(target.id, newRoles, "active", password);
     show(
       `Roles for ${target.name} changed to ${newRoles.map((r) => ROLE_LABEL[r]).join(", ")}.`,
       { tone: "success" }

@@ -48,7 +48,7 @@ describe("users / roles / reporting-line admin API", () => {
       h.app,
       `/api/admin/users/${DEMO.employee.id}/role`,
       cookie,
-      { role: "approver" }
+      { role: "approver", password: DEMO.password }
     );
     expect(res.status).toBe(200);
     const body = await res.json();

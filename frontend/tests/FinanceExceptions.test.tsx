@@ -379,7 +379,7 @@ describe("Exception queue — Resolve SoD action", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps Resolve & re-route disabled until a manager + 10+ char resolution are present", async () => {
+  it("keeps Resolve & re-route disabled until a manager + 10+ char resolution + password are present", async () => {
     financeMocks.getExceptions.mockResolvedValue([exceptionItem()]);
     renderPage();
     await waitForQueue(/Q3 Conference/);
@@ -401,6 +401,13 @@ describe("Exception queue — Resolve SoD action", () => {
     expect(submit).toBeDisabled();
 
     await pickOption(dialog, /^new manager/i, /Dewi Anggraeni/i);
+    // Still disabled — no re-auth password yet (#64).
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
     await waitFor(() => expect(submit).toBeEnabled());
   });
 });
@@ -424,14 +431,22 @@ describe("Exception queue — unblock assign_manager", () => {
     fireEvent.change(within(dialog).getByLabelText(/resolution reason/i), {
       target: { value: "Budi has no manager — assigning Dewi to unblock the route." },
     });
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
     fireEvent.click(within(dialog).getByRole("button", { name: /resolve & re-route/i }));
 
     await waitFor(() =>
-      expect(financeMocks.unblockClaim).toHaveBeenCalledWith("clm-9001", {
-        resolution: "Budi has no manager — assigning Dewi to unblock the route.",
-        action: "assign_manager",
-        managerId: "u-mgr-1",
-      })
+      expect(financeMocks.unblockClaim).toHaveBeenCalledWith(
+        "clm-9001",
+        {
+          resolution: "Budi has no manager — assigning Dewi to unblock the route.",
+          action: "assign_manager",
+          managerId: "u-mgr-1",
+        },
+        "demo1234"
+      )
     );
 
     // Success → dialog closes + success toast + row removed (no refetch).
@@ -465,15 +480,23 @@ describe("Exception queue — unblock reassign_step", () => {
     fireEvent.change(within(dialog).getByLabelText(/resolution reason/i), {
       target: { value: "Step 1 resolves to the submitter — repointing to Dewi." },
     });
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
     fireEvent.click(within(dialog).getByRole("button", { name: /resolve & re-route/i }));
 
     await waitFor(() =>
-      expect(financeMocks.unblockClaim).toHaveBeenCalledWith("clm-9002", {
-        resolution: "Step 1 resolves to the submitter — repointing to Dewi.",
-        action: "reassign_step",
-        stepId: "rt-2-s1",
-        newApproverId: "u-mgr-1",
-      })
+      expect(financeMocks.unblockClaim).toHaveBeenCalledWith(
+        "clm-9002",
+        {
+          resolution: "Step 1 resolves to the submitter — repointing to Dewi.",
+          action: "reassign_step",
+          stepId: "rt-2-s1",
+          newApproverId: "u-mgr-1",
+        },
+        "demo1234"
+      )
     );
 
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
@@ -509,6 +532,10 @@ describe("Exception queue — unblock failure + dismissal", () => {
     fireEvent.change(within(dialog).getByLabelText(/resolution reason/i), {
       target: { value: "Assigning a manager to the submitter to unblock the route." },
     });
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
     fireEvent.click(within(dialog).getByRole("button", { name: /resolve & re-route/i }));
 
     // BE's SoD message surfaces verbatim + the dialog stays open (submit is
@@ -516,6 +543,40 @@ describe("Exception queue — unblock failure + dismissal", () => {
     expect(
       await within(dialog).findByText(/would still violate sod\. try a different approver/i)
     ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("heading", { name: /resolve sod block on 'q3 conference'\?/i })
+    ).toBeInTheDocument();
+  });
+
+  it("shows the BE's 401 re-auth message inline and keeps the dialog open", async () => {
+    financeMocks.getExceptions.mockResolvedValue([exceptionItem()]);
+    financeMocks.unblockClaim.mockRejectedValue(
+      new UsersApiError(401, "invalid_password", "Incorrect password")
+    );
+    renderPage();
+    await waitForQueue(/Q3 Conference/);
+
+    fireEvent.click(
+      within(rowFor("Q3 Conference")).getByRole("button", { name: /resolve sod/i })
+    );
+    const dialog = await screen.findByRole("alertdialog");
+
+    fireEvent.click(
+      within(dialog).getByRole("radio", { name: /assign manager to budi santoso/i })
+    );
+    await pickOption(dialog, /^new manager/i, /Dewi Anggraeni/i);
+    fireEvent.change(within(dialog).getByLabelText(/resolution reason/i), {
+      target: { value: "Assigning a manager to the submitter to unblock the route." },
+    });
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "wrong-password" } }
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: /resolve & re-route/i }));
+
+    // #64: BE's 401 message surfaces verbatim + the dialog stays open as the
+    // retry.
+    expect(await within(dialog).findByText(/incorrect password/i)).toBeInTheDocument();
     expect(
       within(dialog).getByRole("heading", { name: /resolve sod block on 'q3 conference'\?/i })
     ).toBeInTheDocument();

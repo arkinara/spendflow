@@ -6,12 +6,14 @@ import {
   getPayments,
   markProcessing,
   markPaid,
+  unblockClaim,
   FinanceApiError,
   toFEPayment,
   type BackendExceptionItem,
   type BackendPaymentQueueItem,
   type BackendPaymentRow,
 } from "@/lib/api/finance";
+import { UsersApiError } from "@/lib/api/users";
 import { BE_URL } from "@/lib/auth/apiClient";
 
 /**
@@ -604,5 +606,51 @@ describe("toFEPayment", () => {
     const p = toFEPayment(paymentRow({ processedAt: null, processedBy: null }));
     expect(p.processedAt).toBeUndefined();
     expect(p.processedBy).toBeUndefined();
+  });
+});
+
+describe("unblockClaim (#48, #64)", () => {
+  it("PATCHes the unblock body and includes the re-auth password when provided", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        claim: {
+          id: "clm-1010",
+          title: "Q3 Conference",
+          status: "pending",
+          currency: "IDR",
+        },
+      }),
+    );
+
+    await unblockClaim(
+      "clm-1010",
+      { resolution: "Assigned a manager to unblock.", action: "assign_manager", managerId: "u-mgr-1" },
+      "demo1234",
+    );
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/claims/clm-1010/unblock`);
+    expect(init).toMatchObject({ method: "PATCH", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      resolution: "Assigned a manager to unblock.",
+      action: "assign_manager",
+      managerId: "u-mgr-1",
+      password: "demo1234",
+    });
+  });
+
+  it("throws a typed UsersApiError 401 invalid_password on a wrong actor password", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(401, { error: { code: "invalid_password", message: "Incorrect password" } }),
+    );
+
+    const err = await unblockClaim(
+      "clm-1010",
+      { resolution: "Unblocking.", action: "assign_manager", managerId: "u-mgr-1" },
+      "wrong",
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 401, code: "invalid_password", message: "Incorrect password" });
   });
 });

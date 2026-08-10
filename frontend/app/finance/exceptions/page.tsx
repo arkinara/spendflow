@@ -156,8 +156,13 @@ export default function ExceptionsPage() {
    * the nav badge. On failure the hook rethrows untouched so the dialog can
    * surface the BE's `still_blocked` message inline.
    */
-  async function handleUnblock(claimId: string, body: UnblockClaimInput) {
-    await unblockClaim(claimId, body);
+  async function handleUnblock(
+    claimId: string,
+    body: UnblockClaimInput,
+    password: string,
+  ) {
+    // #64: forward the actor's re-auth password for BE verification.
+    await unblockClaim(claimId, body, password);
     show(`${unblockTarget?.title} unblocked`, { tone: "success" });
     setUnblockTarget(null);
     // Re-publish the open-flag count so the nav badge decrements now, not

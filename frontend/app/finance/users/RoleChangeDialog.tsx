@@ -9,6 +9,12 @@
  * stays covered by apiUsers.test.ts back-compat tests). On failure the dialog
  * stays open and surfaces the BE error inline; a BE 403 flips the whole page
  * to the access-denied panel via `onForbidden`.
+ *
+ * #64: a password field re-authenticates the actor before the destructive
+ * role change — the submit is disabled until it is non-empty, and a BE 401
+ * (wrong / missing password) surfaces the BE's message inline with the dialog
+ * staying open. The password lives only in local state and is cleared on
+ * close/success.
  * ========================================================================== */
 
 import * as React from "react";
@@ -16,6 +22,7 @@ import { ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { RolesMultiSelect } from "@/components/ui/RolesMultiSelect";
+import { TextField } from "@/components/ui/TextField";
 import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
 import { UsersApiError, type BackendUser } from "@/lib/api/users";
 import { ROLE_LABEL } from "@/lib/auth/session";
@@ -31,32 +38,43 @@ export function RoleChangeDialog({
   open: boolean;
   target: BackendUser | null;
   onClose: () => void;
-  onSaved: (target: BackendUser, newRoles: Role[]) => Promise<void>;
+  onSaved: (target: BackendUser, newRoles: Role[], password: string) => Promise<void>;
   onForbidden: () => void;
 }) {
   const [roles, setRoles] = React.useState<Role[]>(["employee"]);
+  const [password, setPassword] = React.useState("");
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (open && target) {
       setRoles(target.roles ?? [target.role]);
+      setPassword("");
       setFormError(null);
       setSubmitting(false);
     }
   }, [open, target]);
 
+  function handleClose() {
+    // Password never lingers past the dialog's life.
+    setPassword("");
+    setFormError(null);
+    onClose();
+  }
+
   async function submit() {
-    if (!target) return;
+    if (!target || !password) return;
     setFormError(null);
     setSubmitting(true);
     try {
-      await onSaved(target, roles);
+      await onSaved(target, roles, password);
+      setPassword("");
     } catch (err) {
       if (err instanceof UsersApiError && err.status === 403) {
         onForbidden();
         return;
       }
+      // 401 invalid_password / missing_password → the BE's message verbatim.
       setFormError(
         err instanceof Error ? err.message : "Could not change the roles. Check your connection and try again."
       );
@@ -72,7 +90,7 @@ export function RoleChangeDialog({
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       title="Change role"
       description={
         target
@@ -86,10 +104,10 @@ export function RoleChangeDialog({
       }
       footer={
         <>
-          <Button variant="text" onClick={onClose} disabled={submitting}>
+          <Button variant="text" onClick={handleClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={submit} disabled={submitting}>
+          <Button onClick={submit} disabled={submitting || !password}>
             {submitting ? "Saving…" : "Change role"}
           </Button>
         </>
@@ -102,6 +120,19 @@ export function RoleChangeDialog({
           required
           roles={roles}
           onChange={setRoles}
+        />
+        <TextField
+          label="Re-enter your password to confirm"
+          type="password"
+          autoComplete="current-password"
+          helper="Your password must match your current session"
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value);
+            if (formError) setFormError(null);
+          }}
+          required
+          disabled={submitting}
         />
       </div>
     </Dialog>

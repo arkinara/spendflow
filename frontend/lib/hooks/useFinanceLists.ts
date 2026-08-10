@@ -123,9 +123,14 @@ export interface UseFinanceExceptions extends UseFinanceList<FinanceExceptionIte
    * Unblock a `blocked_sod` claim (#48). On success the row is removed from
    * the local cache so the table re-renders without a refetch; on failure the
    * typed error rethrows untouched so the dialog can surface the BE's
-   * message inline (e.g. a 409 `still_blocked`).
+   * message inline (e.g. a 409 `still_blocked`). `password` (#64) is the
+   * actor's own password forwarded to the BE for step-up re-auth.
    */
-  unblockClaim: (claimId: string, body: UnblockClaimInput) => Promise<Claim>;
+  unblockClaim: (
+    claimId: string,
+    body: UnblockClaimInput,
+    password?: string,
+  ) => Promise<Claim>;
 }
 
 /** Claims with an open policy flag that are in Finance's hands to resolve. */
@@ -135,8 +140,12 @@ export function useFinanceExceptions(): UseFinanceExceptions {
   );
 
   const unblockClaim = React.useCallback(
-    async (claimId: string, body: UnblockClaimInput): Promise<Claim> => {
-      const { claim } = await unblockClaimApi(claimId, body);
+    async (
+      claimId: string,
+      body: UnblockClaimInput,
+      password?: string,
+    ): Promise<Claim> => {
+      const { claim } = await unblockClaimApi(claimId, body, password);
       mutate((items) => items.filter((i) => i.id !== claimId));
       return toFEClaim(claim);
     },

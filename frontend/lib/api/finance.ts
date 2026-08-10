@@ -494,14 +494,20 @@ export async function markPaid(claimId: string): Promise<PaymentTransitionResult
  *     `newApproverId`)
  * `resolution` is a required audit justification. Errors are thrown as
  * `UsersApiError` (the endpoint lives in the admin vertical): 400
- * `invalid_body`, 404 `not_found` / `invalid_manager` / `invalid_step` /
+ * `invalid_body`, 401 `invalid_password`/`missing_password` (actor re-auth,
+ * #64), 404 `not_found` / `invalid_manager` / `invalid_step` /
  * `invalid_approver`, 403 `forbidden`, 409 `not_blocked`, and 409
  * `still_blocked` — the last one carries the BE's SoD message verbatim so the
  * unblock dialog can surface "That reassignment would still violate SoD".
+ *
+ * `password` (#64) is the actor's own password, verified server-side via
+ * `requirePasswordReauth` before the claim is mutated. The dialog passes it
+ * and refuses to submit until it is non-empty.
  */
 export async function unblockClaim(
   claimId: string,
   input: UnblockClaimInput,
+  password?: string,
 ): Promise<{ claim: BackendClaim }> {
   const body = await parseJson<{ claim: BackendClaim }>(
     await apiFetch(
@@ -509,7 +515,10 @@ export async function unblockClaim(
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          ...input,
+          ...(password ? { password } : {}),
+        }),
       },
     ),
     UsersApiError,

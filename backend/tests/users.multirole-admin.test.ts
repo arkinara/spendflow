@@ -150,7 +150,7 @@ describe("PATCH /api/admin/users/:id/role — multi-role (#53)", () => {
       h.app,
       `/api/admin/users/${DEMO.employee.id}/role`,
       cookie,
-      { roles: ["employee", "approver", "finance"] },
+      { roles: ["employee", "approver", "finance"], password: DEMO.password },
     );
 
     expect(res.status).toBe(200);
@@ -184,7 +184,7 @@ describe("PATCH /api/admin/users/:id/role — multi-role (#53)", () => {
       h.app,
       `/api/admin/users/${DEMO.employee.id}/role`,
       cookie,
-      { role: "approver" },
+      { role: "approver", password: DEMO.password },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -217,7 +217,7 @@ describe("PATCH /api/admin/users/:id/role — multi-role (#53)", () => {
       h.app,
       `/api/admin/users/${DEMO.finance.id}/role`,
       cookie,
-      { roles: ["employee"] },
+      { roles: ["employee"], password: DEMO.password },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -243,7 +243,7 @@ describe("PATCH /api/admin/users/:id/role — multi-role (#53)", () => {
       h.app,
       `/api/admin/users/${DEMO.finance.id}/role`,
       cookie,
-      { roles: ["approver"] },
+      { roles: ["approver"], password: DEMO.password },
     );
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -259,7 +259,7 @@ describe("PATCH /api/admin/users/:id/role — multi-role (#53)", () => {
       h.app,
       `/api/admin/users/${DEMO.approver.id}/role`,
       cookie,
-      { roles: ["employee"] },
+      { roles: ["employee"], password: DEMO.password },
     );
     expect(res.status).toBe(400);
     const body = await res.json();
@@ -287,7 +287,7 @@ describe("PATCH /api/admin/users/:id/role — multi-role (#53)", () => {
       h.app,
       `/api/admin/users/${DEMO.approver.id}/role`,
       cookie,
-      { roles: ["employee"] },
+      { roles: ["employee"], password: DEMO.password },
     );
     expect(res.status).toBe(200);
     const body = await res.json();

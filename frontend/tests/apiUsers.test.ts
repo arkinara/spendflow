@@ -210,6 +210,37 @@ describe("changeUserRoles (#53)", () => {
     expect(err).toBeInstanceOf(UsersApiError);
     expect((err as UsersApiError).code).toBe("invalid_body");
   });
+
+  it("includes the re-auth password in the body when provided (#64)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        user: backendUser({ role: "approver", roles: ["approver"], primaryRole: "approver" }),
+      }),
+    );
+    const result = await changeUserRoles(
+      "u-emp-1",
+      ["approver"],
+      "active",
+      "demo1234",
+    );
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      roles: ["approver"],
+      status: "active",
+      password: "demo1234",
+    });
+    expect(result.role).toBe("approver");
+  });
+
+  it("omits the password entirely when not provided (bulk/soft-status delegates)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { user: backendUser() }));
+    await changeUserRoles("u-emp-1", ["employee"]);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      roles: ["employee"],
+      status: "active",
+    });
+  });
 });
 
 describe("setUserManager", () => {

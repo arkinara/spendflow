@@ -160,6 +160,7 @@ describe("unblock: happy paths", () => {
         resolution: "Assigned Dewi as Aulia's manager after the org change.",
         action: "assign_manager",
         managerId: DEMO.approver.id,
+        password: DEMO.password,
       }
     );
     expect(res.status).toBe(200);
@@ -202,6 +203,7 @@ describe("unblock: happy paths", () => {
         action: "reassign_step",
         stepId,
         newApproverId: DEMO.approver.id,
+        password: DEMO.password,
       }
     );
     expect(res.status).toBe(200);
@@ -250,6 +252,7 @@ describe("unblock: still_blocked rollback", () => {
         resolution: "Trying to set the submitter as their own manager.",
         action: "assign_manager",
         managerId: "u-selfmgr",
+        password: DEMO.password,
       }
     );
     expect(res.status).toBe(409);
@@ -316,6 +319,7 @@ describe("unblock: authorization + validation", () => {
         resolution: "x",
         action: "assign_manager",
         managerId: DEMO.approver.id,
+        password: DEMO.password,
       }
     );
     expect(res.status).toBe(404);
@@ -399,6 +403,7 @@ describe("unblock: authorization + validation", () => {
         resolution: "x",
         action: "assign_manager",
         managerId: DEMO.approver.id,
+        password: DEMO.password,
       }
     );
     expect(res.status).toBe(409);
@@ -432,6 +437,7 @@ describe("unblock: audit entry", () => {
         resolution: "Audit trail check — assigned Dewi as manager.",
         action: "assign_manager",
         managerId: DEMO.approver.id,
+        password: DEMO.password,
       }
     );
 

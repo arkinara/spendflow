@@ -208,17 +208,28 @@ export async function listUsers(): Promise<BackendUser[]> {
  *  change would strip the last active Finance Admin, 400
  *  `cannot_remove_only_approver_with_reports` if it would strip `approver`
  *  from a user with direct reports. `status` rides along as a
- *  forward-compatible placeholder (#33). */
+ *  forward-compatible placeholder (#33).
+ *
+ *  `password` (#64) is the actor's own password — the BE verifies it via
+ *  `requirePasswordReauth` before mutating anything (401 `invalid_password`
+ *  on mismatch). Optional here so non-destructive delegates (bulk, soft
+ *  deactivate) keep their current signatures; the RoleChangeDialog always
+ *  passes it and refuses to submit until it is non-empty. */
 export async function changeUserRoles(
   userId: string,
   newRoles: Role[],
   status: UserStatus = "active",
+  password?: string,
 ): Promise<BackendUser> {
   const body = await parseJson<{ user: BackendUser }>(
     await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ roles: newRoles, status }),
+      body: JSON.stringify({
+        roles: newRoles,
+        status,
+        ...(password ? { password } : {}),
+      }),
     }),
   );
   return body.user;
@@ -228,13 +239,15 @@ export async function changeUserRoles(
  *  back-compat). Wraps {@link changeUserRoles} with a one-element array.
  *  400 `invalid_role`/`not_found`. `status` is sent along with the role as a
  *  forward-compatible placeholder (#33); it defaults to `"active"` for
- *  callers (bulk/plain role change) that don't track per-user activation. */
+ *  callers (bulk/plain role change) that don't track per-user activation.
+ *  `password` (#64) forwards to {@link changeUserRoles} — see its doc. */
 export async function changeUserRole(
   userId: string,
   newRole: Role,
   status: UserStatus = "active",
+  password?: string,
 ): Promise<BackendUser> {
-  return changeUserRoles(userId, [newRole], status);
+  return changeUserRoles(userId, [newRole], status, password);
 }
 
 /** Current row for a user (used by `deactivate`/`reactivate` to re-send the

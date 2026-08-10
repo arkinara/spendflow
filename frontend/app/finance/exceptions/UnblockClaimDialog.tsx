@@ -17,8 +17,14 @@
  * Error handling mirrors the SetManager/Delete dialogs: on success the parent
  * closes the dialog + toasts + drops the row from the queue (no refetch); on a
  * 409 `still_blocked` the BE's SoD message surfaces inline verbatim and the
- * dialog stays open; any other failure shows a generic inline error. Esc
- * dismisses without submitting, and the form state is cleared on close.
+ * dialog stays open; a 401 (`invalid_password` / `missing_password`, #64)
+ * surfaces the BE's message verbatim too; any other failure shows a generic
+ * inline error. Esc dismisses without submitting, and the form state is
+ * cleared on close.
+ *
+ * #64: a password field next to the resolution re-authenticates the actor
+ * before the unblock — the submit is disabled until it is non-empty. The
+ * password lives only in local state and is cleared on close/success.
  * ========================================================================== */
 
 import * as React from "react";
@@ -26,6 +32,7 @@ import { AlertTriangle, Unlock } from "lucide-react";
 import { Dialog } from "@/components/ui/Dialog";
 import { Select } from "@/components/ui/Select";
 import { TextArea } from "@/components/ui/TextArea";
+import { TextField } from "@/components/ui/TextField";
 import { Button } from "@/components/ui/Button";
 import { FormErrorBanner } from "@/components/ui/FormErrorBanner";
 import { UsersApiError, type BackendUser } from "@/lib/api/users";
@@ -87,7 +94,11 @@ export function UnblockClaimDialog({
 }: {
   claim: FinanceExceptionItem | null;
   onClose: () => void;
-  onSubmit: (claimId: string, body: UnblockClaimInput) => Promise<unknown>;
+  onSubmit: (
+    claimId: string,
+    body: UnblockClaimInput,
+    password: string,
+  ) => Promise<unknown>;
 }) {
   const [action, setAction] = React.useState<UnblockClaimInput["action"]>(
     "assign_manager",
@@ -96,6 +107,7 @@ export function UnblockClaimDialog({
   const [stepId, setStepId] = React.useState("");
   const [newApproverId, setNewApproverId] = React.useState("");
   const [resolution, setResolution] = React.useState("");
+  const [password, setPassword] = React.useState("");
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -119,6 +131,7 @@ export function UnblockClaimDialog({
     setStepId(claim?.routeSteps?.[0]?.id ?? "");
     setNewApproverId("");
     setResolution("");
+    setPassword("");
     setFormError(null);
     setSubmitting(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -158,13 +171,14 @@ export function UnblockClaimDialog({
 
   const canSubmit =
     !submitting &&
+    password.trim() !== "" &&
     resolution.trim().length >= 10 &&
     (action === "assign_manager"
       ? managerId !== ""
       : stepId !== "" && newApproverId !== "");
 
   async function submit() {
-    if (!claim) return;
+    if (!claim || !password) return;
     setFormError(null);
     setSubmitting(true);
     const body: UnblockClaimInput = {
@@ -175,11 +189,15 @@ export function UnblockClaimDialog({
         : { stepId, newApproverId }),
     };
     try {
-      await onSubmit(claim.id, body);
+      await onSubmit(claim.id, body, password);
+      setPassword("");
     } catch (err) {
       if (err instanceof UsersApiError && err.code === "still_blocked") {
         // Defense in depth: the reassignment still violates SoD — surface the
         // BE's message verbatim so Finance picks a different approver.
+        setFormError(err.message);
+      } else if (err instanceof UsersApiError && err.status === 401) {
+        // #64: actor re-auth failed — BE's message verbatim, dialog stays open.
         setFormError(err.message);
       } else {
         setFormError("We couldn't unblock this claim. Please try again.");
@@ -322,6 +340,20 @@ export function UnblockClaimDialog({
           placeholder="e.g. Assigning a manager so the route can resolve — the submitter has none."
           value={resolution}
           onChange={(e) => setResolution(e.target.value)}
+        />
+
+        <TextField
+          label="Re-enter your password to confirm"
+          type="password"
+          autoComplete="current-password"
+          helper="Your password must match your current session"
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value);
+            if (formError) setFormError(null);
+          }}
+          required
+          disabled={submitting}
         />
 
         {formError && <FormErrorBanner message={formError} />}

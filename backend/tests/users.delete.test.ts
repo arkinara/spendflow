@@ -96,11 +96,11 @@ describe("POST /api/admin/users/:id/delete", () => {
     expect(h.db.select().from(usersTable).where(eq(usersTable.id, userId)).get()).toBeDefined();
   });
 
-  it("rejects an empty password with 401 invalid_password", async () => {
+  it("rejects an empty password with 400 invalid_body (blocked at the schema layer)", async () => {
     const { userId, cookie } = await createPendingUser("emptypw@spendflow.example");
     const res = await deleteUser(cookie, userId, "");
-    expect(res.status).toBe(401);
-    expect((await res.json()).error.code).toBe("invalid_password");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("invalid_body");
     expect(h.db.select().from(usersTable).where(eq(usersTable.id, userId)).get()).toBeDefined();
   });
 
