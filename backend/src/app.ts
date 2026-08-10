@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { Auth } from "./auth/index.js";
-import { dataScopeFor, requireAnyRole, requireUser } from "./auth/permissions.js";
+import { dataScopeFor, requireAnyRole, requirePasswordReauth, requireUser } from "./auth/permissions.js";
 import type { DB } from "./db/index.js";
 import type { Env } from "./config.js";
 import {
@@ -42,12 +42,16 @@ export interface AppDeps {
 }
 
 const roleSchema = z.enum(["employee", "approver", "finance"]);
+// #64: password re-auth is required for the destructive role-change mutation.
+// min(1) so an empty body fails at the schema layer with 400 invalid_body
+// (defense in depth — `requirePasswordReauth` also guards `!password` itself).
 const roleChangeSchema = z
   .object({
     role: roleSchema.optional(),
     roles: z.array(roleSchema).optional(),
     // Forward-compat placeholder (#33 status ride-along); ignored by the service.
     status: z.enum(["active", "disabled", "pending"]).optional(),
+    password: z.string().min(1, "Password is required for this action"),
   })
   .refine(
     (d) => (d.role !== undefined ? 1 : 0) + (d.roles !== undefined ? 1 : 0) === 1,
@@ -176,6 +180,16 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
         parsed.error.message,
       );
     }
+    // #64: step-up auth — verify the actor's own password before mutating
+    // roles. AuthError(401, missing_password|invalid_password) bubbles up to
+    // the global onError → JSON envelope.
+    await requirePasswordReauth(
+      auth,
+      db,
+      c.req.raw.headers,
+      parsed.data.password,
+      actor.user.id,
+    );
     const roles = parsed.data.roles ?? [parsed.data.role!];
     const { user, audit } = changeRoles(db, c.req.param("id"), roles, actor.user.id);
     return c.json({ user, audit });

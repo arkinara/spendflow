@@ -1,5 +1,4 @@
 import { eq } from "drizzle-orm";
-import { verifyPassword } from "better-auth/crypto";
 import {
   accountsTable,
   sessionsTable,
@@ -320,16 +319,20 @@ export function asUserStatus(value: unknown): UserStatus | null {
 }
 
 /**
- * Hard-delete a user (pending or disabled only) after re-authenticating the
- * actor via their own password (#42). Active users are protected; the actor's
- * stored hash is verified with better-auth's verifyPassword (never logged,
- * never echoed). The cascade delete (invitations → sessions → accounts →
- * user) and the audit entry commit or roll back together.
+ * Hard-delete a user (pending or disabled only) (#42). Active users are
+ * protected; the cascade delete (invitations → sessions → accounts → user) and
+ * the audit entry commit or roll back together.
+ *
+ * Password re-authentication was previously inlined here using
+ * `verifyPassword`; #64 hoisted that step into the shared
+ * `requirePasswordReauth` helper so role change, claim unblock, and hard
+ * delete all share one step-up auth path. The route handler must call the
+ * helper before invoking this service — the service itself no longer takes a
+ * password.
  */
 export async function hardDeleteUser(
   db: DB,
   targetId: string,
-  password: string,
   actorId: string
 ): Promise<{ deletedUserId: string }> {
   const target = loadOrFail(db, targetId);
@@ -339,17 +342,6 @@ export async function hardDeleteUser(
       "Active users cannot be deleted",
       409
     );
-  }
-
-  const actor = db
-    .select({ passwordHash: usersTable.passwordHash })
-    .from(usersTable)
-    .where(eq(usersTable.id, actorId))
-    .get();
-  const hash = actor?.passwordHash ?? null;
-  const verified = hash !== null && (await verifyPassword({ hash, password }));
-  if (!verified) {
-    throw new UserServiceError("invalid_password", "Invalid password", 401);
   }
 
   const before = {

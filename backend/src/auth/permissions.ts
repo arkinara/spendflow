@@ -1,5 +1,9 @@
+import { eq } from "drizzle-orm";
+import { verifyPassword } from "better-auth/crypto";
 import type { Auth } from "./index.js";
 import type { Role } from "../types.js";
+import type { DB } from "../db/index.js";
+import { usersTable } from "../db/schema.js";
 import { derivePrimaryRole, parseRoles } from "../services/roles.js";
 
 /**
@@ -15,7 +19,14 @@ import { derivePrimaryRole, parseRoles } from "../services/roles.js";
 export class AuthError extends Error {
   constructor(
     public status: number,
-    public code: "unauthenticated" | "forbidden",
+    /**
+     * Stable error code mirrored verbatim into the JSON envelope's
+     * `error.code`. Originally typed to just `"unauthenticated" |
+     * "forbidden"`; widened to `string` in #64 so the password re-auth path
+     * can emit `"missing_password"` / `"invalid_password"` without a parallel
+     * error class.
+     */
+    public code: string,
     message: string
   ) {
     super(message);
@@ -142,4 +153,50 @@ export function dataScopeFor(user: SessionUser): {
     case "finance":
       return { ownOnly: false, userId: user.id, managerId: null, allData: true };
   }
+}
+
+/**
+ * Step-up authentication for destructive admin actions (#64). Re-verifies the
+ * actor's own password against the stored hash before letting the caller
+ * proceed — a stolen or replayed session cookie is not enough on its own to
+ * change a user's role, unblock a claim, or hard-delete a user.
+ *
+ * Contract:
+ *  - missing/empty password → AuthError(401, "missing_password", ...)
+ *  - password that does not verify against the actor's hash →
+ *    AuthError(401, "invalid_password", ...)
+ *  - success → returns the {@link AuthContext} resolved by {@link requireUser}
+ *
+ * `fallbackUserId` is optional — when the caller already has a trusted
+ * `actor.user.id` from `requireAnyRole`, pass it so the hash lookup is
+ * deterministic even if the session were to be mutated mid-request (defence in
+ * depth; the value is always the authenticated session's user id in practice).
+ */
+export async function requirePasswordReauth(
+  auth: Auth,
+  db: DB,
+  headers: Headers,
+  password: string,
+  fallbackUserId?: string
+): Promise<AuthContext> {
+  const ctx = await requireUser(auth, headers);
+  const actorId = fallbackUserId ?? ctx.user.id;
+  if (!password) {
+    throw new AuthError(
+      401,
+      "missing_password",
+      "Password is required for this action"
+    );
+  }
+  const row = db
+    .select({ passwordHash: usersTable.passwordHash })
+    .from(usersTable)
+    .where(eq(usersTable.id, actorId))
+    .get();
+  const hash = row?.passwordHash ?? null;
+  const verified = hash !== null && (await verifyPassword({ hash, password }));
+  if (!verified) {
+    throw new AuthError(401, "invalid_password", "Incorrect password");
+  }
+  return ctx;
 }

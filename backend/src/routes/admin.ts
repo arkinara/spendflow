@@ -18,7 +18,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import type { Auth } from "../auth/index.js";
-import { AuthError, requireRole } from "../auth/permissions.js";
+import { AuthError, requirePasswordReauth, requireRole } from "../auth/permissions.js";
 import type { DB } from "../db/index.js";
 import type { Env } from "../config.js";
 import { APPROVER_TYPES } from "../db/schema.js";
@@ -43,7 +43,7 @@ import { unblockClaim } from "../services/claims.js";
 import { jsonError } from "./claims.js";
 
 const userDeleteSchema = z.object({
-  password: z.string(),
+  password: z.string().min(1, "Password is required for this action"),
 });
 
 /**
@@ -51,6 +51,9 @@ const userDeleteSchema = z.object({
  * action: `assign_manager` requires `managerId`; `reassign_step` requires
  * `stepId` + `newApproverId`. `resolution` is a required free-text
  * justification recorded on the audit entry (never empty).
+ *
+ * `password` (#64) is the actor's own password — verified against the stored
+ * hash via `requirePasswordReauth` before the service mutates anything.
  */
 const unblockSchema = z
   .object({
@@ -59,6 +62,7 @@ const unblockSchema = z
     managerId: z.string().optional(),
     stepId: z.string().optional(),
     newApproverId: z.string().optional(),
+    password: z.string().min(1, "Password is required for this action"),
   })
   .refine(
     (d) =>
@@ -219,7 +223,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ route });
   });
 
-  /* ------------------------------------------------- user hard delete (#42) */
+  /* ------------------------------------------------- user hard delete (#42, #64) */
 
   router.post("/api/admin/users/:id/delete", async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
@@ -228,16 +232,21 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     if (!parsed.success) {
       return jsonError(c, 400, "invalid_body", "Body must be { password: string }");
     }
-    await hardDeleteUser(
+    // #64: verify the actor's password through the shared step-up helper
+    // (previously verified inside hardDeleteUser). AuthError(401,
+    // missing_password|invalid_password) bubbles up via the global onError.
+    await requirePasswordReauth(
+      deps.auth,
       deps.db,
-      c.req.param("id"),
+      c.req.raw.headers,
       parsed.data.password,
-      ctx.user.id
+      ctx.user.id,
     );
+    await hardDeleteUser(deps.db, c.req.param("id"), ctx.user.id);
     return c.body(null, 204);
   });
 
-  /* ------------------------------------------- claim SoD unblock (#48) */
+  /* ------------------------------------------- claim SoD unblock (#48, #64) */
 
   router.patch("/api/admin/claims/:id/unblock", async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
@@ -246,6 +255,14 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     if (!parsed.success) {
       return jsonError(c, 400, "invalid_body", parsed.error.message);
     }
+    // #64: step-up auth — verify the actor's password before unblocking.
+    await requirePasswordReauth(
+      deps.auth,
+      deps.db,
+      c.req.raw.headers,
+      parsed.data.password,
+      ctx.user.id,
+    );
     const result = unblockClaim(deps.db, c.req.param("id"), ctx.user.id, parsed.data);
     return c.json({ claim: result.claim });
   });
