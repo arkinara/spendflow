@@ -1,0 +1,8 @@
+{
+  "name": "spendflow-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "verify": "timeout 900 bash -c 'set -e; echo \"=== BE tsc ===\"; (cd backend && npm run typecheck); echo \"=== BE test ===\"; (cd backend && npm test -- --run); echo \"=== BE build ===\"; (cd backend && npm run build); echo \"=== FE build ===\"; (cd frontend && npm run build); echo \"=== FE tsc ===\"; (cd frontend && npm run typecheck); echo \"=== FE test ===\"; (cd frontend && npm test -- --run); echo \"=== ALL GREEN ===\"'"
+  }
+}
