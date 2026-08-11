@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Wallet, Mail, Lock, ArrowRight, User, ShieldCheck, Banknote, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -153,6 +154,14 @@ function LoginForm() {
                 autoComplete="current-password"
                 required
               />
+              <div className="flex justify-end">
+                <Link
+                  href="/forgot-password"
+                  className="text-sm font-medium text-primary hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <Button type="submit" fullWidth iconRight={ArrowRight} loading={submitting}>
                 Sign in
               </Button>

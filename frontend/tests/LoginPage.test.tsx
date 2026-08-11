@@ -104,6 +104,15 @@ describe("LoginPage flow (BE-backed)", () => {
     expect(screen.getByRole("button", { name: /^sign in$/i })).toBeInTheDocument();
   });
 
+  it("links to /forgot-password below the password field (#69)", async () => {
+    renderLogin();
+    await screen.findByLabelText(/work email/i);
+
+    const link = screen.getByRole("link", { name: /forgot password\?/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/forgot-password");
+  });
+
   it("renders the three demo role preset buttons when the dev flag is on, marked dev-only", async () => {
     vi.stubEnv("NEXT_PUBLIC_SPENDFLOW_DEV_PRESETS", "1");
     renderLogin();
