@@ -41,6 +41,7 @@ import {
 } from "../services/admin.js";
 import { hardDeleteUser } from "../services/users.js";
 import { unblockClaim } from "../services/claims.js";
+import { auditAll, type AuditAllFilters } from "../services/audit.js";
 import { jsonError } from "./claims.js";
 
 const userDeleteSchema = z.object({
@@ -333,6 +334,27 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     if (entries === null) {
       return jsonError(c, 404, "not_found", "Invite log not found.");
     }
+    return c.json({ entries });
+  });
+
+  /* --------------------------- global audit viewer (#71) -------------------- */
+
+  router.get("/api/admin/audit", async (c) => {
+    await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const q = c.req.query();
+    const filters: AuditAllFilters = {};
+    if (typeof q.action === "string" && q.action.length > 0) filters.action = q.action;
+    if (typeof q.actor_id === "string" && q.actor_id.length > 0) filters.actorId = q.actor_id;
+    if (typeof q.target_user_id === "string" && q.target_user_id.length > 0) {
+      filters.targetUserId = q.target_user_id;
+    }
+    const fromNum = q.from !== undefined ? Number(q.from) : NaN;
+    if (Number.isFinite(fromNum)) filters.from = fromNum;
+    const toNum = q.to !== undefined ? Number(q.to) : NaN;
+    if (Number.isFinite(toNum)) filters.to = toNum;
+    const limitNum = q.limit !== undefined ? Number(q.limit) : NaN;
+    if (Number.isFinite(limitNum)) filters.limit = limitNum;
+    const entries = auditAll(deps.db, filters);
     return c.json({ entries });
   });
 
