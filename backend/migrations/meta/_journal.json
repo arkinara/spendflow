@@ -50,6 +50,13 @@
       "when": 1786170000000,
       "tag": "0006_blocked_sod",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786256400000,
+      "tag": "0007_password_resets",
+      "breakpoints": true
     }
   ]
 }

@@ -33,7 +33,9 @@ import { commentErrorHandler, commentRoutes } from "./routes/comments.js";
 import { notificationErrorHandler, notificationRoutes } from "./routes/notifications.js";
 import { reportingErrorHandler, reportingRoutes } from "./routes/reporting.js";
 import { invitesRoutes } from "./routes/invites.js";
+import { authRoutes } from "./routes/auth.js";
 import { InviteError } from "./services/invites.js";
+import { PasswordResetError } from "./services/auth/password-reset.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -87,6 +89,12 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     })
   );
 
+  // SpendFlow-owned public auth endpoints (#69): password reset / forgot
+  // password. Mounted BEFORE the Better Auth catch-all below so the wildcard
+  // handler doesn't swallow them — Better Auth returns 404 for unknown paths
+  // under /api/auth/* and Hono does not fall through after a matched handler.
+  app.route("/", authRoutes({ auth, db, env }));
+
   // Better Auth owns all credential/session endpoints under /api/auth/*:
   //   POST /api/auth/sign-in/email   → login (issues session cookie)
   //   POST /api/auth/sign-out        → logout (invalidates the session)
@@ -125,6 +133,14 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
       return reportingErrorHandler(err, c);
     }
     if (err instanceof InviteError) {
+      return jsonError(
+        c,
+        err.status as ContentfulStatusCode,
+        err.code,
+        err.message
+      );
+    }
+    if (err instanceof PasswordResetError) {
       return jsonError(
         c,
         err.status as ContentfulStatusCode,

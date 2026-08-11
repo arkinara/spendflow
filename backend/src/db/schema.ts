@@ -702,6 +702,47 @@ export const paymentsRelations = relations(paymentsTable, ({ one }) => ({
   }),
 }));
 
+/* ----------------------------------------------------------- password_resets -- */
+
+/**
+ * Single-use password-reset token (#69). The token is opaque (randomUUID v4,
+ * 122 bits entropy) with a 1-hour TTL. Accepted invariant: one active reset
+ * per request (older unconsumed rows for the same user are not invalidated
+ * automatically — consumption marks the row, and a fresh request simply
+ * supersedes via a new row). Single-use enforced by `consumed_at` stamp.
+ */
+export const passwordResetsTable = sqliteTable(
+  "password_resets",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    token: text("token").notNull().unique(),
+    // Unix seconds. Matches the `created_at` DEFAULT (unixepoch()).
+    expiresAt: integer("expires_at").notNull(),
+    consumedAt: integer("consumed_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => ({
+    tokenIdx: index("idx_password_resets_token").on(t.token),
+    userIdx: index("idx_password_resets_user_id").on(t.userId),
+  })
+);
+
+export const passwordResetsRelations = relations(
+  passwordResetsTable,
+  ({ one }) => ({
+    user: one(usersTable, {
+      fields: [passwordResetsTable.userId],
+      references: [usersTable.id],
+    }),
+  })
+);
+
+/** Row type for the password_resets table (re-exported for callers). */
+export type PasswordResetRow = typeof passwordResetsTable.$inferSelect;
+
 /* -------------------------------------------------------------- exports ---- */
 
 /** The schema handed to Better Auth's Drizzle adapter + owned by this app. */
@@ -723,6 +764,7 @@ export const schema = {
   notifications: notificationsTable,
   comments: commentsTable,
   payments: paymentsTable,
+  passwordResets: passwordResetsTable,
 };
 
 export type Schema = typeof schema;

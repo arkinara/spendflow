@@ -10,7 +10,7 @@
  */
 
 import { Resend } from "resend";
-import { renderInviteEmail } from "./template.js";
+import { renderInviteEmail, renderPasswordResetEmail } from "./template.js";
 import type { Role } from "../types.js";
 
 /** Thrown when the Resend integration is not configured (missing/malformed env). */
@@ -70,6 +70,49 @@ export async function sendInviteEmail(
 
   const from = process.env.RESEND_FROM ?? DEFAULT_FROM;
   const { subject, html, text } = renderInviteEmail(input);
+  const resend = getClient();
+
+  const { data, error } = await resend.emails.send({
+    from,
+    to: [input.to],
+    subject,
+    html,
+    text,
+  });
+
+  if (error) {
+    throw new Error(`Resend API error: ${error.name}: ${error.message}`);
+  }
+  if (!data?.id) {
+    throw new Error("Resend returned no message id");
+  }
+  return { id: data.id };
+}
+
+export interface SendPasswordResetEmailInput {
+  to: string;
+  name: string;
+  resetUrl: string;
+  expiresInMinutes: number;
+}
+
+/**
+ * Send the password-reset email (#69) through the Resend sandbox. Same
+ * contract as {@link sendInviteEmail}: returns the Resend message id on
+ * success and throws on missing config or API failure.
+ */
+export async function sendPasswordResetEmail(
+  input: SendPasswordResetEmailInput
+): Promise<{ id: string }> {
+  if (!input.to) {
+    throw new EmailConfigError("Reset email requires a recipient address");
+  }
+  if (!input.resetUrl) {
+    throw new EmailConfigError("Reset email requires a reset URL");
+  }
+
+  const from = process.env.RESEND_FROM ?? DEFAULT_FROM;
+  const { subject, html, text } = renderPasswordResetEmail(input);
   const resend = getClient();
 
   const { data, error } = await resend.emails.send({
