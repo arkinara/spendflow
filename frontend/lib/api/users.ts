@@ -410,6 +410,42 @@ export async function getUserAudit({
   }
 }
 
+/* ----------------------------------------------- global audit (#71) */
+
+/** Filters for the directory-wide audit view (#71). Mirrors the BE's
+ *  `AuditAllFilters` (`backend/src/services/audit.ts`). `from`/`to` are
+ *  unix-seconds bounds against `audit_logs.created_at` (inclusive). */
+export interface AuditAllFilters {
+  action?: string;
+  from?: number;
+  to?: number;
+  actorId?: string;
+  targetUserId?: string;
+  limit?: number;
+}
+
+/** `GET /api/admin/audit` (#71) — directory-wide audit view filtered by action,
+ *  actor, target user, and/or date range. Returns entries newest-first,
+ *  capped at `limit` (default 100, max 500). Finance role only (403 otherwise).
+ *  Errors: 403 `forbidden`, 401 (handled globally by `apiFetch`). */
+export async function getGlobalAudit(
+  filters: AuditAllFilters = {},
+): Promise<UserAuditEntry[]> {
+  const params = new URLSearchParams();
+  if (filters.action) params.set("action", filters.action);
+  if (filters.actorId) params.set("actor_id", filters.actorId);
+  if (filters.targetUserId) params.set("target_user_id", filters.targetUserId);
+  if (filters.from !== undefined) params.set("from", String(filters.from));
+  if (filters.to !== undefined) params.set("to", String(filters.to));
+  if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+  const qs = params.toString();
+  const path = qs ? `/api/admin/audit?${qs}` : "/api/admin/audit";
+  const body = await parseJson<{ entries: UserAuditEntry[] }>(
+    await apiFetch(path, { method: "GET" }),
+  );
+  return body.entries;
+}
+
 /* ----------------------------------------------- invite flow (#36) */
 
 /** `POST /api/admin/users` (#36) — create a `status: "pending"` user + invite.

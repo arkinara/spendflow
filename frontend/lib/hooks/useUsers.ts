@@ -35,10 +35,12 @@ import {
   createUser as createUserApi,
   deactivate as deactivateApi,
   deleteUser as deleteUserApi,
+  getGlobalAudit as getGlobalAuditApi,
   getUserAudit as getUserAuditApi,
   listUsers,
   reactivate as reactivateApi,
   UsersApiError,
+  type AuditAllFilters,
   type BackendUser,
   type CreateUserInput,
   type CreateUserResult,
@@ -62,6 +64,15 @@ export type UserAuditState =
 export interface UseUserAudit {
   state: UserAuditState;
   /** Force a fresh fan-out read of the BE (the "Refresh" button). */
+  refresh: () => void;
+}
+
+/** #71 — directory-wide audit state machine (same shape as `UserAuditState`). */
+export type GlobalAuditState = UserAuditState;
+
+export interface UseGlobalAudit {
+  state: GlobalAuditState;
+  /** Force a fresh read of the BE (the "Refresh" button). */
   refresh: () => void;
 }
 
@@ -303,6 +314,58 @@ export function useUserAudit(filters: UserAuditFilters | null): UseUserAudit {
       cancelled = true;
     };
       }, [userIdsKey, limit, version]);
+
+  const refresh = React.useCallback(() => setVersion((v) => v + 1), []);
+  return { state, refresh };
+}
+
+/** `useGlobalAudit` (#71) — reads the directory-wide audit trail via
+ *  `getGlobalAuditApi` (`GET /api/admin/audit`). Same state machine as
+ *  `useUserAudit` (loading | ready | error | denied) minus the per-user
+ *  fan-out: this is a single request against the global audit endpoint. When
+ *  `filters` is `null` the hook sits `loading` and makes no network calls
+ *  (callers that haven't got a filter state yet). Passing filters fans out one
+ *  fetch on mount and re-runs whenever the filter state changes; a BE 403 maps
+ *  to `denied`, anything else to `error` with the BE message. 401 is handled
+ *  globally by `apiFetch`. */
+export function useGlobalAudit(filters: AuditAllFilters | null): UseGlobalAudit {
+  const [state, setState] = React.useState<GlobalAuditState>({ status: "loading" });
+  const [version, setVersion] = React.useState(0);
+  // Serialize the filter object so callers that pass a fresh literal every
+  // render don't trigger an effect loop (and an OOM). The filters are
+  // primitives-only (action/ids/seconds/limit), so a JSON string is a safe
+  // identity — the fetch re-runs when the actual filter values change.
+  const filtersKey = filters ? JSON.stringify(filters) : null;
+
+  React.useEffect(() => {
+    if (filtersKey === null) {
+      setState({ status: "loading" });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+
+    (async () => {
+      try {
+        const entries = await getGlobalAuditApi(JSON.parse(filtersKey) as AuditAllFilters);
+        if (!cancelled) setState({ status: "ready", entries });
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof UsersApiError && err.status === 403) {
+          setState({ status: "denied" });
+        } else {
+          setState({
+            status: "error",
+            message: err instanceof Error ? err.message : "Failed to load the audit trail.",
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+      }, [filtersKey, version]);
 
   const refresh = React.useCallback(() => setVersion((v) => v + 1), []);
   return { state, refresh };

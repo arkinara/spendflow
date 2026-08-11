@@ -15,33 +15,15 @@
  * ========================================================================== */
 
 import * as React from "react";
-import { AlertTriangle, ChevronDown, History, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronDown, History, RefreshCw, ExternalLink } from "lucide-react";
+import Link from "next/link";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useUserAudit } from "@/lib/hooks/useUsers";
 import type { BackendUser } from "@/lib/api/users";
-import type { UserAuditEntry } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/format";
-
-/** Humanized labels for the admin actions the BE records (#34). */
-const ACTION_LABEL: Record<string, string> = {
-  "role.change": "Role change",
-  "manager.change": "Manager change",
-  "status.change": "Status change",
-};
-
-/** Fallback humanizer for action codes without a known label, e.g.
- *  `"manager.clear"` → "Manager clear". */
-function humanizeAction(action: string): string {
-  if (ACTION_LABEL[action]) return ACTION_LABEL[action];
-  return action
-    .split(".")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
+import { AuditEntryRow } from "@/components/admin/AuditEntryRow";
 
 /**
  * Collapsible "Recent activity" panel. Collapsed by default — the audit
@@ -94,9 +76,19 @@ export function UsersAuditPanel({
           />
         </button>
         {expanded && (
-          <Button variant="text" size="sm" icon={RefreshCw} onClick={refresh}>
-            Refresh
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="text" size="sm" icon={RefreshCw} onClick={refresh}>
+              Refresh
+            </Button>
+            {/* #71: deep-link to the system-wide audit viewer. */}
+            <Link
+              href="/finance/audit"
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:underline"
+            >
+              See all
+              <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+            </Link>
+          </div>
         )}
       </div>
 
@@ -142,82 +134,6 @@ export function UsersAuditPanel({
         </div>
       )}
     </Card>
-  );
-}
-
-/** One audit entry: action label, actor (name · email), target user, a
- *  before → after JSON toggle, and a relative timestamp. Read-only. */
-function AuditEntryRow({
-  entry,
-  userById,
-}: {
-  entry: UserAuditEntry;
-  userById: Map<string, BackendUser>;
-}) {
-  const [showChanges, setShowChanges] = React.useState(false);
-
-  const actor = userById.get(entry.actorId);
-  const target = userById.get(entry.entityId);
-  const hasChanges = entry.before != null || entry.after != null;
-
-  return (
-    <li className="rounded-xl border border-outline-variant bg-surface-container px-4 py-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <p className="text-sm font-medium text-on-surface">{humanizeAction(entry.action)}</p>
-        <time className="text-xs text-on-surface-variant">
-          {formatRelativeTime(entry.createdAt)}
-        </time>
-      </div>
-      <p className="mt-0.5 text-xs text-on-surface-variant">
-        {actor ? (
-          <>
-            <span className="font-medium text-on-surface">{actor.name}</span> · {actor.email}
-          </>
-        ) : (
-          <span className="font-mono">{entry.actorId}</span>
-        )}
-        {" on "}
-        <span className="font-medium text-on-surface">{target?.name ?? entry.entityId}</span>
-      </p>
-      {hasChanges && (
-        <div className="mt-2">
-          <button
-            type="button"
-            onClick={() => setShowChanges((v) => !v)}
-            aria-expanded={showChanges}
-            className="inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:underline"
-          >
-            <ChevronDown
-              className={`h-3.5 w-3.5 transition-transform duration-200 ${
-                showChanges ? "rotate-180" : ""
-              }`}
-              strokeWidth={1.75}
-              aria-hidden
-            />
-            {showChanges ? "Hide changes" : "Show changes"}
-          </button>
-          {showChanges && (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <ChangeBlock label="Before" value={entry.before} />
-              <ChangeBlock label="After" value={entry.after} />
-            </div>
-          )}
-        </div>
-      )}
-    </li>
-  );
-}
-
-function ChangeBlock({ label, value }: { label: string; value: unknown }) {
-  return (
-    <div className="rounded-lg bg-surface-container-high px-3 py-2">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-on-surface-variant">
-        {label}
-      </p>
-      <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-on-surface">
-        {value === null || value === undefined ? "null" : JSON.stringify(value, null, 2)}
-      </pre>
-    </div>
   );
 }
 

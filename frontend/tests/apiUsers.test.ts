@@ -9,6 +9,7 @@ import {
   reactivate,
   deleteUser,
   getUserAudit,
+  getGlobalAudit,
   createUser,
   getInvite,
   acceptInvite,
@@ -565,6 +566,50 @@ describe("getUserAudit (#34)", () => {
 
     expect(err).toBeInstanceOf(UsersApiError);
     expect(err).toMatchObject({ status: 0, code: "audit_unavailable" });
+  });
+});
+
+describe("getGlobalAudit (#71)", () => {
+  it("fetches /api/admin/audit with no query string and returns entries", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { entries: [auditEntry(), auditEntry({ id: "a2", action: "user.create" })] })
+    );
+
+    const result = await getGlobalAudit({});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/audit`);
+    expect(result).toHaveLength(2);
+    expect(result[1].action).toBe("user.create");
+  });
+
+  it("encodes every provided filter as query params", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { entries: [] }));
+
+    await getGlobalAudit({
+      action: "role.change",
+      actorId: "u fin",
+      targetUserId: "u-emp-1",
+      from: 1767225600,
+      to: 1769904000,
+      limit: 50,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${BE_URL}/api/admin/audit?action=role.change&actor_id=u+fin&target_user_id=u-emp-1&from=1767225600&to=1769904000&limit=50`
+    );
+  });
+
+  it("throws a typed 403 forbidden error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(403, { error: { code: "forbidden", message: "Finance admins only." } })
+    );
+
+    const err = await getGlobalAudit({ action: "role.change" }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 403, code: "forbidden" });
+    expect(err.message).toMatch(/Finance admins only/);
   });
 });
 

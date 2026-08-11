@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
-import { useUsers, useUserAudit } from "@/lib/hooks/useUsers";
+import { useUsers, useUserAudit, useGlobalAudit } from "@/lib/hooks/useUsers";
 import { UsersApiError, type BackendUser, type UserAuditEntry } from "@/lib/api/users";
 
 /**
@@ -15,6 +15,7 @@ const usersMocks = vi.hoisted(() => ({
   reactivate: vi.fn(),
   deleteUser: vi.fn(),
   getUserAudit: vi.fn(),
+  getGlobalAudit: vi.fn(),
 }));
 
 vi.mock("@/lib/api/users", async (importOriginal) => {
@@ -26,6 +27,7 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
     reactivate: usersMocks.reactivate,
     deleteUser: usersMocks.deleteUser,
     getUserAudit: usersMocks.getUserAudit,
+    getGlobalAudit: usersMocks.getGlobalAudit,
   };
 });
 
@@ -67,6 +69,7 @@ beforeEach(() => {
   usersMocks.reactivate.mockReset();
   usersMocks.deleteUser.mockReset();
   usersMocks.getUserAudit.mockReset();
+  usersMocks.getGlobalAudit.mockReset();
 });
 
 afterEach(() => {
@@ -362,5 +365,79 @@ describe("useUserAudit (#34)", () => {
     if (result.current.state.status === "error") {
       expect(result.current.state.message).toMatch(/Network is down/);
     }
+  });
+});
+
+describe("useGlobalAudit (#71)", () => {
+  it("with null filters sits loading and makes no network calls", async () => {
+    const { result } = renderHook(() => useGlobalAudit(null));
+
+    expect(result.current.state.status).toBe("loading");
+    expect(usersMocks.getGlobalAudit).not.toHaveBeenCalled();
+  });
+
+  it("starts loading then resolves to a ready entry list when filters are provided", async () => {
+    usersMocks.getGlobalAudit.mockResolvedValue([auditEntry()]);
+    const { result } = renderHook(() =>
+      useGlobalAudit({ action: "role.change", limit: 100 })
+    );
+
+    expect(result.current.state.status).toBe("loading");
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(usersMocks.getGlobalAudit).toHaveBeenCalledWith({
+      action: "role.change",
+      limit: 100,
+    });
+    if (result.current.state.status === "ready") {
+      expect(result.current.state.entries).toHaveLength(1);
+    }
+  });
+
+  it("maps a 403 to the denied state", async () => {
+    usersMocks.getGlobalAudit.mockRejectedValue(
+      new UsersApiError(403, "forbidden", "Finance admins only."),
+    );
+    const { result } = renderHook(() => useGlobalAudit({}));
+
+    await waitFor(() => expect(result.current.state.status).toBe("denied"));
+  });
+
+  it("maps other errors to the error state and refresh retries", async () => {
+    usersMocks.getGlobalAudit
+      .mockRejectedValueOnce(new UsersApiError(500, "internal", "Backend exploded."))
+      .mockResolvedValueOnce([auditEntry()]);
+    const { result } = renderHook(() => useGlobalAudit({ action: "role.change" }));
+
+    await waitFor(() => expect(result.current.state.status).toBe("error"));
+    if (result.current.state.status === "error") {
+      expect(result.current.state.message).toMatch(/Backend exploded/);
+    }
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    expect(result.current.state.status).toBe("loading");
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(usersMocks.getGlobalAudit).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads when the filter values change", async () => {
+    usersMocks.getGlobalAudit.mockResolvedValue([]);
+    const { result, rerender } = renderHook(
+      ({ action }: { action?: string }) => useGlobalAudit({ action, limit: 100 }),
+      { initialProps: { action: "role.change" } },
+    );
+
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(usersMocks.getGlobalAudit).toHaveBeenCalledTimes(1);
+
+    rerender({ action: "user.delete" });
+
+    await waitFor(() => expect(usersMocks.getGlobalAudit).toHaveBeenCalledTimes(2));
+    expect(usersMocks.getGlobalAudit).toHaveBeenLastCalledWith({
+      action: "user.delete",
+      limit: 100,
+    });
   });
 });
