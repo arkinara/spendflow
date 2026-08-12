@@ -21,6 +21,9 @@ revisit:
 - **i18n / multi-currency UI (#82)** — intentionally English-only UI for
   Phase 1; the BE already supports multi-currency at the data layer. Triggers
   to revisit + the work shape if it reopens: [`docs/i18n-decision.md`](docs/i18n-decision.md).
+- **Caching layer (#81)** — intentionally no application-level cache for
+  Phase 1; every request hits the in-process SQLite via a single read path.
+  Triggers to revisit + the work shape if it reopens: [`docs/caching-decision.md`](docs/caching-decision.md).
 
 ## Verification
 
