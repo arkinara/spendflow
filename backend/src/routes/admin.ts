@@ -17,12 +17,13 @@
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
+import { inArray } from "drizzle-orm";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { Auth } from "../auth/index.js";
 import { AuthError, requirePasswordReauth, requireRole } from "../auth/permissions.js";
 import type { DB } from "../db/index.js";
 import type { Env } from "../config.js";
-import { APPROVER_TYPES } from "../db/schema.js";
+import { APPROVER_TYPES, usersTable } from "../db/schema.js";
 import {
   AdminError,
   addCategory,
@@ -42,6 +43,7 @@ import {
 import { hardDeleteUser } from "../services/users.js";
 import { unblockClaim } from "../services/claims.js";
 import { auditAll, type AuditAllFilters } from "../services/audit.js";
+import { rowsToCsv } from "../services/csv.js";
 import { jsonError } from "./claims.js";
 
 const userDeleteSchema = z.object({
@@ -176,6 +178,51 @@ export function readRecentInviteEntries(): DevInviteEntry[] | null {
     closeSync(fd);
   }
 }
+
+/* --------------------------- global audit viewer (#71) -------------------- */
+
+/** Parse the shared `GET /api/admin/audit[.csv]` query string into the typed
+ *  `AuditAllFilters` shape. Used by both the JSON (#71) and CSV (#72) routes
+ *  so the two endpoints always agree on what each filter means. */
+function parseAuditFilters(c: Context): AuditAllFilters {
+  const q = c.req.query();
+  const filters: AuditAllFilters = {};
+  if (typeof q.action === "string" && q.action.length > 0) filters.action = q.action;
+  if (typeof q.actor_id === "string" && q.actor_id.length > 0) filters.actorId = q.actor_id;
+  if (typeof q.target_user_id === "string" && q.target_user_id.length > 0) {
+    filters.targetUserId = q.target_user_id;
+  }
+  const fromNum = q.from !== undefined ? Number(q.from) : NaN;
+  if (Number.isFinite(fromNum)) filters.from = fromNum;
+  const toNum = q.to !== undefined ? Number(q.to) : NaN;
+  if (Number.isFinite(toNum)) filters.to = toNum;
+  const limitNum = q.limit !== undefined ? Number(q.limit) : NaN;
+  if (Number.isFinite(limitNum)) filters.limit = limitNum;
+  return filters;
+}
+
+/** Timestamped export filename for the audit CSV (#72), e.g.
+ *  `audit-2026-08-12-14-30.csv` (YYYY-MM-DD-HH-mm). */
+function auditCsvFilename(now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp =
+    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` +
+    `-${p(now.getHours())}-${p(now.getMinutes())}`;
+  return `audit-${stamp}.csv`;
+}
+
+/** CSV column order for the audit-log export (#72). `before`/`after` carry
+ *  the JSON-stringified snapshots; RFC-4180 quoting handles any escaping
+ *  the embedded JSON needs (commas, quotes, newlines). */
+const AUDIT_CSV_COLUMNS = [
+  "id",
+  "action",
+  "actor_email",
+  "target_email",
+  "before",
+  "after",
+  "created_at_iso",
+] as const;
 
 export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
   const router = new Hono();
@@ -341,21 +388,52 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 
   router.get("/api/admin/audit", async (c) => {
     await requireRole(deps.auth, c.req.raw.headers, "finance");
-    const q = c.req.query();
-    const filters: AuditAllFilters = {};
-    if (typeof q.action === "string" && q.action.length > 0) filters.action = q.action;
-    if (typeof q.actor_id === "string" && q.actor_id.length > 0) filters.actorId = q.actor_id;
-    if (typeof q.target_user_id === "string" && q.target_user_id.length > 0) {
-      filters.targetUserId = q.target_user_id;
-    }
-    const fromNum = q.from !== undefined ? Number(q.from) : NaN;
-    if (Number.isFinite(fromNum)) filters.from = fromNum;
-    const toNum = q.to !== undefined ? Number(q.to) : NaN;
-    if (Number.isFinite(toNum)) filters.to = toNum;
-    const limitNum = q.limit !== undefined ? Number(q.limit) : NaN;
-    if (Number.isFinite(limitNum)) filters.limit = limitNum;
+    const filters = parseAuditFilters(c);
     const entries = auditAll(deps.db, filters);
     return c.json({ entries });
+  });
+
+  /* ------------------------- global audit CSV export (#72) ----------------- */
+
+  router.get("/api/admin/audit.csv", async (c) => {
+    await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const filters = parseAuditFilters(c);
+    const entries = auditAll(deps.db, filters);
+
+    // Resolve actor + target emails via one directory lookup; an unknown id
+    // (departed admin, deleted user, or a non-user entity like a claim)
+    // falls back to the raw id so the CSV never loses a row. Same pattern
+    // the FE AuditEntryRow uses for its inline rendering.
+    const ids = new Set<string>();
+    for (const e of entries) {
+      ids.add(e.actorId);
+      ids.add(e.entityId);
+    }
+    const emailById = new Map<string, string>();
+    if (ids.size > 0) {
+      const rows = deps.db
+        .select({ id: usersTable.id, email: usersTable.email })
+        .from(usersTable)
+        .where(inArray(usersTable.id, [...ids]))
+        .all();
+      for (const r of rows) emailById.set(r.id, r.email);
+    }
+
+    const rows = entries.map((e) => [
+      e.id,
+      e.action,
+      emailById.get(e.actorId) ?? e.actorId,
+      emailById.get(e.entityId) ?? e.entityId,
+      e.before === null || e.before === undefined ? "" : JSON.stringify(e.before),
+      e.after === null || e.after === undefined ? "" : JSON.stringify(e.after),
+      e.createdAt.toISOString(),
+    ]);
+
+    const content = rowsToCsv([...AUDIT_CSV_COLUMNS], rows);
+    c.header("Content-Type", "text/csv; charset=utf-8");
+    c.header("Content-Disposition", `attachment; filename="${auditCsvFilename()}"`);
+    c.header("Cache-Control", "no-store");
+    return c.body(content);
   });
 
   return router;
