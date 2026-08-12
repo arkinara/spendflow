@@ -13,6 +13,7 @@ import { useRole } from "@/lib/auth/session";
 import { Card } from "@/components/ui/Card";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { SlaBadge } from "@/components/ui/SlaBadge";
 import { ListItem } from "@/components/ui/ListItem";
 import { Avatar } from "@/components/ui/Avatar";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -178,7 +179,12 @@ function InboxRow({ item }: { item: BackendInboxItem }) {
             </p>
           </div>
         }
-        trailing={<StatusChip status={item.status as never} size="sm" />}
+        trailing={
+          <div className="flex items-center gap-2">
+            <StatusChip status={item.status as never} size="sm" />
+            {item.sla && <SlaBadge sla={item.sla} />}
+          </div>
+        }
         showChevron
       />
     </li>

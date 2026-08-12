@@ -29,6 +29,24 @@ export type PaymentStatus =
   | "paid"
   | "failed";
 
+/**
+ * SLA bucket a claim falls into based on its age vs the status threshold
+ * (#74). Mirrors `SlaLevel` in `backend/src/services/sla.ts`. Terminal
+ * statuses (`paid`, `rejected`, `draft`) always map to `fresh`.
+ */
+export type SlaLevel = "fresh" | "on_track" | "aging" | "stale" | "breached";
+
+/**
+ * Serializable SLA summary the BE stamps onto every claim-shaped row
+ * (`sla` key). `ageDays` is measured from submission (or creation for
+ * drafts); `thresholdDays` is the status-keyed decision SLA in calendar days.
+ */
+export interface SlaSummary {
+  level: SlaLevel;
+  ageDays: number;
+  thresholdDays: number;
+}
+
 export type ExpenseCategoryId =
   | "flight"
   | "hotel"
@@ -244,6 +262,11 @@ export interface Claim {
    * (#46). Surfaced in the exceptions queue + the unblock dialog (#48).
    */
   blockedReason?: string;
+  /**
+   * SLA summary stamped by the BE on every listing row (#74). Optional so
+   * legacy fixtures / no-sla rows render without a badge.
+   */
+  sla?: SlaSummary;
 }
 
 export interface Payment {

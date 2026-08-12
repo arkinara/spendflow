@@ -18,6 +18,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Avatar } from "@/components/ui/Avatar";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { SlaBadge } from "@/components/ui/SlaBadge";
 import { Dialog } from "@/components/ui/Dialog";
 import { TextField } from "@/components/ui/TextField";
 import { Select } from "@/components/ui/Select";
@@ -352,7 +353,10 @@ function ClaimCardShell({
             {claim.reference} · {claim.employeeName || "Unknown"}
           </p>
         </div>
-        <StatusChip status={claim.status} size="sm" />
+        <div className="flex shrink-0 items-center gap-2">
+          <StatusChip status={claim.status} size="sm" />
+          {claim.sla && <SlaBadge sla={claim.sla} />}
+        </div>
       </div>
       <p className="mt-2 text-base font-bold text-on-surface">
         {formatCurrency(claim.totalAmount, claim.currency)}

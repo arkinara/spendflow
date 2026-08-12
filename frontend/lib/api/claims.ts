@@ -25,6 +25,7 @@ import type {
   ClaimStatus,
   ExpenseCategoryId,
   LineItem,
+  SlaSummary,
 } from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 
@@ -94,6 +95,8 @@ export interface BackendClaim {
   createdAt: string;
   updatedAt: string;
   lineItems: BackendLineItem[];
+  /** SLA summary stamped by the BE on listing rows (#74); absent on some rows. */
+  sla?: SlaSummary;
 }
 
 export interface BackendAuditEntry {
@@ -218,6 +221,7 @@ export function toFEClaim(b: BackendClaim): Claim {
     exception,
     currentStepIndex: b.currentStepIndex,
     blockedReason: b.blockedReason ?? undefined,
+    sla: b.sla,
   };
 }
 

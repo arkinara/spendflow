@@ -20,6 +20,7 @@ import { TextField } from "@/components/ui/TextField";
 import { DateField } from "@/components/ui/DateField";
 import { SegmentedTabs } from "@/components/ui/SegmentedTabs";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { SlaBadge } from "@/components/ui/SlaBadge";
 import { ListItem } from "@/components/ui/ListItem";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -291,7 +292,12 @@ function ClaimRow({ claim }: { claim: Claim }) {
             <p>{formatDate(claim.submittedAt ?? claim.createdAt)}</p>
           </div>
         }
-        trailing={<StatusChip status={claim.status} />}
+        trailing={
+          <div className="flex items-center gap-2">
+            <StatusChip status={claim.status} />
+            {claim.sla && <SlaBadge sla={claim.sla} />}
+          </div>
+        }
         showChevron
       />
     </li>

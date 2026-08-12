@@ -223,6 +223,8 @@ import {
   claimsForApprover,
   getClaim,
   computeClaimTotal,
+  getUserName,
+  routingStepsForClaim,
 } from "@/lib/seed-data";
 import type { Claim } from "@/lib/types";
 import { decideOnClaim, addClaimComment } from "@/lib/store/claimStore";
@@ -390,6 +392,36 @@ describe("Approver inbox — queue filtering & empty state", () => {
     // The decided claim is gone; the other pending claim still renders.
     expect(await screen.findByText("Partner Meeting – Makassar")).toBeInTheDocument();
     expect(screen.queryByText("Q2 Client Visit – Jakarta")).toBeNull();
+  });
+});
+
+describe("Approver inbox — SLA badge on rows (#74)", () => {
+  it("renders the SLA badge in an inbox row when the BE stamps an sla summary", async () => {
+    // Mirror the mock's default listInbox shape but stamp `sla` on the first
+    // pending claim, as the BE does on inbox rows. The other row stays
+    // sla-less to prove the defensive skip doesn't crash.
+    vi.mocked(approvalsApi.listInbox).mockImplementationOnce(async () => {
+      return claimsForApprover().map((c, i) => ({
+        id: c.id,
+        reference: c.reference,
+        title: c.title,
+        employeeId: c.employeeId,
+        employeeName: getUserName(c.employeeId),
+        status: c.status,
+        currency: c.currency,
+        totalAmount: computeClaimTotal(c),
+        submittedAt: c.submittedAt ?? null,
+        currentStepIndex: c.currentStepIndex ?? 0,
+        stepLabel: routingStepsForClaim(c)[c.currentStepIndex ?? 0] ?? "Review",
+        ...(i === 0
+          ? { sla: { level: "stale", ageDays: 6, thresholdDays: 3 } }
+          : {}),
+      }));
+    });
+
+    renderInbox();
+
+    expect(await screen.findByText("Stale: 6d")).toBeInTheDocument();
   });
 });
 

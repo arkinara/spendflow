@@ -23,6 +23,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { DataTable, type Column } from "@/components/ui/DataTable";
 import { StatusChip } from "@/components/ui/StatusChip";
+import { SlaBadge } from "@/components/ui/SlaBadge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { TextArea } from "@/components/ui/TextArea";
@@ -482,7 +483,12 @@ function buildColumns(
     {
       key: "status",
       header: "Status",
-      render: (c) => <StatusChip status={c.status} size="sm" />,
+      render: (c) => (
+        <div className="flex items-center gap-2">
+          <StatusChip status={c.status} size="sm" />
+          {c.sla && <SlaBadge sla={c.sla} />}
+        </div>
+      ),
     },
     {
       key: "actions",

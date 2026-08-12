@@ -15,7 +15,7 @@
 
 import { apiFetch } from "@/lib/api/fetch";
 import { toFEClaim, type BackendClaim } from "@/lib/api/claims";
-import type { Claim } from "@/lib/types";
+import type { Claim, SlaSummary } from "@/lib/types";
 
 /** Typed error carrying the backend's status + code + message. */
 export class ApprovalApiError extends Error {
@@ -45,6 +45,8 @@ export interface BackendInboxItem {
   submittedAt: string | null;
   currentStepIndex: number;
   stepLabel: string;
+  /** SLA summary stamped by the BE on inbox rows (#74); absent on some rows. */
+  sla?: SlaSummary;
 }
 
 /** One routing step on the claim's resolved approval route. */

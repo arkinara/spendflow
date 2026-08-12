@@ -29,6 +29,7 @@ import type {
   Claim,
   ClaimPayment,
   ClaimStatus,
+  SlaSummary,
 } from "@/lib/types";
 import type { CurrencyCode } from "@/lib/format";
 
@@ -100,6 +101,8 @@ export interface BackendPaymentQueueItem {
   totalAmount: number;
   status: ClaimStatus;
   payment: BackendPaymentRow | null;
+  /** SLA summary stamped by the BE on the payment board rows (#74). */
+  sla?: SlaSummary;
 }
 
 /* ------------------------------------------------------------------ FE shapes */
@@ -132,6 +135,8 @@ export interface FinancePaymentItem {
   totalAmount: number;
   /** Adapted FE payment metadata; present once the claim enters Processing. */
   payment?: ClaimPayment;
+  /** SLA summary stamped by the BE on the payment board rows (#74). */
+  sla?: SlaSummary;
 }
 
 export interface FinanceGroup {
@@ -330,6 +335,7 @@ export function toFinancePaymentItem(
     status: item.status,
     totalAmount: item.totalAmount,
     payment: item.payment ? toFEPayment(item.payment) : undefined,
+    sla: item.sla,
   };
 }
 

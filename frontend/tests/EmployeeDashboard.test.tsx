@@ -46,6 +46,7 @@ vi.mock("@/lib/api/claims", async (importOriginal) => {
 });
 
 import EmployeeDashboard from "@/app/employee/page";
+import ClaimHistoryPage from "@/app/employee/claims/page";
 import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
@@ -163,6 +164,36 @@ describe("Employee dashboard — recently paid overview", () => {
     // Each entry surfaces the paid date.
     expect(within(region).getByText(/20 jun 2026/i)).toBeInTheDocument();
     expect(within(region).getByText(/12 may 2026/i)).toBeInTheDocument();
+  });
+});
+
+describe("Employee dashboard — SLA badge on claim rows (#74)", () => {
+  it("renders the SLA badge next to the status chip when the BE stamps an sla summary", async () => {
+    // The BE stamps `sla` on listing rows; make one of the employee's claims
+    // aging so the badge label is distinctive. Others stay sla-less to prove
+    // the defensive skip doesn't crash.
+    vi.mocked(claimsApi.listClaims).mockImplementationOnce(async () => {
+      const rows = claimsForEmployee("u-emp-1");
+      return rows.map((c) =>
+        c.id === "clm-1001"
+          ? { ...c, sla: { level: "aging", ageDays: 4, thresholdDays: 5 } }
+          : c
+      );
+    });
+
+    render(
+      <ThemeProvider>
+        <SessionProvider>
+          <SnackbarProvider>
+            <RouteGuard allowedRoles={["employee"]}>
+              <ClaimHistoryPage />
+            </RouteGuard>
+          </SnackbarProvider>
+        </SessionProvider>
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByText("Aging: 4d")).toBeInTheDocument();
   });
 });
 
