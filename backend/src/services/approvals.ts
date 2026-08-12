@@ -32,6 +32,7 @@ import {
   toClaimRow,
   type ClaimRow,
 } from "./claims.js";
+import { computeClaimSla, type SlaSummary } from "./sla.js";
 
 export class ApprovalError extends Error {
   constructor(
@@ -67,8 +68,11 @@ export interface InboxItem {
   currency: string;
   totalAmount: number;
   submittedAt: Date | null;
+  createdAt: Date;
   currentStepIndex: number;
   stepLabel: string;
+  /** #74: SLA bucket + age for the inbox row. */
+  sla: SlaSummary;
 }
 
 export interface ApproverClaimDetail extends ClaimRow {
@@ -178,8 +182,14 @@ export function approverInbox(
       currency: claim.currency,
       totalAmount,
       submittedAt: claim.submittedAt,
+      createdAt: claim.createdAt,
       currentStepIndex: claim.currentStepIndex,
       stepLabel: step.label,
+      sla: computeClaimSla({
+        status: claim.status,
+        createdAt: claim.createdAt,
+        submittedAt: claim.submittedAt,
+      }),
     });
   }
 

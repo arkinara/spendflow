@@ -36,6 +36,7 @@ import {
   listActivePolicies,
   loadApprovalRoutes,
 } from "./config.js";
+import { decorateClaimWithSla, type SlaSummary } from "./sla.js";
 
 export class ClaimError extends Error {
   constructor(
@@ -150,6 +151,8 @@ export interface ClaimRow {
   createdAt: Date;
   updatedAt: Date;
   lineItems: ClaimLineItemRow[];
+  /** #74: SLA bucket + age in current state; stamped by every listing. */
+  sla?: SlaSummary;
 }
 
 export interface SubmitResult {
@@ -1209,7 +1212,7 @@ export function deleteClaim(db: DB, id: string, employeeId: string): void {
 
 /* --------------------------------------------------------- list / inbox -- */
 
-/** Claims owned by an employee, newest first. */
+/** Claims owned by an employee, newest first. Each row carries an SLA summary (#74). */
 export function listClaimsForEmployee(
   db: DB,
   employeeId: string,
@@ -1228,7 +1231,7 @@ export function listClaimsForEmployee(
     )
     .orderBy(desc(claimsTable.createdAt))
     .all();
-  return rows.map((r) => toClaimRow(db, r));
+  return rows.map((r) => decorateClaimWithSla(toClaimRow(db, r)));
 }
 
 /* ----------------------------------------------------- bulk ops (#73) ---- */

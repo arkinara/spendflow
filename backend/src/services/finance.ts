@@ -35,6 +35,7 @@ import type { DB } from "../db/index.js";
 import { writeAudit } from "./audit.js";
 import { writeNotification } from "./notifications.js";
 import { toClaimRow, type ClaimRow } from "./claims.js";
+import { computeClaimSla, decorateClaimWithSla, type SlaSummary } from "./sla.js";
 
 export class FinanceError extends Error {
   constructor(
@@ -84,6 +85,8 @@ export interface ExceptionQueueItem extends ClaimRow {
    * approved claims (they don't need a step picker).
    */
   routeSteps?: RouteStepSummary[];
+  /** #74: SLA bucket + age in current state (always populated on the queue). */
+  sla: SlaSummary;
 }
 
 /**
@@ -127,7 +130,7 @@ export function getFinanceExceptions(db: DB): ExceptionQueueItem[] {
             }))
         : [];
       out.push({
-        ...claim,
+        ...decorateClaimWithSla(claim),
         employeeName: employee?.name ?? "",
         openFlagCount: 0,
         routeSteps,
@@ -137,7 +140,7 @@ export function getFinanceExceptions(db: DB): ExceptionQueueItem[] {
     const flagged = flaggedLineItems(claim);
     if (flagged.length === 0) continue;
     out.push({
-      ...claim,
+      ...decorateClaimWithSla(claim),
       employeeName: employee?.name ?? "",
       openFlagCount: flagged.length,
     });
@@ -305,6 +308,11 @@ export interface PaymentQueueItem {
   totalAmount: number;
   status: ClaimStatus;
   payment: PaymentRow | null;
+  /** #74: when the claim entered its current state (drives SLA age). */
+  createdAt: Date;
+  submittedAt: Date | null;
+  /** #74: SLA bucket + age in current state (always populated on the board). */
+  sla: SlaSummary;
 }
 
 function loadPaymentForClaim(db: DB, claimId: string): PaymentRow | null {
@@ -330,6 +338,13 @@ function toQueueItem(db: DB, row: typeof claimsTable.$inferSelect): PaymentQueue
     totalAmount: claimTotal(claim),
     status: claim.status,
     payment: loadPaymentForClaim(db, claim.id),
+    createdAt: claim.createdAt,
+    submittedAt: claim.submittedAt,
+    sla: computeClaimSla({
+      status: claim.status,
+      createdAt: claim.createdAt,
+      submittedAt: claim.submittedAt,
+    }),
   };
 }
 
