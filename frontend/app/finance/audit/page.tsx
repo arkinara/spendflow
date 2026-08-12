@@ -22,7 +22,7 @@
  * ========================================================================== */
 
 import * as React from "react";
-import { AlertTriangle, History, RefreshCw, ShieldX, ChevronLeft, ChevronRight } from "lucide-react";
+import { AlertTriangle, Download, History, RefreshCw, ShieldX, ChevronLeft, ChevronRight } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -32,7 +32,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useUsers, useGlobalAudit } from "@/lib/hooks/useUsers";
 import { AuditEntryRow, ALL_AUDIT_ACTIONS, humanizeAction } from "@/components/admin/AuditEntryRow";
-import type { AuditAllFilters } from "@/lib/api/users";
+import { buildAuditCsvUrl, type AuditAllFilters } from "@/lib/api/users";
 
 /** Fetch window for the audit table. Bumped to the BE max so client-side
  *  pagination over the slice has room to breathe (Phase 1). */
@@ -114,6 +114,11 @@ function FinanceAuditView() {
 
   const hasActiveFilters = action !== "" || from !== "" || to !== "";
 
+  // CSV export (#72): top-level <a> navigation so the browser sends the
+  // httpOnly session cookie (SameSite=Lax); the BE's Content-Disposition
+  // header supplies the real filename. Disabled until a fetch has landed.
+  const canExport = state.status === "ready" && entries.length > 0;
+
   return (
     <div className="space-y-5">
       {denied ? (
@@ -135,6 +140,19 @@ function FinanceAuditView() {
           <Card padded={false}>
             {/* filter bar */}
             <div className="space-y-3 border-b border-outline-variant px-5 py-4">
+              <div className="flex justify-end">
+                <a
+                  href={buildAuditCsvUrl(filters)}
+                  download="audit.csv"
+                  aria-disabled={!canExport}
+                  tabIndex={canExport ? 0 : -1}
+                  aria-label="Export CSV"
+                  className="relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full bg-secondary-container px-4 font-medium text-secondary-container-foreground transition-all duration-200 ease-m3 hover:brightness-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 h-9 text-sm"
+                >
+                  <Download className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
+                  Export CSV
+                </a>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Select
                   label="Action"

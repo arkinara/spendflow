@@ -431,6 +431,17 @@ export interface AuditAllFilters {
 export async function getGlobalAudit(
   filters: AuditAllFilters = {},
 ): Promise<UserAuditEntry[]> {
+  const body = await parseJson<{ entries: UserAuditEntry[] }>(
+    await apiFetch(buildAuditPath("/api/admin/audit", filters), { method: "GET" }),
+  );
+  return body.entries;
+}
+
+/** Build the query-string portion shared by the audit JSON + CSV endpoints.
+ *  Exported for `buildAuditCsvUrl` (absolute URL for the `<a href>` download
+ *  link) and reused by `getGlobalAudit` + `downloadAuditCsv` so all three
+ *  callers agree on the wire shape. */
+function buildAuditPath(base: string, filters: AuditAllFilters): string {
   const params = new URLSearchParams();
   if (filters.action) params.set("action", filters.action);
   if (filters.actorId) params.set("actor_id", filters.actorId);
@@ -439,11 +450,31 @@ export async function getGlobalAudit(
   if (filters.to !== undefined) params.set("to", String(filters.to));
   if (filters.limit !== undefined) params.set("limit", String(filters.limit));
   const qs = params.toString();
-  const path = qs ? `/api/admin/audit?${qs}` : "/api/admin/audit";
-  const body = await parseJson<{ entries: UserAuditEntry[] }>(
-    await apiFetch(path, { method: "GET" }),
-  );
-  return body.entries;
+  return qs ? `${base}?${qs}` : base;
+}
+
+/** Absolute URL for the audit CSV download (#72), e.g. for an `<a href>`
+ *  rendered by `/finance/audit`. The browser sends the httpOnly session
+ *  cookie on the top-level GET navigation (SameSite=Lax), and the BE's
+ *  `Content-Disposition: attachment` forces the save with a timestamped
+ *  filename. */
+export function buildAuditCsvUrl(filters: AuditAllFilters = {}): string {
+  return `${BE_URL}${buildAuditPath("/api/admin/audit.csv", filters)}`;
+}
+
+/** `GET /api/admin/audit.csv` (#72) — programmatic CSV download. Returns the
+ *  raw `text/csv` blob so callers that don't want a top-level navigation
+ *  (e.g. a future "email me this export" queue) can stream it themselves.
+ *  Finance role only (403 otherwise). Errors: 403 `forbidden`, 401 (handled
+ *  globally by `apiFetch`). */
+export async function downloadAuditCsv(
+  filters: AuditAllFilters = {},
+): Promise<Blob> {
+  const res = await apiFetch(buildAuditPath("/api/admin/audit.csv", filters), {
+    method: "GET",
+  });
+  if (!res.ok) await readError(res);
+  return res.blob();
 }
 
 /* ----------------------------------------------- invite flow (#36) */

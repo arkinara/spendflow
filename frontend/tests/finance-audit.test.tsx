@@ -61,6 +61,7 @@ import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
 import { UsersApiError, type BackendUser, type UserAuditEntry } from "@/lib/api/users";
+import { BE_URL } from "@/lib/auth/apiClient";
 
 /* ----------------------------------------------------------------- fixtures */
 
@@ -279,5 +280,49 @@ describe("/finance/audit (#71)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitForReady();
     expect(usersMocks.getGlobalAudit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("/finance/audit — Export CSV (#72)", () => {
+  it("shows an Export CSV link when entries exist", async () => {
+    renderPage();
+    await waitForReady();
+
+    const link = screen.getByRole("link", { name: "Export CSV" });
+    expect(link).toBeInTheDocument();
+    expect(link).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("points the link at buildAuditCsvUrl with the current filters", async () => {
+    renderPage();
+    await waitForReady();
+
+    expect(screen.getByRole("link", { name: "Export CSV" })).toHaveAttribute(
+      "href",
+      `${BE_URL}/api/admin/audit.csv?limit=500`
+    );
+
+    // A selected filter rides into the URL.
+    fireEvent.click(screen.getByLabelText("Action"));
+    fireEvent.click(screen.getByRole("button", { name: "Role change" }));
+    await waitFor(() => expect(usersMocks.getGlobalAudit).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole("link", { name: "Export CSV" })).toHaveAttribute(
+      "href",
+      `${BE_URL}/api/admin/audit.csv?action=role.change&limit=500`
+    );
+  });
+
+  it("disables the link when there are no entries", async () => {
+    usersMocks.getGlobalAudit.mockResolvedValue([]);
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("No audit entries yet")).toBeInTheDocument()
+    );
+    expect(screen.getByRole("link", { name: "Export CSV" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
   });
 });

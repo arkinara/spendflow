@@ -10,6 +10,7 @@ import {
   deleteUser,
   getUserAudit,
   getGlobalAudit,
+  downloadAuditCsv,
   createUser,
   getInvite,
   acceptInvite,
@@ -610,6 +611,36 @@ describe("getGlobalAudit (#71)", () => {
     expect(err).toBeInstanceOf(UsersApiError);
     expect(err).toMatchObject({ status: 403, code: "forbidden" });
     expect(err.message).toMatch(/Finance admins only/);
+  });
+});
+
+describe("downloadAuditCsv (#72)", () => {
+  it("GETs the CSV endpoint and returns the raw blob", async () => {
+    fetchMock.mockResolvedValue(
+      new Response('"id","action"\n"1","role.change"\n', {
+        status: 200,
+        headers: { "content-type": "text/csv" },
+      })
+    );
+
+    const blob = await downloadAuditCsv({ action: "role.change" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/audit.csv?action=role.change`);
+    expect(init).toMatchObject({ method: "GET", credentials: "include" });
+    expect(blob.type).toBe("text/csv");
+    expect(await blob.text()).toContain("role.change");
+  });
+
+  it("carries the filters as query params on the CSV URL", async () => {
+    fetchMock.mockResolvedValue(new Response("", { status: 200 }));
+
+    await downloadAuditCsv({ from: 1767225600, to: 1769904000, limit: 50 });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${BE_URL}/api/admin/audit.csv?from=1767225600&to=1769904000&limit=50`
+    );
   });
 });
 
