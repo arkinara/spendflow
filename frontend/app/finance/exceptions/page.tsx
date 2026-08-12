@@ -44,6 +44,7 @@ import { BulkApproveDialog } from "@/components/admin/BulkApproveDialog";
 import { BulkRejectDialog } from "@/components/admin/BulkRejectDialog";
 import { BulkPayDialog } from "@/components/admin/BulkPayDialog";
 import { RecentDevInvitesPanel } from "@/components/admin/RecentDevInvitesPanel";
+import { RecentWebhookEventsPanel } from "@/components/admin/RecentWebhookEventsPanel";
 import {
   evaluateLinePolicy,
   violationsForLine,
@@ -335,7 +336,12 @@ export default function ExceptionsPage() {
         {/* #57b: dev-only "Recent dev emails" panel — never renders outside
             NEXT_PUBLIC_SPENDFLOW_DEV_MODE=true (the panel self-guards too). */}
         {process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE === "true" && (
-          <RecentDevInvitesPanel />
+          <>
+            <RecentDevInvitesPanel />
+            {/* #75: dev-only webhook dispatch history — self-guards on the
+                same dev-mode flag. */}
+            <RecentWebhookEventsPanel />
+          </>
         )}
       </div>
 

@@ -84,9 +84,10 @@ vi.mock("@/lib/api/users", async (importOriginal) => {
   };
 });
 
-/** #57b: mock the admin client so the dev-only panel's fetch is assertable. */
+/** #57b/#75: mock the admin client so the dev-only panels' fetches are assertable. */
 const adminMocks = vi.hoisted(() => ({
   getRecentDevInvites: vi.fn(),
+  getRecentWebhookEvents: vi.fn(),
 }));
 
 vi.mock("@/lib/api/admin", async (importOriginal) => {
@@ -95,6 +96,7 @@ vi.mock("@/lib/api/admin", async (importOriginal) => {
     ...actual,
     AdminApiError: actual.AdminApiError,
     getRecentDevInvites: adminMocks.getRecentDevInvites,
+    getRecentWebhookEvents: adminMocks.getRecentWebhookEvents,
   };
 });
 
@@ -339,6 +341,7 @@ beforeEach(() => {
   financeMocks.bulkPayClaims.mockReset();
   usersMocks.listUsers.mockReset();
   adminMocks.getRecentDevInvites.mockReset();
+  adminMocks.getRecentWebhookEvents.mockReset();
   financeMocks.getExceptions.mockResolvedValue([]);
   financeMocks.getPayments.mockResolvedValue({
     approved: [],
@@ -347,6 +350,7 @@ beforeEach(() => {
   });
   usersMocks.listUsers.mockResolvedValue(SEED_USERS);
   adminMocks.getRecentDevInvites.mockResolvedValue([]);
+  adminMocks.getRecentWebhookEvents.mockResolvedValue([]);
   // Dev flag defaults off so existing tests run the production path.
   process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "";
 });
@@ -974,5 +978,85 @@ describe("Recent dev emails panel (#57b)", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/no sandbox invites yet/i)).not.toBeInTheDocument();
     expect(adminMocks.getRecentDevInvites).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------ webhook events panel (#75) =========== */
+
+describe("Recent webhook events panel (#75)", () => {
+  const WEBHOOK_EVENTS = [
+    {
+      id: "wh-1",
+      kind: "claim.paid",
+      claimId: "clm_paid_1",
+      delivered: true,
+      attempts: 1,
+      lastError: null,
+      createdAt: "2026-08-11T09:00:00.000Z",
+    },
+    {
+      id: "wh-2",
+      kind: "claim.submitted",
+      claimId: "clm_sub_2",
+      delivered: false,
+      attempts: 3,
+      lastError: "HTTP 500",
+      createdAt: "2026-08-11T08:55:00.000Z",
+    },
+  ];
+
+  it("renders delivered/failed badges and Copy claim id buttons in dev mode", async () => {
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "true";
+    adminMocks.getRecentWebhookEvents.mockResolvedValue(WEBHOOK_EVENTS);
+    renderPage();
+    await waitForQueue(/exception queue/i);
+
+    const heading = await screen.findByRole("heading", { name: /recent webhook events/i });
+    expect(heading).toBeInTheDocument();
+
+    expect(await screen.findByText("claim.paid")).toBeInTheDocument();
+    expect(screen.getByText("claim.submitted")).toBeInTheDocument();
+    expect(screen.getByText("Delivered")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText(/clm_paid_1/)).toBeInTheDocument();
+    expect(screen.getByText(/clm_sub_2/)).toBeInTheDocument();
+    // The failed row surfaces the last error + attempt count.
+    expect(screen.getByText(/HTTP 500/)).toBeInTheDocument();
+
+    // Copy writes the claim id to the clipboard and flips the button label.
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(navigator, { clipboard });
+    fireEvent.click(
+      screen.getByRole("button", { name: /copy claim id for clm_paid_1/i })
+    );
+    await waitFor(() =>
+      expect(clipboard.writeText).toHaveBeenCalledWith("clm_paid_1")
+    );
+    expect(
+      await screen.findByRole("button", { name: /copy claim id for clm_paid_1/i })
+    ).toHaveTextContent(/copied/i);
+    expect(adminMocks.getRecentWebhookEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders an empty state in dev mode and never renders when dev mode is off", async () => {
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "true";
+    adminMocks.getRecentWebhookEvents.mockResolvedValue([]);
+    const { unmount } = renderPage();
+
+    expect(await screen.findByText(/no webhook events yet/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /recent webhook events/i })
+    ).toBeInTheDocument();
+    unmount();
+
+    // Dev mode off → whole subtree (incl. both panels) stays unmounted.
+    process.env.NEXT_PUBLIC_SPENDFLOW_DEV_MODE = "";
+    adminMocks.getRecentWebhookEvents.mockClear();
+    renderPage();
+    await waitForQueue(/exception queue/i);
+    expect(
+      screen.queryByRole("heading", { name: /recent webhook events/i })
+    ).not.toBeInTheDocument();
+    expect(adminMocks.getRecentWebhookEvents).not.toHaveBeenCalled();
   });
 });

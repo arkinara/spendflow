@@ -14,6 +14,7 @@ import {
   reorderRouteSteps,
   deactivateRoute,
   getRecentDevInvites,
+  getRecentWebhookEvents,
   toFECategory,
   toFEPolicy,
   toFERoute,
@@ -526,6 +527,57 @@ describe("getRecentDevInvites (#66/#57b)", () => {
       jsonResponse(404, { error: { code: "not_found", message: "Invite log not found." } }),
     );
     const err = await getRecentDevInvites().catch((e) => e);
+    expect(err).toBeInstanceOf(AdminApiError);
+    expect(err).toMatchObject({ status: 404, code: "not_found" });
+  });
+});
+
+/* ------------------------------------------- webhook history (#75) ========= */
+
+describe("getRecentWebhookEvents (#75)", () => {
+  const ENTRIES = [
+    {
+      id: "wh-1",
+      kind: "claim.submitted",
+      claimId: "clm_1",
+      delivered: true,
+      attempts: 1,
+      lastError: null,
+      createdAt: "2026-08-11T09:00:00.000Z",
+    },
+    {
+      id: "wh-2",
+      kind: "claim.paid",
+      claimId: "clm_2",
+      delivered: false,
+      attempts: 3,
+      lastError: "HTTP 500",
+      createdAt: "2026-08-11T08:55:00.000Z",
+    },
+  ];
+
+  it("GETs /api/admin/dev/webhook-recent?limit=20 with credentials and returns the parsed entries", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { entries: ENTRIES }));
+
+    const result = await getRecentWebhookEvents();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/dev/webhook-recent?limit=20`);
+    expect(init).toMatchObject({ method: "GET", credentials: "include" });
+    expect(result).toEqual(ENTRIES);
+  });
+
+  it("passes through a custom limit and defaults to an empty list when the BE omits entries", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, {}));
+    expect(await getRecentWebhookEvents(5)).toEqual([]);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BE_URL}/api/admin/dev/webhook-recent?limit=5`);
+  });
+
+  it("throws a 404 not_found typed error when the history log doesn't exist yet", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(404, { error: { code: "not_found", message: "Webhook history log not found." } }),
+    );
+    const err = await getRecentWebhookEvents().catch((e) => e);
     expect(err).toBeInstanceOf(AdminApiError);
     expect(err).toMatchObject({ status: 404, code: "not_found" });
   });

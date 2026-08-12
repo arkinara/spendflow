@@ -538,6 +538,30 @@ export async function getRecentDevInvites(): Promise<DevInviteEntry[]> {
   return body.entries ?? [];
 }
 
+/** One webhook dispatch attempt persisted to `webhook-history.log` (#75). */
+export interface WebhookEvent {
+  id: string;
+  kind: string;
+  claimId: string;
+  delivered: boolean;
+  attempts: number;
+  lastError: string | null;
+  createdAt: string;
+}
+
+/** `GET /api/admin/dev/webhook-recent?limit=N` (Finance role only) — the last
+ *  N webhook dispatch attempts so devs can see whether Slack/Teams deliveries
+ *  failed without opening the log file. Returns `{ entries: [...] }`;
+ *  404 `not_found` when the history log doesn't exist yet. */
+export async function getRecentWebhookEvents(limit: number = 20): Promise<WebhookEvent[]> {
+  const body = await parseJson<{ entries: WebhookEvent[] }>(
+    await apiFetch(`/api/admin/dev/webhook-recent?limit=${encodeURIComponent(String(limit))}`, {
+      method: "GET",
+    }),
+  );
+  return body.entries ?? [];
+}
+
 /* ----------------------------------------------------------------- helpers */
 
 /** Build a human label for a route's match criteria (used when no free-text
