@@ -36,6 +36,7 @@ import { invitesRoutes } from "./routes/invites.js";
 import { authRoutes } from "./routes/auth.js";
 import { InviteError } from "./services/invites.js";
 import { PasswordResetError } from "./services/auth/password-reset.js";
+import { rateLimit } from "./middleware/rate-limit.js";
 
 export interface AppDeps {
   auth: Auth;
@@ -73,6 +74,15 @@ const setManagerSchema = z.object({
  */
 export function createApp({ auth, db, env }: AppDeps): Hono {
   const app = new Hono();
+
+  // #70 — destructive user-admin mutations (role change, manager change)
+  // share a 60/IP/hour bucket. Independent from the categories/policies/routes
+  // mutation bucket (lives in admin.ts) and the user-create bucket (invites.ts).
+  const adminMutationLimiter = rateLimit({
+    limit: 60,
+    windowMs: 60 * 60 * 1000,
+    blockMessage: "Too many admin mutations from this IP. Try again later.",
+  });
 
   const origins = env.frontendOrigin
     ? env.frontendOrigin.split(",").map((s) => s.trim()).filter(Boolean)
@@ -184,7 +194,7 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     return c.json({ users: listUsers(db) });
   });
 
-  app.patch("/api/admin/users/:id/role", async (c) => {
+  app.patch("/api/admin/users/:id/role", adminMutationLimiter.middleware, async (c) => {
     const actor = await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     const body = await c.req.json().catch(() => ({}));
     const parsed = roleChangeSchema.safeParse(body);
@@ -211,7 +221,7 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
     return c.json({ user, audit });
   });
 
-  app.patch("/api/admin/users/:id/manager", async (c) => {
+  app.patch("/api/admin/users/:id/manager", adminMutationLimiter.middleware, async (c) => {
     const actor = await requireAnyRole(auth, c.req.raw.headers, ["finance"]);
     const body = await c.req.json().catch(() => ({}));
     const parsed = setManagerSchema.safeParse(body);

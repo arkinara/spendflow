@@ -44,6 +44,7 @@ import { hardDeleteUser } from "../services/users.js";
 import { bulkApprove, bulkReject, bulkPay, BulkClaimError, unblockClaim } from "../services/claims.js";
 import { auditAll, type AuditAllFilters } from "../services/audit.js";
 import { rowsToCsv } from "../services/csv.js";
+import { rateLimit } from "../middleware/rate-limit.js";
 import { jsonError } from "./claims.js";
 
 const userDeleteSchema = z.object({
@@ -251,6 +252,34 @@ const AUDIT_CSV_COLUMNS = [
 export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
   const router = new Hono();
 
+  /* ---------------------------------------- #70 destructive rate limits ---- */
+  // Three IP-keyed tiers on destructive admin endpoints (brute-force /
+  // script protection). Read-only GETs below are intentionally unlimited.
+  // State is per-process (Phase 1 caveat — same as forgotLimiter in auth.ts).
+  //
+  //   adminMutationLimiter  60/IP/hour — create/update/deactivate
+  //   adminBulkLimiter      30/IP/hour — bulk approve/reject/pay
+  //   adminDeleteLimiter    10/IP/hour — hard delete (most destructive)
+  //
+  // bulk-pay carries only adminBulkLimiter (not adminDeleteLimiter): the two
+  // would otherwise compete and the tighter (10) would bind, contradicting
+  // the 30/hour bulk contract. Hard delete stays the sole 10/hour path.
+  const adminMutationLimiter = rateLimit({
+    limit: 60,
+    windowMs: 60 * 60 * 1000,
+    blockMessage: "Too many admin mutations from this IP. Try again later.",
+  });
+  const adminBulkLimiter = rateLimit({
+    limit: 30,
+    windowMs: 60 * 60 * 1000,
+    blockMessage: "Too many bulk claim operations from this IP. Try again later.",
+  });
+  const adminDeleteLimiter = rateLimit({
+    limit: 10,
+    windowMs: 60 * 60 * 1000,
+    blockMessage: "Too many destructive operations from this IP. Try again later.",
+  });
+
   /* ------------------------------------------------------------ categories -- */
 
   router.get("/api/admin/categories", async (c) => {
@@ -258,7 +287,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ categories: listCategories(deps.db) });
   });
 
-  router.post("/api/admin/categories", async (c) => {
+  router.post("/api/admin/categories", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = categoryCreateSchema.safeParse(body);
@@ -267,7 +296,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ category });
   });
 
-  router.patch("/api/admin/categories/:id", async (c) => {
+  router.patch("/api/admin/categories/:id", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = categoryEditSchema.safeParse(body);
@@ -276,7 +305,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ category });
   });
 
-  router.delete("/api/admin/categories/:id", async (c) => {
+  router.delete("/api/admin/categories/:id", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const category = deactivateCategory(deps.db, ctx.user.id, c.req.param("id"));
     return c.json({ category });
@@ -289,7 +318,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ policies: listPolicies(deps.db) });
   });
 
-  router.post("/api/admin/policies", async (c) => {
+  router.post("/api/admin/policies", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = policyCreateSchema.safeParse(body);
@@ -298,7 +327,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ policy });
   });
 
-  router.patch("/api/admin/policies/:id", async (c) => {
+  router.patch("/api/admin/policies/:id", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = policyEditSchema.safeParse(body);
@@ -307,7 +336,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ policy });
   });
 
-  router.delete("/api/admin/policies/:id", async (c) => {
+  router.delete("/api/admin/policies/:id", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const policy = deactivatePolicy(deps.db, ctx.user.id, c.req.param("id"));
     return c.json({ policy });
@@ -320,7 +349,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ routes: listRoutes(deps.db) });
   });
 
-  router.post("/api/admin/routes", async (c) => {
+  router.post("/api/admin/routes", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = routeCreateSchema.safeParse(body);
@@ -329,7 +358,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ route });
   });
 
-  router.patch("/api/admin/routes/:id", async (c) => {
+  router.patch("/api/admin/routes/:id", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = routeEditSchema.safeParse(body);
@@ -338,7 +367,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ route });
   });
 
-  router.post("/api/admin/routes/:id/reorder", async (c) => {
+  router.post("/api/admin/routes/:id/reorder", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = reorderSchema.safeParse(body);
@@ -347,7 +376,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ route });
   });
 
-  router.delete("/api/admin/routes/:id", async (c) => {
+  router.delete("/api/admin/routes/:id", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const route = deactivateRoute(deps.db, ctx.user.id, c.req.param("id"));
     return c.json({ route });
@@ -355,7 +384,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 
   /* ------------------------------------------------- user hard delete (#42, #64) */
 
-  router.post("/api/admin/users/:id/delete", async (c) => {
+  router.post("/api/admin/users/:id/delete", adminDeleteLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = userDeleteSchema.safeParse(body);
@@ -378,7 +407,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 
   /* ------------------------------------------- claim SoD unblock (#48, #64) */
 
-  router.patch("/api/admin/claims/:id/unblock", async (c) => {
+  router.patch("/api/admin/claims/:id/unblock", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = unblockSchema.safeParse(body);
@@ -399,7 +428,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 
   /* ----------------------------------------- claim bulk ops (#73, #64) */
 
-  router.post("/api/admin/claims/bulk-approve", async (c) => {
+  router.post("/api/admin/claims/bulk-approve", adminBulkLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = bulkApproveSchema.safeParse(body);
@@ -417,7 +446,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json(result);
   });
 
-  router.post("/api/admin/claims/bulk-reject", async (c) => {
+  router.post("/api/admin/claims/bulk-reject", adminBulkLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = bulkRejectSchema.safeParse(body);
@@ -435,7 +464,7 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json(result);
   });
 
-  router.post("/api/admin/claims/bulk-pay", async (c) => {
+  router.post("/api/admin/claims/bulk-pay", adminBulkLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = bulkPaySchema.safeParse(body);

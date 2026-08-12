@@ -57,6 +57,18 @@ export function authRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
       "Too many password-reset requests. Please try again later.",
   });
 
+  // #70 — reset-password is a public endpoint that takes a token + password;
+  // throttle token-guessing at 10/IP/15min. (Login itself goes through Better
+  // Auth's own handler mounted at /api/auth/* and relies on Better Auth's
+  // built-in brute-force protection — see app.ts. We cannot wrap it from
+  // Hono without proxying the request, which is out of scope for Phase 1.)
+  const resetLimiter = rateLimit({
+    limit: 10,
+    windowMs: 15 * 60 * 1000,
+    blockMessage:
+      "Too many password-reset attempts. Please try again later.",
+  });
+
   router.post("/api/auth/forgot-password", forgotLimiter.middleware, async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const parsed = forgotPasswordSchema.safeParse(body);
@@ -70,7 +82,7 @@ export function authRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json(FORGOT_OK_BODY, 200);
   });
 
-  router.post("/api/auth/reset-password", async (c) => {
+  router.post("/api/auth/reset-password", resetLimiter.middleware, async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const parsed = resetPasswordSchema.safeParse(body);
     if (!parsed.success) {

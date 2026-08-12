@@ -17,6 +17,7 @@ import type { Auth } from "../auth/index.js";
 import { requireRole } from "../auth/permissions.js";
 import type { DB } from "../db/index.js";
 import type { Env } from "../config.js";
+import { rateLimit } from "../middleware/rate-limit.js";
 import { ROLES } from "../types.js";
 import {
   acceptInvite,
@@ -53,7 +54,16 @@ const acceptInviteSchema = z.object({
 export function invitesRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
   const router = new Hono();
 
-  router.post("/api/admin/users", async (c) => {
+  // #70 — user creation is a destructive admin mutation; share the same
+  // 60/IP/hour budget shape as the other admin mutations (independent bucket
+  // since this limiter lives in its own router instance).
+  const adminMutationLimiter = rateLimit({
+    limit: 60,
+    windowMs: 60 * 60 * 1000,
+    blockMessage: "Too many admin mutations from this IP. Try again later.",
+  });
+
+  router.post("/api/admin/users", adminMutationLimiter.middleware, async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
     const body = await c.req.json().catch(() => ({}));
     const parsed = createUserSchema.safeParse(body);
