@@ -13,6 +13,15 @@ Full product spec: [SpendFlow — Spend Management, Reimbursement & Approvals](h
 
 The [GitHub Project board](../../projects) (`SpendFlow Board`) is the development source of truth for ticket status. Issues track Phase 1 FE and BE work; board lanes are `Todo` → `In Progress` → `In QA` → `Done`.
 
+## Phase scope decisions
+
+Non-goal decisions captured as ADRs so they're easy to find and easy to
+revisit:
+
+- **i18n / multi-currency UI (#82)** — intentionally English-only UI for
+  Phase 1; the BE already supports multi-currency at the data layer. Triggers
+  to revisit + the work shape if it reopens: [`docs/i18n-decision.md`](docs/i18n-decision.md).
+
 ## Verification
 
 Run the full correctness gate (typecheck + tests + build) across both workspaces from the repo root:
