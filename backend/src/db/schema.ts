@@ -653,7 +653,7 @@ export const commentsRelations = relations(commentsTable, ({ one }) => ({
 
 /* ----------------------------------------------------------------- payments -- */
 
-export const PAYMENT_METHODS = ["bank_transfer", "check", "cash", "other"] as const;
+export const PAYMENT_METHODS = ["bank_transfer", "check", "cash", "other", "payroll"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 export const PAYMENT_STATUSES = ["processing", "paid"] as const;

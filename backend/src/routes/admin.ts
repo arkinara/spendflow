@@ -41,7 +41,7 @@ import {
   reorderRouteSteps,
 } from "../services/admin.js";
 import { hardDeleteUser } from "../services/users.js";
-import { unblockClaim } from "../services/claims.js";
+import { bulkApprove, bulkReject, bulkPay, BulkClaimError, unblockClaim } from "../services/claims.js";
 import { auditAll, type AuditAllFilters } from "../services/audit.js";
 import { rowsToCsv } from "../services/csv.js";
 import { jsonError } from "./claims.js";
@@ -78,6 +78,30 @@ const unblockSchema = z
         "assign_manager requires managerId; reassign_step requires stepId + newApproverId",
     }
   );
+
+/**
+ * #73 — bulk approve/reject/pay on claims. Each accepts `{ claimIds, password,
+ * ... }` and returns `{ processed, failed }`. The batch is atomic per the
+ * service contract — any per-claim failure rolls back the whole batch and
+ * surfaces in `failed[]`.
+ */
+const bulkApproveSchema = z.object({
+  claimIds: z.array(z.string().min(1)).min(1, "At least one claim id is required"),
+  password: z.string().min(1, "Password is required for this action"),
+});
+
+const bulkRejectSchema = z.object({
+  claimIds: z.array(z.string().min(1)).min(1, "At least one claim id is required"),
+  password: z.string().min(1, "Password is required for this action"),
+  comment: z.string().min(10, "Comment must be at least 10 characters"),
+});
+
+const bulkPaySchema = z.object({
+  claimIds: z.array(z.string().min(1)).min(1, "At least one claim id is required"),
+  password: z.string().min(1, "Password is required for this action"),
+  paymentMethod: z.enum(["bank_transfer", "payroll"]),
+  reference: z.string().min(1, "Reference number is required"),
+});
 
 const categoryCreateSchema = z.object({
   name: z.string().min(1),
@@ -373,6 +397,62 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     return c.json({ claim: result.claim });
   });
 
+  /* ----------------------------------------- claim bulk ops (#73, #64) */
+
+  router.post("/api/admin/claims/bulk-approve", async (c) => {
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = bulkApproveSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonError(c, 400, "invalid_body", parsed.error.message);
+    }
+    await requirePasswordReauth(
+      deps.auth,
+      deps.db,
+      c.req.raw.headers,
+      parsed.data.password,
+      ctx.user.id,
+    );
+    const result = bulkApprove(deps.db, ctx.user.id, parsed.data);
+    return c.json(result);
+  });
+
+  router.post("/api/admin/claims/bulk-reject", async (c) => {
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = bulkRejectSchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonError(c, 400, "invalid_body", parsed.error.message);
+    }
+    await requirePasswordReauth(
+      deps.auth,
+      deps.db,
+      c.req.raw.headers,
+      parsed.data.password,
+      ctx.user.id,
+    );
+    const result = bulkReject(deps.db, ctx.user.id, parsed.data);
+    return c.json(result);
+  });
+
+  router.post("/api/admin/claims/bulk-pay", async (c) => {
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = bulkPaySchema.safeParse(body);
+    if (!parsed.success) {
+      return jsonError(c, 400, "invalid_body", parsed.error.message);
+    }
+    await requirePasswordReauth(
+      deps.auth,
+      deps.db,
+      c.req.raw.headers,
+      parsed.data.password,
+      ctx.user.id,
+    );
+    const result = bulkPay(deps.db, ctx.user.id, parsed.data);
+    return c.json(result);
+  });
+
   /* -------------------------- dev-only recent invite log (#66/#57b) ---------- */
 
   router.get("/api/admin/dev/recent-invites", async (c) => {
@@ -442,6 +522,9 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 /** Map admin service errors to JSON responses. */
 export function adminErrorHandler(err: unknown, c: Context) {
   if (err instanceof AdminError) {
+    return jsonError(c, err.status as ContentfulStatusCode, err.code, err.message);
+  }
+  if (err instanceof BulkClaimError) {
     return jsonError(c, err.status as ContentfulStatusCode, err.code, err.message);
   }
   if (err instanceof AuthError) {

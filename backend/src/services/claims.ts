@@ -16,6 +16,7 @@ import {
   categoriesTable,
   claimLineItemsTable,
   claimsTable,
+  paymentsTable,
   usersTable,
   type ApprovalAction,
   type ClaimStatus,
@@ -1228,4 +1229,435 @@ export function listClaimsForEmployee(
     .orderBy(desc(claimsTable.createdAt))
     .all();
   return rows.map((r) => toClaimRow(db, r));
+}
+
+/* ----------------------------------------------------- bulk ops (#73) ---- */
+
+/**
+ * Bulk operations on claims (#73). Three batch entry points share a common
+ * shape (`BulkResult`) and a common execution model:
+ *
+ *  1. Pre-validate every claim in the batch (load row, status check, step
+ *     check) BEFORE opening the write transaction. Any per-claim failure is
+ *     collected into `failed[]` with a typed code.
+ *  2. If any failure was collected, return `{ processed: [], failed }` — no
+ *     row is ever mutated, the whole batch is atomic.
+ *  3. Otherwise open a single write transaction, apply every mutation, write
+ *     per-claim audit + notification, commit. Returns `{ processed: claimIds,
+ *     failed: [] }`.
+ *
+ * The actor's password is verified by the route layer through
+ * `requirePasswordReauth` (#64) BEFORE the service runs; the service only
+ * takes `actorId` for audit stamping.
+ *
+ * Per-claim failure codes (surfaced verbatim to the FE):
+ *   - `not_found`        — claim id does not exist
+ *   - `not_at_your_step` — bulk approve only; current step is not a Finance step
+ *   - `wrong_status`     — claim is not in the status the operation expects
+ *   - `not_approved`     — bulk pay only; claim is not `approved`
+ *
+ * `BulkClaimError` is for batch-level validation (empty batch, too many ids,
+ * missing comment/reference). It bubbles up to a 400 through the route layer.
+ */
+export interface BulkApproveInput {
+  claimIds: string[];
+  password: string;
+}
+export interface BulkRejectInput {
+  claimIds: string[];
+  password: string;
+  comment: string;
+}
+export interface BulkPayInput {
+  claimIds: string[];
+  password: string;
+  paymentMethod: "bank_transfer" | "payroll";
+  reference: string;
+}
+
+export interface BulkResult {
+  processed: string[];
+  failed: { claimId: string; code: string; message: string }[];
+}
+
+export class BulkClaimError extends Error {
+  public status = 400;
+  constructor(
+    public code: "empty_batch" | "too_many" | "invalid_input",
+    message: string
+  ) {
+    super(message);
+    this.name = "BulkClaimError";
+  }
+}
+
+/** Cap a single bulk batch at 100 claim ids so the write tx stays short. */
+export const BULK_BATCH_MAX = 100;
+
+function assertBulkBatch(claimIds: unknown): asserts claimIds is string[] {
+  if (!Array.isArray(claimIds) || claimIds.length === 0) {
+    throw new BulkClaimError(
+      "empty_batch",
+      "Bulk operation requires at least one claim id"
+    );
+  }
+  if (claimIds.length > BULK_BATCH_MAX) {
+    throw new BulkClaimError(
+      "too_many",
+      `Bulk operation accepts at most ${BULK_BATCH_MAX} claims per batch`
+    );
+  }
+  for (const id of claimIds) {
+    if (typeof id !== "string" || id.trim() === "") {
+      throw new BulkClaimError(
+        "invalid_input",
+        "Every claim id must be a non-empty string"
+      );
+    }
+  }
+}
+
+/** Load the ordered steps of a claim's resolved route (empty if no route). */
+function loadRouteSteps(db: DB, routeId: string | null) {
+  if (!routeId) return [];
+  return db
+    .select()
+    .from(approvalStepsTable)
+    .where(eq(approvalStepsTable.routeId, routeId))
+    .orderBy(asc(approvalStepsTable.orderIndex))
+    .all();
+}
+
+/**
+ * Bulk approve (#73). Every claim must be `pending` and currently sitting at
+ * a `finance`-routed step (finance is the only bulk-approve actor). Each
+ * surviving claim is advanced to its next step, or finalised to `approved`
+ * if the finance step was the last one.
+ *
+ * Atomic per batch: any per-claim validation failure rolls back the whole
+ * batch with no row touched.
+ */
+export function bulkApprove(
+  db: DB,
+  actorId: string,
+  input: BulkApproveInput
+): BulkResult {
+  assertBulkBatch(input.claimIds);
+
+  const failed: BulkResult["failed"] = [];
+  type Plan = {
+    row: typeof claimsTable.$inferSelect;
+    currentStep: typeof approvalStepsTable.$inferSelect;
+    isFinal: boolean;
+  };
+  const plan: Plan[] = [];
+
+  for (const claimId of input.claimIds) {
+    const row = db
+      .select()
+      .from(claimsTable)
+      .where(eq(claimsTable.id, claimId))
+      .get();
+    if (!row) {
+      failed.push({ claimId, code: "not_found", message: `Claim ${claimId} not found` });
+      continue;
+    }
+    if (row.status !== "pending") {
+      failed.push({
+        claimId,
+        code: "wrong_status",
+        message: `Claim is ${row.status}; expected pending`,
+      });
+      continue;
+    }
+    const steps = loadRouteSteps(db, row.approvalRouteId);
+    const currentStep = steps[row.currentStepIndex];
+    if (!currentStep) {
+      failed.push({
+        claimId,
+        code: "not_at_your_step",
+        message: "Claim has no current approval step",
+      });
+      continue;
+    }
+    // Bulk approve is Finance-only: the step must route to the finance group.
+    if (currentStep.approverType !== "finance") {
+      failed.push({
+        claimId,
+        code: "not_at_your_step",
+        message: `Claim is at step "${currentStep.label}" — not at a Finance step`,
+      });
+      continue;
+    }
+    plan.push({
+      row,
+      currentStep,
+      isFinal: row.currentStepIndex >= steps.length - 1,
+    });
+  }
+
+  if (failed.length > 0) return { processed: [], failed };
+
+  const now = new Date();
+  const processed: string[] = [];
+  db.transaction((tx) => {
+    for (const p of plan) {
+      if (p.isFinal) {
+        tx.update(claimsTable)
+          .set({ status: "approved", decidedAt: now, updatedAt: now })
+          .where(eq(claimsTable.id, p.row.id))
+          .run();
+        tx.insert(approvalActionsTable)
+          .values({
+            id: `act-${crypto.randomUUID()}`,
+            claimId: p.row.id,
+            stepId: p.currentStep.id,
+            actorId,
+            action: "approved",
+            comment: null,
+            createdAt: now,
+          })
+          .run();
+        writeAudit(tx, {
+          actorId,
+          action: "claim.approved.final",
+          entityType: "claim",
+          entityId: p.row.id,
+          before: { status: "pending", step: p.row.currentStepIndex },
+          after: { status: "approved", bulk: true },
+        });
+      } else {
+        const nextIndex = p.row.currentStepIndex + 1;
+        tx.update(claimsTable)
+          .set({ currentStepIndex: nextIndex, updatedAt: now })
+          .where(eq(claimsTable.id, p.row.id))
+          .run();
+        tx.insert(approvalActionsTable)
+          .values({
+            id: `act-${crypto.randomUUID()}`,
+            claimId: p.row.id,
+            stepId: p.currentStep.id,
+            actorId,
+            action: "approved",
+            comment: null,
+            createdAt: now,
+          })
+          .run();
+        writeAudit(tx, {
+          actorId,
+          action: "claim.approved.advance",
+          entityType: "claim",
+          entityId: p.row.id,
+          before: { step: p.row.currentStepIndex },
+          after: { step: nextIndex, bulk: true },
+        });
+      }
+      processed.push(p.row.id);
+    }
+  });
+
+  return { processed, failed: [] };
+}
+
+/**
+ * Bulk reject (#73). Every claim must be `pending`; each is returned to the
+ * employee as `action_required` with the shared `comment` (≥ 10 chars)
+ * stamped on the audit + notification + approval_actions row.
+ *
+ * Atomic per batch: any per-claim failure rolls back the whole batch.
+ */
+export function bulkReject(
+  db: DB,
+  actorId: string,
+  input: BulkRejectInput
+): BulkResult {
+  assertBulkBatch(input.claimIds);
+  const comment = input.comment?.trim();
+  if (!comment || comment.length < 10) {
+    throw new BulkClaimError(
+      "invalid_input",
+      "A comment of at least 10 characters is required for bulk reject"
+    );
+  }
+
+  const failed: BulkResult["failed"] = [];
+  type Plan = { row: typeof claimsTable.$inferSelect; stepId: string | null };
+  const plan: Plan[] = [];
+
+  for (const claimId of input.claimIds) {
+    const row = db
+      .select()
+      .from(claimsTable)
+      .where(eq(claimsTable.id, claimId))
+      .get();
+    if (!row) {
+      failed.push({ claimId, code: "not_found", message: `Claim ${claimId} not found` });
+      continue;
+    }
+    if (row.status !== "pending") {
+      failed.push({
+        claimId,
+        code: "wrong_status",
+        message: `Claim is ${row.status}; expected pending`,
+      });
+      continue;
+    }
+    const steps = loadRouteSteps(db, row.approvalRouteId);
+    const stepId = steps[row.currentStepIndex]?.id ?? null;
+    plan.push({ row, stepId });
+  }
+
+  if (failed.length > 0) return { processed: [], failed };
+
+  const now = new Date();
+  const processed: string[] = [];
+  db.transaction((tx) => {
+    for (const p of plan) {
+      tx.update(claimsTable)
+        .set({ status: "action_required", decidedAt: now, updatedAt: now })
+        .where(eq(claimsTable.id, p.row.id))
+        .run();
+      tx.insert(approvalActionsTable)
+        .values({
+          id: `act-${crypto.randomUUID()}`,
+          claimId: p.row.id,
+          stepId: p.stepId,
+          actorId,
+          action: "returned",
+          comment,
+          createdAt: now,
+        })
+        .run();
+      writeAudit(tx, {
+        actorId,
+        action: "claim.bulk_returned",
+        entityType: "claim",
+        entityId: p.row.id,
+        before: { status: "pending" },
+        after: { status: "action_required", comment, bulk: true },
+      });
+      writeNotification(tx, {
+        recipientId: p.row.employeeId,
+        category: "action",
+        title: `Claim ${p.row.reference} returned by Finance`,
+        body: comment,
+        claimId: p.row.id,
+      });
+      processed.push(p.row.id);
+    }
+  });
+
+  return { processed, failed: [] };
+}
+
+/**
+ * Bulk pay (#73). Every claim must be `approved`; each is moved directly to
+ * `paid` (skipping the intermediate `processing` state since the bulk path
+ * captures method + reference up front and finalises immediately). A
+ * `payments` row is inserted per claim with `status: "paid"`, processed-by/at
+ * stamped in the same write.
+ *
+ * Atomic per batch: any per-claim failure rolls back the whole batch.
+ */
+export function bulkPay(
+  db: DB,
+  actorId: string,
+  input: BulkPayInput
+): BulkResult {
+  assertBulkBatch(input.claimIds);
+  if (input.paymentMethod !== "bank_transfer" && input.paymentMethod !== "payroll") {
+    throw new BulkClaimError(
+      "invalid_input",
+      "paymentMethod must be one of bank_transfer | payroll"
+    );
+  }
+  const reference = input.reference?.trim();
+  if (!reference) {
+    throw new BulkClaimError(
+      "invalid_input",
+      "A reference number is required for bulk pay"
+    );
+  }
+
+  const failed: BulkResult["failed"] = [];
+  type Plan = { row: typeof claimsTable.$inferSelect; total: number };
+  const plan: Plan[] = [];
+
+  for (const claimId of input.claimIds) {
+    const row = db
+      .select()
+      .from(claimsTable)
+      .where(eq(claimsTable.id, claimId))
+      .get();
+    if (!row) {
+      failed.push({ claimId, code: "not_found", message: `Claim ${claimId} not found` });
+      continue;
+    }
+    if (row.status !== "approved") {
+      failed.push({
+        claimId,
+        code: "not_approved",
+        message: `Claim is ${row.status}; expected approved`,
+      });
+      continue;
+    }
+    const lines = db
+      .select({ amount: claimLineItemsTable.amount })
+      .from(claimLineItemsTable)
+      .where(eq(claimLineItemsTable.claimId, claimId))
+      .all();
+    const total = lines.reduce((s, l) => s + l.amount, 0);
+    plan.push({ row, total });
+  }
+
+  if (failed.length > 0) return { processed: [], failed };
+
+  const now = new Date();
+  const processed: string[] = [];
+  db.transaction((tx) => {
+    for (const p of plan) {
+      tx.insert(paymentsTable)
+        .values({
+          id: `pay-${crypto.randomUUID()}`,
+          claimId: p.row.id,
+          method: input.paymentMethod,
+          referenceNumber: reference,
+          amount: p.total,
+          currency: p.row.currency,
+          status: "paid",
+          processedBy: actorId,
+          processedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      tx.update(claimsTable)
+        .set({ status: "paid", updatedAt: now })
+        .where(eq(claimsTable.id, p.row.id))
+        .run();
+      writeAudit(tx, {
+        actorId,
+        action: "claim.bulk_paid",
+        entityType: "claim",
+        entityId: p.row.id,
+        before: { status: "approved" },
+        after: {
+          status: "paid",
+          method: input.paymentMethod,
+          referenceNumber: reference,
+          bulk: true,
+        },
+      });
+      writeNotification(tx, {
+        recipientId: p.row.employeeId,
+        category: "payment",
+        title: `Claim ${p.row.reference} has been paid`,
+        body: `Your reimbursement for "${p.row.title}" has been paid (bulk batch).`,
+        claimId: p.row.id,
+      });
+      processed.push(p.row.id);
+    }
+  });
+
+  return { processed, failed: [] };
 }
