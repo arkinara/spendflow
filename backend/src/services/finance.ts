@@ -36,6 +36,7 @@ import { writeAudit } from "./audit.js";
 import { writeNotification } from "./notifications.js";
 import { toClaimRow, type ClaimRow } from "./claims.js";
 import { computeClaimSla, decorateClaimWithSla, type SlaSummary } from "./sla.js";
+import { dispatchClaimEvent, getWebhookConfig, webhookHistory } from "./webhook.js";
 
 export class FinanceError extends Error {
   constructor(
@@ -471,12 +472,12 @@ export function markClaimProcessing(
  * isn't currently Processing (including the case where it was never put into
  * Processing, i.e. no payments row exists).
  */
-export function markClaimPaid(
+export async function markClaimPaid(
   db: DB,
   actorId: string,
   claimId: string
-): { claim: ClaimRow; payment: PaymentRow } {
-  return db.transaction((tx) => {
+): Promise<{ claim: ClaimRow; payment: PaymentRow }> {
+  const result = db.transaction((tx) => {
     const row = loadClaimRowTx(tx, claimId);
     const payment = loadPaymentForClaim(tx, claimId);
     if (row.status !== "processing" || !payment || payment.status !== "processing") {
@@ -515,7 +516,65 @@ export function markClaimPaid(
       claimId,
     });
 
-    const updatedPayment = loadPaymentForClaim(tx, claimId)!;
-    return { claim: toClaimRow(tx, loadClaimRowTx(tx, claimId)), payment: updatedPayment };
+    return {
+      claim: toClaimRow(tx, loadClaimRowTx(tx, claimId)),
+      payment: loadPaymentForClaim(tx, claimId)!,
+    };
   });
+
+  // #75 — fire claim.paid webhook OUTSIDE the write tx. Best-effort: every
+  // failure is recorded to webhook history; never throws into the caller.
+  const cfg = getWebhookConfig();
+  if (cfg.slackWebhookUrl || cfg.teamsWebhookUrl) {
+    const committed = toClaimRow(db, loadClaimRowTx(db, claimId));
+    const employee = db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.id, committed.employeeId))
+      .get();
+    const actor = db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.id, actorId))
+      .get();
+    const evt = {
+      kind: "claim.paid" as const,
+      claimId,
+      reference: committed.reference,
+      employeeName: employee?.name ?? committed.employeeId,
+      amount: claimTotal(committed),
+      currency: committed.currency,
+      actorName: actor?.name ?? actorId,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      const dispatchResult = await dispatchClaimEvent(cfg, evt);
+      webhookHistory.record(undefined, {
+        kind: evt.kind,
+        claimId,
+        delivered: dispatchResult.delivered.slack || dispatchResult.delivered.teams,
+        attempts:
+          (cfg.slackWebhookUrl ? 1 : 0) + (cfg.teamsWebhookUrl ? 1 : 0),
+        lastError: dispatchResult.errors.slack ?? dispatchResult.errors.teams ?? null,
+      });
+      writeAudit(db, {
+        actorId,
+        action: "claim.webhook_dispatched",
+        entityType: "claim",
+        entityId: claimId,
+        before: null,
+        after: {
+          kind: evt.kind,
+          delivered:
+            dispatchResult.delivered.slack || dispatchResult.delivered.teams,
+          lastError:
+            dispatchResult.errors.slack ?? dispatchResult.errors.teams ?? null,
+        },
+      });
+    } catch {
+      // best-effort — never surface a webhook failure as a finance mutation error
+    }
+  }
+
+  return result;
 }

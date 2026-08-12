@@ -46,6 +46,7 @@ import { auditAll, type AuditAllFilters } from "../services/audit.js";
 import { rowsToCsv } from "../services/csv.js";
 import { rateLimit } from "../middleware/rate-limit.js";
 import { jsonError } from "./claims.js";
+import { webhookHistory } from "../services/webhook.js";
 
 const userDeleteSchema = z.object({
   password: z.string().min(1, "Password is required for this action"),
@@ -489,6 +490,20 @@ export function adminRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     const entries = readRecentInviteEntries();
     if (entries === null) {
       return jsonError(c, 404, "not_found", "Invite log not found.");
+    }
+    return c.json({ entries });
+  });
+
+  /* ---------------------- dev-only webhook history (#75) -------------------- */
+
+  router.get("/api/admin/dev/webhook-recent", async (c) => {
+    await requireRole(deps.auth, c.req.raw.headers, "finance");
+    const q = c.req.query();
+    const requested = q.limit !== undefined ? Number(q.limit) : 20;
+    const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 100)) : 20;
+    const entries = webhookHistory.list(deps.env, limit);
+    if (entries === null) {
+      return jsonError(c, 404, "not_found", "Webhook history log not found.");
     }
     return c.json({ entries });
   });

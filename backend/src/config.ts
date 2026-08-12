@@ -16,6 +16,12 @@ export interface Env {
   port: number;
   /** Override for the local attachment storage directory (tests / prod). */
   uploadsDir: string | null;
+  /** #75 — Slack incoming-webhook URL for claim lifecycle events. Optional. */
+  slackWebhookUrl: string | null;
+  /** #75 — Microsoft Teams incoming-webhook URL for claim lifecycle events. Optional. */
+  teamsWebhookUrl: string | null;
+  /** #75 — override for the webhook-history log path (tests / prod). */
+  webhookLogPath: string | null;
 }
 
 function str(name: string, fallback?: string): string {
@@ -49,5 +55,15 @@ export function loadEnv(overrides: Partial<Env> = {}): Env {
     sessionExpiresIn: overrides.sessionExpiresIn ?? int("SESSION_EXPIRES_IN", 604800),
     port: overrides.port ?? int("PORT", 8787),
     uploadsDir: overrides.uploadsDir ?? process.env.UPLOADS_DIR ?? null,
+    slackWebhookUrl:
+      overrides.slackWebhookUrl ??
+      process.env.SPENDFLOW_SLACK_WEBHOOK_URL ??
+      null,
+    teamsWebhookUrl:
+      overrides.teamsWebhookUrl ??
+      process.env.SPENDFLOW_TEAMS_WEBHOOK_URL ??
+      null,
+    webhookLogPath:
+      overrides.webhookLogPath ?? process.env.SPENDFLOW_WEBHOOK_LOG ?? null,
   };
 }

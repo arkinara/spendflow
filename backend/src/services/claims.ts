@@ -37,6 +37,13 @@ import {
   loadApprovalRoutes,
 } from "./config.js";
 import { decorateClaimWithSla, type SlaSummary } from "./sla.js";
+import {
+  dispatchClaimEvent,
+  getWebhookConfig,
+  webhookHistory,
+  type ClaimEvent,
+  type ClaimEventKind,
+} from "./webhook.js";
 
 export class ClaimError extends Error {
   constructor(
@@ -355,6 +362,83 @@ function recordAction(
       createdAt: new Date(),
     })
     .run();
+}
+
+/* ----------------------------------------------------- webhook fan-out (#75) */
+
+/**
+ * #75 — best-effort Slack/Teams fan-out for a claim lifecycle event. Invoked
+ * OUTSIDE the write transaction so a webhook failure can never roll back a
+ * real claim change. No-op when neither webhook URL is configured. The
+ * attempt (delivered or failed) is recorded to `webhook-history.log` and a
+ * `claim.webhook_dispatched` audit row so the audit timeline reflects the
+ * dispatcher's outcome. Never throws — every failure is captured.
+ */
+async function fireClaimWebhook(
+  db: DB,
+  args: {
+    kind: ClaimEventKind;
+    claimId: string;
+    reference: string;
+    employeeId: string;
+    actorId: string;
+    amount?: number;
+    currency?: string;
+  }
+): Promise<void> {
+  const cfg = getWebhookConfig();
+  if (!cfg.slackWebhookUrl && !cfg.teamsWebhookUrl) return;
+  const employee = db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, args.employeeId))
+    .get();
+  const actor = db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, args.actorId))
+    .get();
+  const evt: ClaimEvent = {
+    kind: args.kind,
+    claimId: args.claimId,
+    reference: args.reference,
+    employeeName: employee?.name ?? args.employeeId,
+    amount: args.amount,
+    currency: args.currency,
+    actorName: actor?.name ?? args.actorId,
+    occurredAt: new Date().toISOString(),
+  };
+  let delivered = false;
+  let lastError: string | null = null;
+  let attempts = 0;
+  try {
+    const result = await dispatchClaimEvent(cfg, evt);
+    delivered = result.delivered.slack || result.delivered.teams;
+    lastError = result.errors.slack ?? result.errors.teams ?? null;
+    attempts =
+      (cfg.slackWebhookUrl ? 1 : 0) + (cfg.teamsWebhookUrl ? 1 : 0);
+  } catch (err) {
+    lastError = err instanceof Error ? err.message : "dispatch error";
+  }
+  try {
+    webhookHistory.record(undefined, {
+      kind: evt.kind,
+      claimId: evt.claimId,
+      delivered,
+      attempts,
+      lastError,
+    });
+    writeAudit(db, {
+      actorId: args.actorId,
+      action: "claim.webhook_dispatched",
+      entityType: "claim",
+      entityId: args.claimId,
+      before: null,
+      after: { kind: evt.kind, delivered, lastError },
+    });
+  } catch {
+    // best-effort — webhook history / audit must never break the claim mutation
+  }
 }
 
 /* --------------------------------------------------------------- create ---- */
@@ -870,6 +954,20 @@ function applySubmission(
     }
   });
 
+  // #75 — fire claim.submitted webhook OUTSIDE the write tx, only on the
+  // non-blocked path (blocked_sod claims don't appear in the kind list).
+  if (!sodBlock) {
+    void fireClaimWebhook(db, {
+      kind: "claim.submitted",
+      claimId: claim.id,
+      reference: claim.reference,
+      employeeId,
+      actorId: employeeId,
+      amount: claim.lineItems.reduce((s, l) => s + l.amount, 0),
+      currency: claim.currency,
+    });
+  }
+
   return {
     claim: toClaimRow(db, loadClaimOrThrow(db, claim.id)),
     warnings,
@@ -1152,6 +1250,16 @@ export function unblockClaim(
       routingSteps[0],
       body.action === "assign_manager" ? newManagerId : submitter.managerId
     );
+  });
+
+  // #75 — fire claim.unblocked webhook OUTSIDE the write tx.
+  void fireClaimWebhook(db, {
+    kind: "claim.unblocked",
+    claimId,
+    reference: row.reference,
+    employeeId: row.employeeId,
+    actorId: financeId,
+    currency: row.currency,
   });
 
   return { claim: toClaimRow(db, loadClaimOrThrow(db, claimId)) };
@@ -1661,6 +1769,19 @@ export function bulkPay(
       processed.push(p.row.id);
     }
   });
+
+  // #75 — fire claim.bulk_paid webhook per processed claim, OUTSIDE the tx.
+  for (const p of plan) {
+    void fireClaimWebhook(db, {
+      kind: "claim.bulk_paid",
+      claimId: p.row.id,
+      reference: p.row.reference,
+      employeeId: p.row.employeeId,
+      actorId,
+      amount: p.total,
+      currency: p.row.currency,
+    });
+  }
 
   return { processed, failed: [] };
 }
