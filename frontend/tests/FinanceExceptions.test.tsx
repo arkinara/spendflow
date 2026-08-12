@@ -52,6 +52,9 @@ const financeMocks = vi.hoisted(() => ({
   getExceptions: vi.fn(),
   getPayments: vi.fn(),
   unblockClaim: vi.fn(),
+  bulkApproveClaims: vi.fn(),
+  bulkRejectClaims: vi.fn(),
+  bulkPayClaims: vi.fn(),
 }));
 
 vi.mock("@/lib/api/finance", async (importOriginal) => {
@@ -62,6 +65,9 @@ vi.mock("@/lib/api/finance", async (importOriginal) => {
     getExceptions: financeMocks.getExceptions,
     getPayments: financeMocks.getPayments,
     unblockClaim: financeMocks.unblockClaim,
+    bulkApproveClaims: financeMocks.bulkApproveClaims,
+    bulkRejectClaims: financeMocks.bulkRejectClaims,
+    bulkPayClaims: financeMocks.bulkPayClaims,
   };
 });
 
@@ -97,7 +103,11 @@ import { RouteGuard } from "@/components/shell/RouteGuard";
 import { SessionProvider, SESSION_STORAGE_KEY } from "@/lib/auth/session";
 import { SnackbarProvider } from "@/components/ui/Snackbar";
 import { ThemeProvider } from "@/components/ui/ThemeToggle";
-import { UsersApiError, type BackendUser } from "@/lib/api/users";
+import {
+  BulkPartialFailureError,
+  UsersApiError,
+  type BackendUser,
+} from "@/lib/api/users";
 import type { BackendClaim } from "@/lib/api/claims";
 import type { FinanceExceptionItem } from "@/lib/api/finance";
 
@@ -225,7 +235,9 @@ function selfApprovalBlocked(): FinanceExceptionItem {
 }
 
 /** A fully-approved claim with an open policy flag (the non-SoD queue row). */
-function flaggedApproved(): FinanceExceptionItem {
+function flaggedApproved(
+  overrides: Partial<FinanceExceptionItem> = {},
+): FinanceExceptionItem {
   return exceptionItem({
     id: "clm-9003",
     reference: "EXP-2026-9003",
@@ -243,6 +255,7 @@ function flaggedApproved(): FinanceExceptionItem {
       flaggedAt: TS,
       status: "open",
     },
+    ...overrides,
   });
 }
 
@@ -321,6 +334,9 @@ beforeEach(() => {
   financeMocks.getExceptions.mockReset();
   financeMocks.getPayments.mockReset();
   financeMocks.unblockClaim.mockReset();
+  financeMocks.bulkApproveClaims.mockReset();
+  financeMocks.bulkRejectClaims.mockReset();
+  financeMocks.bulkPayClaims.mockReset();
   usersMocks.listUsers.mockReset();
   adminMocks.getRecentDevInvites.mockReset();
   financeMocks.getExceptions.mockResolvedValue([]);
@@ -625,6 +641,254 @@ describe("Exception queue — unblock failure + dismissal", () => {
       within(reopened).getByLabelText(/resolution reason/i)
     ).toHaveValue("");
     expect(financeMocks.unblockClaim).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------- bulk actions (#73) =========== */
+
+describe("Exception queue — bulk actions (#73)", () => {
+  it("renders a per-row checkbox column and enables the bulk action bar once 2 claims are selected", async () => {
+    financeMocks.getExceptions.mockResolvedValue([
+      flaggedApproved(),
+      flaggedApproved({
+        id: "clm-9004",
+        reference: "EXP-2026-9004",
+        title: "Client Dinner",
+      }),
+    ]);
+    renderPage();
+    await waitForQueue(/Client Lunch/);
+
+    const headerCheckbox = screen.getByLabelText(/select all exceptions/i);
+    const row1 = screen.getByLabelText(/select exp-2026-9003/i);
+    const row2 = screen.getByLabelText(/select exp-2026-9004/i);
+    expect(headerCheckbox).toBeInTheDocument();
+    expect(row1).toBeInTheDocument();
+    expect(row2).toBeInTheDocument();
+
+    // No action bar until something is selected.
+    expect(
+      screen.queryByRole("button", { name: /approve/i })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(row1);
+    expect(screen.getByRole("button", { name: /approve 1/i })).toBeInTheDocument();
+
+    fireEvent.click(row2);
+    expect(screen.getByRole("button", { name: /approve 2/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reject 2/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /pay 2/i })).toBeInTheDocument();
+
+    // Select-all toggles every visible row (both already selected → clears).
+    fireEvent.click(headerCheckbox);
+    await waitFor(() => expect(headerCheckbox).not.toBeChecked());
+    expect(
+      screen.queryByRole("button", { name: /approve/i })
+    ).not.toBeInTheDocument();
+
+    // Clicking select-all again re-selects both.
+    fireEvent.click(headerCheckbox);
+    await waitFor(() => expect(headerCheckbox).toBeChecked());
+    expect(screen.getByRole("button", { name: /approve 2/i })).toBeInTheDocument();
+  });
+
+  it("bulk approves 2 selected claims via the dialog, toasts, and drops the rows", async () => {
+    financeMocks.getExceptions.mockResolvedValue([
+      flaggedApproved(),
+      flaggedApproved({
+        id: "clm-9004",
+        reference: "EXP-2026-9004",
+        title: "Client Dinner",
+      }),
+    ]);
+    financeMocks.bulkApproveClaims.mockResolvedValue({
+      processed: ["clm-9003", "clm-9004"],
+      failed: [],
+    });
+    renderPage();
+    await waitForQueue(/Client Lunch/);
+
+    fireEvent.click(screen.getByLabelText(/select exp-2026-9003/i));
+    fireEvent.click(screen.getByLabelText(/select exp-2026-9004/i));
+    fireEvent.click(screen.getByRole("button", { name: /approve 2/i }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByRole("heading", { name: /approve 2 claims/i })
+    ).toBeInTheDocument();
+
+    const submit = within(dialog).getByRole("button", { name: /approve 2/i });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(financeMocks.bulkApproveClaims).toHaveBeenCalledWith({
+        claimIds: ["clm-9003", "clm-9004"],
+        password: "demo1234",
+      })
+    );
+    // Success → dialog closes + success toast + rows dropped (no refetch).
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    );
+    expect(await screen.findByText(/2 claims approved/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Client Lunch")).not.toBeInTheDocument()
+    );
+    expect(screen.queryByText("Client Dinner")).not.toBeInTheDocument();
+  });
+
+  it("bulk rejects 1 selected claim with a shared comment via the dialog", async () => {
+    financeMocks.getExceptions.mockResolvedValue([flaggedApproved()]);
+    financeMocks.bulkRejectClaims.mockResolvedValue({
+      processed: ["clm-9003"],
+      failed: [],
+    });
+    renderPage();
+    await waitForQueue(/Client Lunch/);
+
+    fireEvent.click(screen.getByLabelText(/select exp-2026-9003/i));
+    fireEvent.click(screen.getByRole("button", { name: /reject 1/i }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      within(dialog).getByRole("heading", { name: /reject 1 claim/i })
+    ).toBeInTheDocument();
+
+    const submit = within(dialog).getByRole("button", { name: /reject 1/i });
+    expect(submit).toBeDisabled();
+
+    // A comment shorter than 10 chars keeps the submit disabled.
+    fireEvent.change(
+      within(dialog).getByLabelText(/comment to the employees/i),
+      { target: { value: "Too short" } }
+    );
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(
+      within(dialog).getByLabelText(/comment to the employees/i),
+      { target: { value: "Receipt is required for these amounts." } }
+    );
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(financeMocks.bulkRejectClaims).toHaveBeenCalledWith({
+        claimIds: ["clm-9003"],
+        password: "demo1234",
+        comment: "Receipt is required for these amounts.",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    );
+    expect(
+      await screen.findByText(/1 claim returned to the employees/i)
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Client Lunch")).not.toBeInTheDocument()
+    );
+  });
+
+  it("surfaces the BE's failed claim ids inline and keeps the dialog open on a batch rollback", async () => {
+    financeMocks.getExceptions.mockResolvedValue([
+      flaggedApproved(),
+      flaggedApproved({
+        id: "clm-9004",
+        reference: "EXP-2026-9004",
+        title: "Client Dinner",
+      }),
+    ]);
+    financeMocks.bulkApproveClaims.mockRejectedValue(
+      new BulkPartialFailureError(
+        [
+          {
+            userId: "clm-9004",
+            error: new UsersApiError(0, "wrong_status", "Claim is already approved"),
+          },
+        ],
+        0,
+        2
+      )
+    );
+    renderPage();
+    await waitForQueue(/Client Lunch/);
+
+    fireEvent.click(screen.getByLabelText(/select exp-2026-9003/i));
+    fireEvent.click(screen.getByLabelText(/select exp-2026-9004/i));
+    fireEvent.click(screen.getByRole("button", { name: /approve 2/i }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: /approve 2/i }));
+
+    // The BE's failed claim id + message surface inline; the dialog stays open.
+    expect(
+      await within(dialog).findByText(/1 of 2 claims could not be approved/i)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("clm-9004")).toBeInTheDocument();
+    expect(within(dialog).getByText("— Claim is already approved")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("heading", { name: /approve 2 claims/i })
+    ).toBeInTheDocument();
+    // The queue rows are untouched.
+    expect(screen.getByText("Client Lunch")).toBeInTheDocument();
+  });
+
+  it("bulk pays a selected claim via the dialog with method + reference", async () => {
+    financeMocks.getExceptions.mockResolvedValue([flaggedApproved()]);
+    financeMocks.bulkPayClaims.mockResolvedValue({
+      processed: ["clm-9003"],
+      failed: [],
+    });
+    renderPage();
+    await waitForQueue(/Client Lunch/);
+
+    fireEvent.click(screen.getByLabelText(/select exp-2026-9003/i));
+    fireEvent.click(screen.getByRole("button", { name: /pay 1/i }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    const submit = within(dialog).getByRole("button", { name: /pay 1/i });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(within(dialog).getByLabelText(/reference number/i), {
+      target: { value: "BATCH-2026-08-001" },
+    });
+    fireEvent.change(
+      within(dialog).getByLabelText(/re-enter your password to confirm/i),
+      { target: { value: "demo1234" } }
+    );
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+
+    await waitFor(() =>
+      expect(financeMocks.bulkPayClaims).toHaveBeenCalledWith({
+        claimIds: ["clm-9003"],
+        password: "demo1234",
+        paymentMethod: "bank_transfer",
+        reference: "BATCH-2026-08-001",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    );
+    expect(await screen.findByText(/1 claim paid/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Client Lunch")).not.toBeInTheDocument()
+    );
   });
 });
 

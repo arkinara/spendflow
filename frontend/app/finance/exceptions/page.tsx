@@ -16,6 +16,7 @@ import {
   Route as RouteIcon,
   Receipt,
   Unlock,
+  Banknote,
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
@@ -38,6 +39,9 @@ import {
   type UnblockClaimInput,
 } from "@/lib/api/finance";
 import { UnblockClaimDialog } from "./UnblockClaimDialog";
+import { BulkApproveDialog } from "@/components/admin/BulkApproveDialog";
+import { BulkRejectDialog } from "@/components/admin/BulkRejectDialog";
+import { BulkPayDialog } from "@/components/admin/BulkPayDialog";
 import { RecentDevInvitesPanel } from "@/components/admin/RecentDevInvitesPanel";
 import {
   evaluateLinePolicy,
@@ -79,7 +83,7 @@ const CATEGORY_ICON: Record<ExpenseCategoryId, LucideIcon> = {
 
 export default function ExceptionsPage() {
   const { show } = useSnackbar();
-  const { state, retry, refresh, unblockClaim } = useFinanceExceptions();
+  const { state, retry, refresh, unblockClaim, removeClaims } = useFinanceExceptions();
 
   const [active, setActive] = React.useState<FinanceExceptionItem | null>(null);
   const [unblockTarget, setUnblockTarget] = React.useState<FinanceExceptionItem | null>(null);
@@ -88,6 +92,62 @@ export default function ExceptionsPage() {
   const [noteError, setNoteError] = React.useState<string>();
   const [submitting, setSubmitting] = React.useState(false);
   const [conflict, setConflict] = React.useState<string | null>(null);
+
+  /* ------------------------------------------------- bulk selection (#73) */
+
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [bulkDialog, setBulkDialog] = React.useState<
+    "approve" | "reject" | "pay" | null
+  >(null);
+
+  const toggleSelected = React.useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = React.useCallback(
+    () => setSelectedIds(new Set()),
+    [],
+  );
+
+  const items = state.status === "ready" ? state.items : [];
+  const allSelected =
+    items.length > 0 && items.every((c) => selectedIds.has(c.id));
+  const someSelected =
+    items.some((c) => selectedIds.has(c.id)) && !allSelected;
+
+  const toggleSelectAll = React.useCallback(() => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        items.forEach((c) => next.delete(c.id));
+      } else {
+        items.forEach((c) => next.add(c.id));
+      }
+      return next;
+    });
+  }, [items, allSelected]);
+
+  const selectedCount = selectedIds.size;
+
+  /**
+   * #73: shared bulk-success handler. The BE resolved the whole batch, so the
+   * dialog hands back the processed ids — drop those rows from the local
+   * queue (same no-refetch pattern as `unblockClaim`) and clear the selection.
+   */
+  function handleBulkSuccess(processed: string[]) {
+    clearSelection();
+    if (processed.length > 0) {
+      removeClaims(processed);
+      // Re-publish the open-flag count so the nav badge decrements now, not
+      // after the next 30s poll.
+      void refreshOpenExceptionCount();
+    }
+  }
 
   function openResolve(claim: FinanceExceptionItem) {
     setActive(claim);
@@ -197,6 +257,42 @@ export default function ExceptionsPage() {
           )}
         </div>
 
+        {/* #73: bulk action bar — appears once at least one row is selected. */}
+        {selectedCount > 0 && state.status === "ready" && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-primary/30 bg-primary/5 px-5 py-3">
+            <p className="text-sm text-on-surface-variant">
+              <span className="font-medium text-on-surface">{selectedCount}</span>{" "}
+              claim{selectedCount === 1 ? "" : "s"} selected
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="filled"
+                size="sm"
+                icon={CheckCircle2}
+                onClick={() => setBulkDialog("approve")}
+              >
+                Approve {selectedCount}
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                icon={XCircle}
+                onClick={() => setBulkDialog("reject")}
+              >
+                Reject {selectedCount}
+              </Button>
+              <Button
+                variant="tonal"
+                size="sm"
+                icon={Banknote}
+                onClick={() => setBulkDialog("pay")}
+              >
+                Pay {selectedCount}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {state.status === "loading" && <QueueSkeleton />}
         {state.status === "error" && (
           <QueueError message={state.message} onRetry={retry} />
@@ -204,6 +300,21 @@ export default function ExceptionsPage() {
         {state.status === "ready" && (
           <Card padded={false}>
             <DataTable
+              headerCheckbox={{
+                label: "Select all exceptions",
+                checked: allSelected,
+                indeterminate: someSelected,
+                onChange: toggleSelectAll,
+              }}
+              rowCheckbox={(c) => (
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${c.reference}`}
+                  checked={selectedIds.has(c.id)}
+                  onChange={() => toggleSelected(c.id)}
+                  className="h-4 w-4 cursor-pointer accent-primary"
+                />
+              )}
               columns={buildColumns(openResolve, (c) => setUnblockTarget(c))}
               data={state.items}
               rowKey={(c) => c.id}
@@ -253,6 +364,26 @@ export default function ExceptionsPage() {
           onSubmit={handleUnblock}
         />
       ) : null}
+
+      {/* #73: bulk dialogs — open only while their action is selected. */}
+      <BulkApproveDialog
+        open={bulkDialog === "approve"}
+        claimIds={Array.from(selectedIds)}
+        onClose={() => setBulkDialog(null)}
+        onSuccess={handleBulkSuccess}
+      />
+      <BulkRejectDialog
+        open={bulkDialog === "reject"}
+        claimIds={Array.from(selectedIds)}
+        onClose={() => setBulkDialog(null)}
+        onSuccess={handleBulkSuccess}
+      />
+      <BulkPayDialog
+        open={bulkDialog === "pay"}
+        claimIds={Array.from(selectedIds)}
+        onClose={() => setBulkDialog(null)}
+        onSuccess={handleBulkSuccess}
+      />
 
       <Dialog
         open={!!conflict}

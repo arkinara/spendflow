@@ -21,7 +21,10 @@
 
 import { apiFetch } from "@/lib/api/fetch";
 import { toFEClaim, type BackendClaim } from "@/lib/api/claims";
-import { UsersApiError } from "@/lib/api/users";
+import {
+  BulkPartialFailureError,
+  UsersApiError,
+} from "@/lib/api/users";
 import type {
   Claim,
   ClaimPayment,
@@ -197,6 +200,44 @@ export interface UnblockClaimInput {
 export interface ResolveExceptionResult {
   claim: Claim;
   action: ExceptionAction;
+}
+
+/* ------------------------------------------------------- bulk ops (#73) */
+
+/**
+ * Result of a bulk claim operation (#73). The BE operates all-or-nothing: a
+ * single guard failure rolls the whole batch back, so a successful response
+ * always carries `failed: []`; when any claim fails the BE returns 200 with
+ * the offending `failed[]` rows (`processed` is then empty) — the client
+ * turns that into a {@link BulkPartialFailureError} so the dialog can surface
+ * the failing claim ids inline.
+ */
+export interface BulkOperationResult {
+  processed: string[];
+  failed: { claimId: string; code: string; message: string }[];
+}
+
+/** Body for `POST /api/admin/claims/bulk-approve` (#73, #64). */
+export interface BulkApproveInput {
+  claimIds: string[];
+  password: string;
+}
+
+/** Body for `POST /api/admin/claims/bulk-reject` (#73, #64) — `comment` is
+ *  shared across every claim in the batch (BE requires ≥10 chars). */
+export interface BulkRejectInput {
+  claimIds: string[];
+  password: string;
+  comment: string;
+}
+
+/** Body for `POST /api/admin/claims/bulk-pay` (#73, #64) — one `reference`
+ *  stamps every `payments` row written for the batch. */
+export interface BulkPayInput {
+  claimIds: string[];
+  password: string;
+  paymentMethod: "bank_transfer" | "payroll";
+  reference: string;
 }
 
 export interface PaymentTransitionResult {
@@ -524,4 +565,69 @@ export async function unblockClaim(
     UsersApiError,
   );
   return { claim: body.claim };
+}
+
+/* ------------------------------------------------------- bulk claims (#73) */
+
+/**
+ * Shared driver for the three bulk claim endpoints (#73). The BE enforces the
+ * actor's re-auth password first (401 `invalid_password`), then runs the batch
+ * all-or-nothing: a `failed[]` entry in an otherwise 2xx response means the
+ * whole batch was rolled back — surfaced as a {@link BulkPartialFailureError}
+ * (`code: "partial_failure"`, `details` keyed by claim id) so the dialog can
+ * show the failing claim ids + BE messages inline.
+ *
+ * 4xx responses throw `UsersApiError` (the admin vertical's typed error):
+ *   400 `invalid_body` — body failed zod parse (e.g. comment < 10 chars)
+ *   401 `invalid_password` / `missing_password` — actor re-auth failed (#64)
+ *   403 `forbidden` — caller is not a Finance Admin
+ */
+async function runBulkClaims(
+  path: string,
+  body: object,
+): Promise<BulkOperationResult> {
+  const result = await parseJson<BulkOperationResult>(
+    await apiFetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    UsersApiError,
+  );
+  if (result.failed.length > 0) {
+    throw new BulkPartialFailureError(
+      result.failed.map((f) => ({
+        userId: f.claimId,
+        error: new UsersApiError(0, f.code, f.message),
+      })),
+      result.processed.length,
+      result.processed.length + result.failed.length,
+    );
+  }
+  return result;
+}
+
+/** `POST /api/admin/claims/bulk-approve` (#73) — finance-approves every claim
+ *  in the batch at once. See {@link runBulkClaims} for the error contract. */
+export async function bulkApproveClaims(
+  input: BulkApproveInput,
+): Promise<BulkOperationResult> {
+  return runBulkClaims("/api/admin/claims/bulk-approve", input);
+}
+
+/** `POST /api/admin/claims/bulk-reject` (#73) — returns every claim to the
+ *  employee with one shared comment. See {@link runBulkClaims}. */
+export async function bulkRejectClaims(
+  input: BulkRejectInput,
+): Promise<BulkOperationResult> {
+  return runBulkClaims("/api/admin/claims/bulk-reject", input);
+}
+
+/** `POST /api/admin/claims/bulk-pay` (#73) — pays every claim in the batch
+ *  with one method + reference, stamping a `payments` row per claim.
+ *  See {@link runBulkClaims}. */
+export async function bulkPayClaims(
+  input: BulkPayInput,
+): Promise<BulkOperationResult> {
+  return runBulkClaims("/api/admin/claims/bulk-pay", input);
 }

@@ -131,6 +131,11 @@ export interface UseFinanceExceptions extends UseFinanceList<FinanceExceptionIte
     body: UnblockClaimInput,
     password?: string,
   ) => Promise<Claim>;
+  /**
+   * Drop the given claim ids from the local queue after a successful bulk
+   * action (#73) — same no-refetch pattern as `unblockClaim`.
+   */
+  removeClaims: (claimIds: string[]) => void;
 }
 
 /** Claims with an open policy flag that are in Finance's hands to resolve. */
@@ -152,7 +157,15 @@ export function useFinanceExceptions(): UseFinanceExceptions {
     [mutate],
   );
 
-  return { state, retry, refresh, unblockClaim };
+  const removeClaims = React.useCallback(
+    (claimIds: string[]) => {
+      const gone = new Set(claimIds);
+      mutate((items) => items.filter((i) => !gone.has(i.id)));
+    },
+    [mutate],
+  );
+
+  return { state, retry, refresh, unblockClaim, removeClaims };
 }
 
 /* --------------------------------------------------------------- payments board */

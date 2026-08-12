@@ -7,13 +7,19 @@ import {
   markProcessing,
   markPaid,
   unblockClaim,
+  bulkApproveClaims,
+  bulkRejectClaims,
+  bulkPayClaims,
   FinanceApiError,
   toFEPayment,
   type BackendExceptionItem,
   type BackendPaymentQueueItem,
   type BackendPaymentRow,
 } from "@/lib/api/finance";
-import { UsersApiError } from "@/lib/api/users";
+import {
+  BulkPartialFailureError,
+  UsersApiError,
+} from "@/lib/api/users";
 import { BE_URL } from "@/lib/auth/apiClient";
 
 /**
@@ -652,5 +658,183 @@ describe("unblockClaim (#48, #64)", () => {
 
     expect(err).toBeInstanceOf(UsersApiError);
     expect(err).toMatchObject({ status: 401, code: "invalid_password", message: "Incorrect password" });
+  });
+});
+
+/* ------------------------------------------------------- bulk approve (#73) */
+
+describe("bulkApproveClaims (#73)", () => {
+  it("POSTs the claimIds + password and resolves with processed/failed", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        processed: ["clm-1001", "clm-1002"],
+        failed: [],
+      }),
+    );
+
+    const result = await bulkApproveClaims({
+      claimIds: ["clm-1001", "clm-1002"],
+      password: "demo1234",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/claims/bulk-approve`);
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      claimIds: ["clm-1001", "clm-1002"],
+      password: "demo1234",
+    });
+    expect(result.processed).toEqual(["clm-1001", "clm-1002"]);
+    expect(result.failed).toEqual([]);
+  });
+
+  it("throws BulkPartialFailureError with the failing claim ids when the batch rolls back", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        processed: [],
+        failed: [
+          {
+            claimId: "clm-1002",
+            code: "wrong_status",
+            message: "Claim is already approved",
+          },
+        ],
+      }),
+    );
+
+    const err = await bulkApproveClaims({
+      claimIds: ["clm-1001", "clm-1002"],
+      password: "demo1234",
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(BulkPartialFailureError);
+    expect((err as BulkPartialFailureError).code).toBe("partial_failure");
+    expect((err as BulkPartialFailureError).details).toEqual([
+      {
+        userId: "clm-1002",
+        error: new UsersApiError(0, "wrong_status", "Claim is already approved"),
+      },
+    ]);
+  });
+
+  it("throws a typed UsersApiError 401 invalid_password on a wrong actor password", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(401, { error: { code: "invalid_password", message: "Incorrect password" } }),
+    );
+
+    const err = await bulkApproveClaims({
+      claimIds: ["clm-1001"],
+      password: "wrong",
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UsersApiError);
+    expect(err).toMatchObject({ status: 401, code: "invalid_password" });
+  });
+});
+
+/* ------------------------------------------------------- bulk reject (#73) */
+
+describe("bulkRejectClaims (#73)", () => {
+  it("POSTs the shared comment alongside claimIds + password", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, { processed: ["clm-1001"], failed: [] }),
+    );
+
+    const result = await bulkRejectClaims({
+      claimIds: ["clm-1001"],
+      password: "demo1234",
+      comment: "Receipt is required for these amounts.",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/claims/bulk-reject`);
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      claimIds: ["clm-1001"],
+      password: "demo1234",
+      comment: "Receipt is required for these amounts.",
+    });
+    expect(result.processed).toEqual(["clm-1001"]);
+  });
+
+  it("throws UsersApiError 400 invalid_body when the comment is shorter than 10 chars", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(400, {
+        error: { code: "invalid_body", message: "comment must be at least 10 characters" },
+      }),
+    );
+
+    await expect(
+      bulkRejectClaims({ claimIds: ["clm-1001"], password: "demo1234", comment: "short" }),
+    ).rejects.toMatchObject({ status: 400, code: "invalid_body" });
+  });
+});
+
+/* ----------------------------------------------------------- bulk pay (#73) */
+
+describe("bulkPayClaims (#73)", () => {
+  it("POSTs the payment method + reference alongside claimIds + password", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, { processed: ["clm-1001"], failed: [] }),
+    );
+
+    const result = await bulkPayClaims({
+      claimIds: ["clm-1001"],
+      password: "demo1234",
+      paymentMethod: "payroll",
+      reference: "BATCH-2026-08-001",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BE_URL}/api/admin/claims/bulk-pay`);
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      claimIds: ["clm-1001"],
+      password: "demo1234",
+      paymentMethod: "payroll",
+      reference: "BATCH-2026-08-001",
+    });
+    expect(result.processed).toEqual(["clm-1001"]);
+  });
+
+  it("throws BulkPartialFailureError when one claim is not_approved and the batch rolls back", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        processed: [],
+        failed: [
+          {
+            claimId: "clm-1002",
+            code: "not_approved",
+            message: "Claim is pending; expected approved",
+          },
+        ],
+      }),
+    );
+
+    const err = await bulkPayClaims({
+      claimIds: ["clm-1001", "clm-1002"],
+      password: "demo1234",
+      paymentMethod: "bank_transfer",
+      reference: "BATCH-ROLLBACK",
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(BulkPartialFailureError);
+    expect((err as BulkPartialFailureError).details[0].userId).toBe("clm-1002");
+    expect((err as BulkPartialFailureError).details[0].error.code).toBe("not_approved");
+  });
+
+  it("throws a typed UsersApiError 403 forbidden on non-Finance-Admin access", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(403, { error: { code: "forbidden", message: "Finance admins only." } }),
+    );
+
+    await expect(
+      bulkPayClaims({
+        claimIds: ["clm-1001"],
+        password: "demo1234",
+        paymentMethod: "bank_transfer",
+        reference: "BATCH-x",
+      }),
+    ).rejects.toMatchObject({ status: 403, code: "forbidden" });
   });
 });
