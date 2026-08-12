@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { auditLogsTable } from "../db/schema.js";
 import type { DB } from "../db/index.js";
 import type { AuditEntry } from "../types.js";
+import { redactPII, redactSnapshot } from "./audit-redaction.js";
 
 /**
  * #71 — filters accepted by `auditAll` and the `GET /api/admin/audit` route.
@@ -37,14 +38,20 @@ export function writeAudit(
     after?: unknown;
   }
 ): AuditEntry {
+  // #77 — scrub PII / secrets before the snapshot is serialised. Snapshot is
+  // also normalised so any embedded Date is rendered as ISO (JSON.stringify
+  // would otherwise emit `{}-shaped` `{}` for Date instances stored inside
+  // plain objects). Legacy rows written before this ticket are left as-is.
+  const beforeRedacted = redactSnapshot(args.before);
+  const afterRedacted = redactSnapshot(args.after);
   const entry: AuditEntry = {
     id: crypto.randomUUID(),
     actorId: args.actorId,
     action: args.action,
     entityType: args.entityType,
     entityId: args.entityId,
-    before: args.before ?? null,
-    after: args.after ?? null,
+    before: beforeRedacted ?? null,
+    after: afterRedacted ?? null,
     createdAt: new Date(),
   };
   db.insert(auditLogsTable)
@@ -76,8 +83,8 @@ export function auditForEntity(db: DB, entityType: string, entityId: string): Au
       action: row.action,
       entityType: row.entityType,
       entityId: row.entityId,
-      before: row.before ? JSON.parse(row.before) : null,
-      after: row.after ? JSON.parse(row.after) : null,
+      before: redactPII(row.before ? JSON.parse(row.before) : null),
+      after: redactPII(row.after ? JSON.parse(row.after) : null),
       createdAt: row.createdAt,
     }));
 }
@@ -102,8 +109,8 @@ export function listAuditForClaim(db: DB, claimId: string): AuditEntry[] {
       action: row.action,
       entityType: row.entityType,
       entityId: row.entityId,
-      before: row.before ? JSON.parse(row.before) : null,
-      after: row.after ? JSON.parse(row.after) : null,
+      before: redactPII(row.before ? JSON.parse(row.before) : null),
+      after: redactPII(row.after ? JSON.parse(row.after) : null),
       createdAt: row.createdAt,
     }));
 }
@@ -146,8 +153,8 @@ export function auditAll(db: DB, filters: AuditAllFilters = {}): AuditEntry[] {
       action: row.action,
       entityType: row.entityType,
       entityId: row.entityId,
-      before: row.before ? JSON.parse(row.before) : null,
-      after: row.after ? JSON.parse(row.after) : null,
+      before: redactPII(row.before ? JSON.parse(row.before) : null),
+      after: redactPII(row.after ? JSON.parse(row.after) : null),
       createdAt: row.createdAt,
     }));
 }
