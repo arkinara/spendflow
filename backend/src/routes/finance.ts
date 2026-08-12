@@ -83,7 +83,10 @@ export function financeRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 
   router.post("/api/finance/payments/:claimId/paid", async (c) => {
     const ctx = await requireRole(deps.auth, c.req.raw.headers, "finance");
-    const result = markClaimPaid(deps.db, ctx.user.id, c.req.param("claimId"));
+    // #75 — markClaimPaid is async so the post-tx webhook fan-out can complete
+    // before the response is sent; missing `await` serialises the unresolved
+    // Promise into an empty object (`{claim:undefined, payment:undefined}`).
+    const result = await markClaimPaid(deps.db, ctx.user.id, c.req.param("claimId"));
     return c.json(result);
   });
 
