@@ -24,6 +24,18 @@ revisit:
 - **Caching layer (#81)** — intentionally no application-level cache for
   Phase 1; every request hits the in-process SQLite via a single read path.
   Triggers to revisit + the work shape if it reopens: [`docs/caching-decision.md`](docs/caching-decision.md).
+- **PostgreSQL migration (#78)** — intentionally SQLite-only for Phase 1;
+  one backend process, in-process better-sqlite3, no cross-instance
+  coordination. Triggers to revisit + the work shape if it reopens:
+  [`docs/postgres-decision.md`](docs/postgres-decision.md).
+- **Microservices split (#79)** — intentionally a single Hono process for
+  Phase 1; per-domain `services/*` modules capture bounded contexts without
+  a deployment cost. Triggers to revisit + the work shape if it reopens:
+  [`docs/microservices-decision.md`](docs/microservices-decision.md).
+- **GraphQL (#80)** — intentionally REST + Hono typed RPC only for Phase 1;
+  one FE client, end-to-end zod types, no over-fetching problem to solve.
+  Triggers to revisit + the work shape if it reopens:
+  [`docs/graphql-decision.md`](docs/graphql-decision.md).
 
 ## Verification
 
