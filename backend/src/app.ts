@@ -33,6 +33,7 @@ import { commentErrorHandler, commentRoutes } from "./routes/comments.js";
 import { notificationErrorHandler, notificationRoutes } from "./routes/notifications.js";
 import { reportingErrorHandler, reportingRoutes } from "./routes/reporting.js";
 import { invitesRoutes } from "./routes/invites.js";
+import { mobileClaimsRoutes } from "./routes/mobile.js";
 import { authRoutes } from "./routes/auth.js";
 import { InviteError } from "./services/invites.js";
 import { PasswordResetError } from "./services/auth/password-reset.js";
@@ -251,6 +252,9 @@ export function createApp({ auth, db, env }: AppDeps): Hono {
   /* ------------------------------------------- #11 claims + attachments ---- */
   app.route("/", claimsRoutes({ auth, db, env }));
   app.route("/", attachmentRoutes({ auth, db, env }));
+
+  /* ------------------------------- #88 Phase 2 mobile: OcrDraft submit ---- */
+  app.route("/", mobileClaimsRoutes({ auth, db, env }));
 
   /* ----------------------------------------------- #12 approver decisions -- */
   app.route("/", approvalRoutes({ auth, db, env }));

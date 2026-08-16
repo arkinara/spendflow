@@ -55,6 +55,8 @@ export class ClaimError extends Error {
       | "no_line_items"
       | "invalid_line"
       | "unknown_category"
+      | "invalid_amount"
+      | "invalid_category"
       | "routing_failed"
       | "not_blocked"
       | "still_blocked"
