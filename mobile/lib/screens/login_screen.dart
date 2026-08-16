@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../api/auth.dart' as auth_api;
+import '../api/errors.dart';
 import '../data/fixtures.dart';
 import '../state/app_state.dart';
 import '../theme/tokens.dart';
@@ -7,17 +9,27 @@ import 'shell.dart';
 
 /// Sign-in.
 ///
-/// Credentials are pre-filled and the button is a straight hand-off: there is
-/// no auth backend on mobile yet, and the screen exists so the flow starts
-/// where it will start in production.
+/// Tries the real Better Auth endpoint through the shared [auth_api.signIn]
+/// seam (cookie session + `/api/me` read-back). When no backend is reachable
+/// — offline, CI, or the fixture demo — falls back to the Phase 1 demo
+/// hand-off, keeping offline capture available. A production auth screen
+/// replaces the fallback.
 class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
 
   static const String routeName = '/';
 
-  void _signIn(BuildContext context) {
-    AppScope.read(context).signIn();
-    Navigator.of(context).pushReplacementNamed(MainShell.routeName);
+  Future<void> _signIn(BuildContext context) async {
+    final state = AppScope.read(context);
+    try {
+      final user = await auth_api.signIn(Fixtures.userEmail, 'spendflow-demo');
+      state.signInAs(user);
+    } on ApiException {
+      state.signIn();
+    }
+    if (context.mounted) {
+      Navigator.of(context).pushReplacementNamed(MainShell.routeName);
+    }
   }
 
   @override

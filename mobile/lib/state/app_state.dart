@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
+import '../api/auth.dart' as auth_api;
+import '../api/errors.dart';
 import '../data/fixtures.dart';
 import '../models/models.dart';
 import '../util/currency.dart';
@@ -395,8 +397,47 @@ class AppState extends ChangeNotifier {
   bool _signedIn = false;
   bool get signedIn => _signedIn;
 
-  void signIn() {
+  auth_api.AuthUser? _currentUser;
+
+  /// The authenticated user, populated by the boot-time `/api/me` probe or a
+  /// real sign-in — null when only the Phase 1 demo hand-off has run.
+  auth_api.AuthUser? get currentUser => _currentUser;
+
+  /// Demo hand-off sign-in (Phase 1 behaviour). Passing `false` is the 401
+  /// handler's sign-out signal.
+  void signIn([bool signedIn = true]) {
+    _signedIn = signedIn;
+    if (!signedIn) _currentUser = null;
+    notifyListeners();
+  }
+
+  /// Sign in with a real backend session behind it.
+  void signInAs(auth_api.AuthUser user) {
+    _currentUser = user;
     _signedIn = true;
+    notifyListeners();
+  }
+
+  /// Invalidate the server-side session, then clear local state.
+  Future<void> signOut() async {
+    await auth_api.signOut();
+    _currentUser = null;
+    _signedIn = false;
+    notifyListeners();
+  }
+
+  /// Cold-start session probe: `GET /api/me` with the session cookie.
+  ///
+  /// 200 → user stored and signed in; 401 → signed out; network/BE error →
+  /// signed out but harmless (offline capture works without a session).
+  Future<void> bootstrap() async {
+    try {
+      final user = await auth_api.getCurrentUser();
+      _currentUser = user;
+      _signedIn = user != null;
+    } on ApiException {
+      _signedIn = false;
+    }
     notifyListeners();
   }
 
