@@ -3,7 +3,7 @@
 Spend management, reimbursement, and approval platform.
 
 - **Phase 1 (this repo, active):** web app — employee claims, approver decisioning, finance exception/payment lifecycle, policy/category/routing admin, notifications, reporting.
-- **Phase 2 (future, not scheduled):** Flutter mobile app with OCR receipt capture.
+- **Phase 2 (front end started):** Flutter mobile app (`mobile/`) with OCR receipt capture, offline drafts and approvals — Android + iOS. The UI is built against fixtures; no mobile API is wired up yet. See [`mobile/README.md`](mobile/README.md).
 
 ## PRD
 
@@ -37,9 +37,17 @@ revisit:
   Triggers to revisit + the work shape if it reopens:
   [`docs/graphql-decision.md`](docs/graphql-decision.md).
 
+## Workspaces
+
+| Path | Stack | Status |
+| --- | --- | --- |
+| `backend/` | Hono + SQLite | Phase 1, wired |
+| `frontend/` | Next.js 14 + Tailwind | Phase 1, wired |
+| `mobile/` | Flutter 3.44 (Android + iOS) | Phase 2, front end only |
+
 ## Verification
 
-Run the full correctness gate (typecheck + tests + build) across both workspaces from the repo root:
+Run the full correctness gate (typecheck + tests + build) across both web workspaces from the repo root:
 
 ```sh
 npm run verify
@@ -55,5 +63,12 @@ The 6 gates run in order (next build runs before FE typecheck so generated `.nex
 4. `FE build` — `next build` (generates `.next/types`)
 5. `FE typecheck` — `tsc --noEmit`
 6. `FE test` — `vitest run`
+
+The mobile workspace has its own gate (it needs the Flutter SDK, so it is kept
+out of `npm run verify`):
+
+```sh
+npm run verify:mobile      # flutter analyze + flutter test
+```
 
 > CI badge placeholder: add a GitHub Actions workflow (a follow-up ticket) and embed the badge here once CI is wired up.
