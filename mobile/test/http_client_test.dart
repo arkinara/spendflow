@@ -73,7 +73,7 @@ void main() {
   test('a connection failure surfaces as NetworkError, not a raw exception',
       () async {
     final sut = _sut(MockClient((request) async {
-      throw http.ClientException('Connection refused', uri: request.url);
+      throw http.ClientException('Connection refused', request.url);
     }));
 
     await expectLater(
