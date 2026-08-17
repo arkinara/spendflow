@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spendflow_mobile/api/auth.dart';
 import 'package:spendflow_mobile/data/claim_repository.dart';
@@ -461,6 +462,41 @@ void main() {
       expect(relaunched.synced, isTrue);
       expect(relaunched.queuedItems, isEmpty);
       expect(relaunched.queueSummary, 'All caught up — nothing queued');
+    });
+  });
+
+  group('theme mode (#95)', () {
+    test('setThemeMode flips the mode and persists it via the store', () async {
+      final store = InMemoryStore();
+      final state = await AppState.create(store: store);
+      expect(state.themeMode, ThemeMode.system);
+
+      state.setThemeMode(ThemeMode.dark);
+      // The write is fire-and-forget (#93); let the chained awaits land.
+      await pumpEventQueue();
+
+      expect(state.themeMode, ThemeMode.dark);
+      expect(await store.readString('theme_mode'), 'dark');
+    });
+
+    test('create hydrates the stored theme mode', () async {
+      final store = InMemoryStore();
+      await store.init();
+      await store.writeString('theme_mode', 'dark');
+
+      final state = await AppState.create(store: store);
+
+      expect(state.themeMode, ThemeMode.dark);
+    });
+
+    test('an unknown stored theme mode falls back to system', () async {
+      final store = InMemoryStore();
+      await store.init();
+      await store.writeString('theme_mode', 'neon');
+
+      final state = await AppState.create(store: store);
+
+      expect(state.themeMode, ThemeMode.system);
     });
   });
 }

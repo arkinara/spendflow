@@ -50,22 +50,60 @@ const ColorScheme _lightScheme = ColorScheme(
   shadow: Color(0xFF000000),
 );
 
-ThemeData buildSpendFlowTheme() {
-  const tokens = SpendFlowTokens.light;
+/// M3 dark scheme (#95), mirroring [_lightScheme]'s structure with the
+/// brightness flipped and the surface steps tuned for dark backgrounds —
+/// lighter "containers" sitting on a darker base, the same inverse-elevation
+/// relationship M3 generates from a dark seed.
+const ColorScheme _darkScheme = ColorScheme(
+  brightness: Brightness.dark,
+  primary: Color(0xFFC3BDFF),
+  onPrimary: Color(0xFF241F50),
+  primaryContainer: Color(0xFF3A34A6),
+  onPrimaryContainer: Color(0xFFE6E1FF),
+  secondary: Color(0xFFCDBCE6),
+  onSecondary: Color(0xFF2C1E44),
+  secondaryContainer: Color(0xFF44386A),
+  onSecondaryContainer: Color(0xFFE8E1F4),
+  tertiary: Color(0xFF8FD5E0),
+  onTertiary: Color(0xFF0B3E48),
+  tertiaryContainer: Color(0xFF0E4F5A),
+  onTertiaryContainer: Color(0xFFD6F0F5),
+  error: Color(0xFFF2B8B8),
+  onError: Color(0xFF5D1414),
+  errorContainer: Color(0xFF8C1D18),
+  onErrorContainer: Color(0xFFF9DEDC),
+  surface: Color(0xFF14141A),
+  onSurface: Color(0xFFE7E7EE),
+  onSurfaceVariant: Color(0xFFC2C2CC),
+  outline: Color(0xFF8E8E9A),
+  outlineVariant: Color(0xFF45454F),
+  inverseSurface: Color(0xFFE7E7EE),
+  onInverseSurface: Color(0xFF2C2C34),
+  inversePrimary: Color(0xFF4539D1),
+  scrim: Color(0xFF000000),
+  shadow: Color(0xFF000000),
+);
+
+/// Build the SpendFlow [ThemeData] for a given [Brightness]. Defaults to
+/// light so existing callers and tests keep working unchanged (#95).
+ThemeData buildSpendFlowTheme({Brightness brightness = Brightness.light}) {
+  final scheme = brightness == Brightness.dark ? _darkScheme : _lightScheme;
+  final tokens =
+      brightness == Brightness.dark ? SpendFlowTokens.dark : SpendFlowTokens.light;
   final base = ThemeData(
     useMaterial3: true,
-    colorScheme: _lightScheme,
+    colorScheme: scheme,
     fontFamily: kSansFallback.first,
     fontFamilyFallback: kSansFallback.sublist(1),
   );
 
   return base.copyWith(
-    scaffoldBackgroundColor: _lightScheme.surface,
-    extensions: const <ThemeExtension<dynamic>>[tokens],
+    scaffoldBackgroundColor: scheme.surface,
+    extensions: <ThemeExtension<dynamic>>[tokens],
     splashFactory: InkSparkle.splashFactory,
     appBarTheme: AppBarTheme(
       backgroundColor: tokens.surfaceContainerHigh,
-      foregroundColor: _lightScheme.onSurface,
+      foregroundColor: scheme.onSurface,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
       scrolledUnderElevation: 0,
@@ -74,11 +112,11 @@ ThemeData buildSpendFlowTheme() {
         fontSize: 15,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.2,
-        color: _lightScheme.onSurface,
+        color: scheme.onSurface,
       ),
     ),
-    dividerTheme: const DividerThemeData(
-      color: Color(0xFFD7D7E0),
+    dividerTheme: DividerThemeData(
+      color: scheme.outlineVariant,
       thickness: 1,
       space: 1,
     ),
@@ -92,15 +130,15 @@ ThemeData buildSpendFlowTheme() {
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(0, 48),
-        foregroundColor: _lightScheme.primary,
-        side: const BorderSide(color: Color(0xFF9696A6)),
+        foregroundColor: scheme.primary,
+        side: BorderSide(color: scheme.outline),
         shape: const RoundedRectangleBorder(borderRadius: Radii.pill),
         textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
-        foregroundColor: _lightScheme.primary,
+        foregroundColor: scheme.primary,
         textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
       ),
     ),
@@ -109,34 +147,34 @@ ThemeData buildSpendFlowTheme() {
       fillColor: tokens.surfaceContainerHigh,
       isDense: true,
       contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-      border: const OutlineInputBorder(
+      border: OutlineInputBorder(
         borderRadius: Radii.md,
-        borderSide: BorderSide(color: Color(0xFF9696A6)),
+        borderSide: BorderSide(color: scheme.outline),
       ),
-      enabledBorder: const OutlineInputBorder(
+      enabledBorder: OutlineInputBorder(
         borderRadius: Radii.md,
-        borderSide: BorderSide(color: Color(0xFF9696A6)),
+        borderSide: BorderSide(color: scheme.outline),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: Radii.md,
-        borderSide: BorderSide(color: _lightScheme.primary, width: 2),
+        borderSide: BorderSide(color: scheme.primary, width: 2),
       ),
-      labelStyle: const TextStyle(fontSize: 13, color: Color(0xFF60606C)),
-      helperStyle: const TextStyle(fontSize: 10.5, color: Color(0xFF60606C)),
+      labelStyle: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+      helperStyle: TextStyle(fontSize: 10.5, color: scheme.onSurfaceVariant),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
-      backgroundColor: _lightScheme.inverseSurface,
+      backgroundColor: scheme.inverseSurface,
       contentTextStyle: TextStyle(
         fontSize: 12.5,
         height: 1.4,
-        color: _lightScheme.onInverseSurface,
+        color: scheme.onInverseSurface,
       ),
       shape: const RoundedRectangleBorder(borderRadius: Radii.md),
       insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
     ),
     bottomSheetTheme: BottomSheetThemeData(
-      backgroundColor: _lightScheme.surface,
+      backgroundColor: scheme.surface,
       surfaceTintColor: Colors.transparent,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -145,7 +183,7 @@ ThemeData buildSpendFlowTheme() {
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: tokens.surfaceContainerHigh,
       surfaceTintColor: Colors.transparent,
-      indicatorColor: _lightScheme.primary.withValues(alpha: 0.15),
+      indicatorColor: scheme.primary.withValues(alpha: 0.15),
       elevation: 0,
       height: 64,
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
@@ -154,26 +192,26 @@ ThemeData buildSpendFlowTheme() {
         return TextStyle(
           fontSize: 10.5,
           fontWeight: FontWeight.w500,
-          color: selected ? _lightScheme.primary : _lightScheme.onSurfaceVariant,
+          color: selected ? scheme.primary : scheme.onSurfaceVariant,
         );
       }),
       iconTheme: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
         return IconThemeData(
           size: 21,
-          color: selected ? _lightScheme.primary : _lightScheme.onSurfaceVariant,
+          color: selected ? scheme.primary : scheme.onSurfaceVariant,
         );
       }),
     ),
     floatingActionButtonTheme: FloatingActionButtonThemeData(
-      backgroundColor: _lightScheme.primary,
-      foregroundColor: _lightScheme.onPrimary,
+      backgroundColor: scheme.primary,
+      foregroundColor: scheme.onPrimary,
       elevation: 4,
       shape: const RoundedRectangleBorder(borderRadius: Radii.xxl),
     ),
     textTheme: base.textTheme.apply(
-      bodyColor: _lightScheme.onSurface,
-      displayColor: _lightScheme.onSurface,
+      bodyColor: scheme.onSurface,
+      displayColor: scheme.onSurface,
     ),
   );
 }

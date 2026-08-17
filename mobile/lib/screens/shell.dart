@@ -6,8 +6,10 @@ import 'capture_screen.dart';
 import 'claims_screen.dart';
 import 'home_screen.dart';
 import 'queue_screen.dart';
+import 'settings_screen.dart';
 
-/// The four primary destinations, with the capture FAB riding above them.
+/// The four primary destinations, with the capture FAB riding above them and
+/// Settings as a pushed route off the bottom bar.
 ///
 /// Tab state is kept in an [IndexedStack] so scroll position and filters
 /// survive a switch — the same behaviour the web app's rail has.
@@ -15,6 +17,10 @@ class MainShell extends StatefulWidget {
   const MainShell({this.initialIndex = 0, super.key});
 
   final int initialIndex;
+
+  /// Index of the Settings destination. Unlike the tabs it pushes a route
+  /// (/settings) instead of switching the stack.
+  static const int settingsIndex = 4;
 
   static const String routeName = '/home';
 
@@ -51,7 +57,13 @@ class _MainShellState extends State<MainShell> {
           : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) {
+          if (i == MainShell.settingsIndex) {
+            Navigator.of(context).pushNamed(SettingsScreen.routeName);
+            return;
+          }
+          setState(() => _index = i);
+        },
         destinations: <Widget>[
           const NavigationDestination(
             icon: Icon(Icons.home_outlined),
@@ -81,6 +93,11 @@ class _MainShellState extends State<MainShell> {
             ),
             selectedIcon: const Icon(Icons.inbox),
             label: 'Approvals',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: 'Settings',
           ),
         ],
       ),

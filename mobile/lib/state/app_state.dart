@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 import '../api/auth.dart' as auth_api;
 import '../api/errors.dart';
@@ -56,6 +56,7 @@ class AppState extends ChangeNotifier {
   AppState({
     AppVariant variant = AppVariant.standard,
     bool offline = false,
+    ThemeMode themeMode = ThemeMode.system,
     ClaimRepository? repository,
     LocalStore? store,
     OcrPass? ocrPass,
@@ -65,6 +66,8 @@ class AppState extends ChangeNotifier {
         _variant = variant,
         // ignore: prefer_initializing_formals
         _offline = offline,
+        // ignore: prefer_initializing_formals
+        _themeMode = themeMode,
         // ignore: prefer_initializing_formals
         _store = store,
         // Demo mode runs the fixture pass; the live repository gets the
@@ -89,6 +92,7 @@ class AppState extends ChangeNotifier {
   static Future<AppState> create({
     AppVariant variant = AppVariant.standard,
     bool offline = false,
+    ThemeMode themeMode = ThemeMode.system,
     ClaimRepository? repository,
     LocalStore? store,
     OcrPass? ocrPass,
@@ -98,6 +102,7 @@ class AppState extends ChangeNotifier {
     final state = AppState(
       variant: variant,
       offline: offline,
+      themeMode: themeMode,
       repository: repository,
       store: hydratedStore,
       ocrPass: ocrPass,
@@ -110,6 +115,7 @@ class AppState extends ChangeNotifier {
 
   static const String _variantKey = 'variant';
   static const String _offlineKey = 'offline';
+  static const String _themeModeKey = 'theme_mode';
   static const String _queueKey = 'queue';
   static const String _draftKey = 'draft';
   static const String _inboxKey = 'inbox';
@@ -133,6 +139,15 @@ class AppState extends ChangeNotifier {
       }
       final offlineRaw = await store.readString(_offlineKey);
       if (offlineRaw != null) _offline = offlineRaw == 'true';
+      final themeModeName = await store.readString(_themeModeKey);
+      if (themeModeName != null) {
+        // Case-insensitive match against the enum names; anything unknown
+        // (corrupt / hand-edited value) falls back to system (#95).
+        final lower = themeModeName.toLowerCase();
+        for (final candidate in ThemeMode.values) {
+          if (candidate.name == lower) _themeMode = candidate;
+        }
+      }
       final queue = await store.readList(_queueKey);
       if (queue != null) {
         _queue = queue.map(QueueItem.fromJson).toList();
@@ -173,6 +188,7 @@ class AppState extends ChangeNotifier {
   void _persistSettings() => _write((store) async {
         await store.writeString(_variantKey, _variant.name);
         await store.writeString(_offlineKey, _offline ? 'true' : 'false');
+        await store.writeString(_themeModeKey, _themeMode.name);
       });
 
   void _persistDraft() => _write((store) async {
@@ -227,6 +243,20 @@ class AppState extends ChangeNotifier {
   set variant(AppVariant value) {
     if (_variant == value) return;
     _variant = value;
+    _persistSettings();
+    notifyListeners();
+  }
+
+  /* ---------------- theme mode (#95) ---------------- */
+
+  ThemeMode _themeMode;
+  ThemeMode get themeMode => _themeMode;
+
+  /// Override the system light/dark preference. Persisted through
+  /// [_persistSettings] so a relaunch boots into the chosen mode (#93 seam).
+  void setThemeMode(ThemeMode value) {
+    if (_themeMode == value) return;
+    _themeMode = value;
     _persistSettings();
     notifyListeners();
   }

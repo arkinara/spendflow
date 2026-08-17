@@ -61,9 +61,38 @@ class SpendFlowTokens extends ThemeExtension<SpendFlowTokens> {
     receiptPaper: Color(0xFFF6F4EF),
   );
 
-  /// Convenience accessor — every screen reads tokens off the theme.
-  static SpendFlowTokens of(BuildContext context) =>
-      Theme.of(context).extension<SpendFlowTokens>() ?? light;
+  /// Dark counterpart (#95), authored per-entry like the web app's `.dark`
+  /// block in `globals.css` rather than derived from the light set. The
+  /// surface-container steps follow M3's inverse-elevation mapping (darker
+  /// base, lighter surfaces as elevation rises), and the semantic roles keep
+  /// their hue while tuning luminance for dark backgrounds.
+  static const SpendFlowTokens dark = SpendFlowTokens(
+    success: Color(0xFF7EC89B),
+    successContainer: Color(0xFF1D4630),
+    onSuccessContainer: Color(0xFFBCE8CF),
+    warning: Color(0xFFE7C264),
+    warningContainer: Color(0xFF4A3A13),
+    onWarningContainer: Color(0xFFF8E6B3),
+    info: Color(0xFF9CC3F2),
+    infoContainer: Color(0xFF20354C),
+    onInfoContainer: Color(0xFFC9DEF8),
+    surfaceContainerLowest: Color(0xFF0E0E13),
+    surfaceContainerLow: Color(0xFF1B1B22),
+    surfaceContainer: Color(0xFF1F1F27),
+    surfaceContainerHigh: Color(0xFF292932),
+    receiptPaper: Color(0xFF23232A),
+  );
+
+  /// Convenience accessor — every screen reads tokens off the theme. Falls
+  /// back to the variant matching the active theme brightness when the
+  /// extension has not been registered (never in the real app, only in
+  /// tests that build bare [ThemeData]).
+  static SpendFlowTokens of(BuildContext context) {
+    final theme = Theme.of(context);
+    final tokens = theme.extension<SpendFlowTokens>();
+    if (tokens != null) return tokens;
+    return theme.brightness == Brightness.dark ? dark : light;
+  }
 
   @override
   SpendFlowTokens copyWith({

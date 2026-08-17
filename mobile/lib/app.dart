@@ -8,6 +8,7 @@ import 'screens/confirm_screen.dart';
 import 'screens/draft_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/queue_screen.dart';
+import 'screens/settings_screen.dart';
 import 'screens/shell.dart';
 import 'screens/success_screen.dart';
 import 'state/app_state.dart';
@@ -100,12 +101,8 @@ class _SpendFlowAppState extends State<SpendFlowApp> {
   Widget build(BuildContext context) {
     return AppScope(
       state: _state,
-      child: MaterialApp(
-        title: 'SpendFlow',
-        debugShowCheckedModeBanner: false,
-        theme: buildSpendFlowTheme(),
+      child: _SpendFlowMaterialApp(
         navigatorKey: _navigatorKey,
-        initialRoute: LoginScreen.routeName,
         onGenerateRoute: _onGenerateRoute,
       ),
     );
@@ -117,6 +114,8 @@ class _SpendFlowAppState extends State<SpendFlowApp> {
         return _page(const LoginScreen(), settings);
       case MainShell.routeName:
         return _page(const MainShell(), settings);
+      case SettingsScreen.routeName:
+        return _page(const SettingsScreen(), settings);
       case CaptureScreen.routeName:
         return _page(const CaptureScreen(), settings);
       case ConfirmScreen.routeName:
@@ -137,5 +136,33 @@ class _SpendFlowAppState extends State<SpendFlowApp> {
 
   MaterialPageRoute<void> _page(Widget child, RouteSettings settings) {
     return MaterialPageRoute<void>(builder: (_) => child, settings: settings);
+  }
+}
+
+/// Builds the [MaterialApp] below [AppScope] so it subscribes to [AppState]:
+/// a theme-mode flip notifies and the whole app re-resolves light/dark in
+/// place — no route is pushed or popped, the navigator stack stays put.
+class _SpendFlowMaterialApp extends StatelessWidget {
+  const _SpendFlowMaterialApp({
+    required this.navigatorKey,
+    required this.onGenerateRoute,
+  });
+
+  final GlobalKey<NavigatorState> navigatorKey;
+  final Route<dynamic>? Function(RouteSettings) onGenerateRoute;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = AppScope.of(context);
+    return MaterialApp(
+      title: 'SpendFlow',
+      debugShowCheckedModeBanner: false,
+      theme: buildSpendFlowTheme(),
+      darkTheme: buildSpendFlowTheme(brightness: Brightness.dark),
+      themeMode: state.themeMode,
+      navigatorKey: navigatorKey,
+      initialRoute: LoginScreen.routeName,
+      onGenerateRoute: onGenerateRoute,
+    );
   }
 }
