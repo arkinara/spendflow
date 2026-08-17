@@ -24,6 +24,18 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Null means "All". Filters the ledger without leaving the screen.
   ClaimStatus? _filter;
 
+  /// Guards the one-shot repository load (#91): home pulls its claims through
+  /// [AppState.loadClaims] instead of reading fixtures directly.
+  bool _claimsLoaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_claimsLoaded) return;
+    _claimsLoaded = true;
+    AppScope.of(context).loadClaims();
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);

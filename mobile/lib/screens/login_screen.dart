@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../api/auth.dart' as auth_api;
 import '../api/errors.dart';
 import '../data/fixtures.dart';
 import '../state/app_state.dart';
@@ -9,11 +8,11 @@ import 'shell.dart';
 
 /// Sign-in.
 ///
-/// Tries the real Better Auth endpoint through the shared [auth_api.signIn]
-/// seam (cookie session + `/api/me` read-back). When no backend is reachable
-/// — offline, CI, or the fixture demo — falls back to the Phase 1 demo
-/// hand-off, keeping offline capture available. A production auth screen
-/// replaces the fallback.
+/// Tries the repository seam (#91) — `RestClaimRepository` when a backend is
+/// wired, cookie session + `/api/me` read-back. When no backend is reachable
+/// — offline, CI, or the fixture demo — the fixtures repository (or the
+/// ApiException fallback) keeps the Phase 1 demo hand-off alive, preserving
+/// offline capture. A production auth screen replaces the fallback.
 class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
 
@@ -22,7 +21,8 @@ class LoginScreen extends StatelessWidget {
   Future<void> _signIn(BuildContext context) async {
     final state = AppScope.read(context);
     try {
-      final user = await auth_api.signIn(Fixtures.userEmail, 'spendflow-demo');
+      final user =
+          await state.repository.signIn(Fixtures.userEmail, 'spendflow-demo');
       state.signInAs(user);
     } on ApiException {
       state.signIn();

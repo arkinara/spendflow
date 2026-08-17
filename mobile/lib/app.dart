@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'api/http_client.dart';
+import 'data/claim_repository.dart';
 import 'screens/capture_screen.dart';
 import 'screens/claim_detail_screen.dart';
 import 'screens/confirm_screen.dart';
@@ -19,17 +20,23 @@ import 'theme/app_theme.dart';
 /// also owns the two cross-cutting HTTP concerns: the global 401 handler and
 /// the boot-time `/api/me` session probe.
 class SpendFlowApp extends StatefulWidget {
-  const SpendFlowApp({this.initialState, super.key});
+  const SpendFlowApp({this.initialState, this.initialRepository, super.key});
 
   /// Injected by tests to start from a specific point in the flow.
   final AppState? initialState;
+
+  /// Data seam injected by tests (#91). Production wiring — swapping this for
+  /// [RestClaimRepository] — lands in #90b/#90c; the default stays demo
+  /// fixtures so offline behaviour is unchanged.
+  final ClaimRepository? initialRepository;
 
   @override
   State<SpendFlowApp> createState() => _SpendFlowAppState();
 }
 
 class _SpendFlowAppState extends State<SpendFlowApp> {
-  late final AppState _state = widget.initialState ?? AppState();
+  late final AppState _state =
+      widget.initialState ?? AppState(repository: widget.initialRepository);
   late final bool _ownsState = widget.initialState == null;
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 

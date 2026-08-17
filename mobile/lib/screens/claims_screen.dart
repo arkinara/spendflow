@@ -10,8 +10,25 @@ import 'claim_detail_screen.dart';
 import 'draft_screen.dart';
 
 /// Every claim the employee owns, grouped by where it sits in the lifecycle.
-class ClaimsScreen extends StatelessWidget {
+class ClaimsScreen extends StatefulWidget {
   const ClaimsScreen({super.key});
+
+  @override
+  State<ClaimsScreen> createState() => _ClaimsScreenState();
+}
+
+class _ClaimsScreenState extends State<ClaimsScreen> {
+  /// Guards the one-shot repository load (#91): the list pulls its claims
+  /// through [AppState.loadClaims] instead of reading fixtures directly.
+  bool _claimsLoaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_claimsLoaded) return;
+    _claimsLoaded = true;
+    AppScope.of(context).loadClaims();
+  }
 
   @override
   Widget build(BuildContext context) {

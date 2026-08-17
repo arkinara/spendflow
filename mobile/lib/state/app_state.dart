@@ -4,7 +4,9 @@ import 'package:flutter/widgets.dart';
 
 import '../api/auth.dart' as auth_api;
 import '../api/errors.dart';
+import '../data/claim_repository.dart';
 import '../data/fixtures.dart';
+import '../data/fixtures_claim_repository.dart';
 import '../models/models.dart';
 import '../util/currency.dart';
 
@@ -43,11 +45,47 @@ enum ScanStage {
 class AppState extends ChangeNotifier {
   // The backing fields are private, so they cannot be initializing formals of
   // a named parameter.
-  AppState({AppVariant variant = AppVariant.standard, bool offline = false})
-      // ignore: prefer_initializing_formals
-      : _variant = variant,
+  AppState({
+    AppVariant variant = AppVariant.standard,
+    bool offline = false,
+    ClaimRepository? repository,
+  })  // ignore: prefer_initializing_formals
+  : repository = repository ?? const FixturesClaimRepository(),
         // ignore: prefer_initializing_formals
-        _offline = offline;
+        _variant = variant,
+        // ignore: prefer_initializing_formals
+        _offline = offline {
+    // Demo mode seeds synchronously so reads before any await — first build,
+    // existing tests — still see the fixture data. A REST repository starts
+    // empty and fills via [loadClaims].
+    final demo = this.repository;
+    if (demo is FixturesClaimRepository) {
+      _employeeClaims = demo.demoClaims;
+      _inboxItems = demo.demoInbox;
+    }
+  }
+
+  /// Data seam for every claim read (#91). Screens depend on this, never on
+  /// `Fixtures` or the HTTP client.
+  final ClaimRepository repository;
+
+  /// Claims loaded from [repository]; fixture-seeded in demo mode.
+  List<Claim> _employeeClaims = const <Claim>[];
+
+  /// Approver inbox loaded from [repository]; fixture-seeded in demo mode.
+  List<InboxItem> _inboxItems = const <InboxItem>[];
+
+  /// Employee id claims and inbox are scoped to. Fixtures ignore it; the
+  /// REST repository passes it as `employee_id`.
+  String get employeeId => currentUser?.id ?? 'demo-aulia';
+
+  /// Pull claims + inbox from the repository. Cheap in demo mode (same
+  /// fixtures); the live mode runs it on login and route entry (#91b/#91c).
+  Future<void> loadClaims() async {
+    _employeeClaims = await repository.listClaims(employeeId);
+    _inboxItems = await repository.listInbox(employeeId);
+    notifyListeners();
+  }
 
   /// Wall-clock pacing of the fake OCR pass. Long enough to read the stage
   /// copy, short enough that the flow never feels blocked.
@@ -323,7 +361,7 @@ class AppState extends ChangeNotifier {
   /// Decisions taken this session, consumed from the top of the inbox.
   int get decided => _decided;
 
-  List<InboxItem> get inbox => Fixtures.inbox.skip(_decided).toList();
+  List<InboxItem> get inbox => _inboxItems.skip(_decided).toList();
 
   void decide() {
     _decided += 1;
@@ -382,7 +420,7 @@ class AppState extends ChangeNotifier {
           ),
       ],
     );
-    return <Claim>[openDraft, ...Fixtures.claims];
+    return <Claim>[openDraft, ..._employeeClaims];
   }
 
   Claim? claimById(String id) {
@@ -420,7 +458,7 @@ class AppState extends ChangeNotifier {
 
   /// Invalidate the server-side session, then clear local state.
   Future<void> signOut() async {
-    await auth_api.signOut();
+    await repository.signOut();
     _currentUser = null;
     _signedIn = false;
     notifyListeners();
@@ -432,7 +470,7 @@ class AppState extends ChangeNotifier {
   /// signed out but harmless (offline capture works without a session).
   Future<void> bootstrap() async {
     try {
-      final user = await auth_api.getCurrentUser();
+      final user = await repository.getCurrentUser();
       _currentUser = user;
       _signedIn = user != null;
     } on ApiException {

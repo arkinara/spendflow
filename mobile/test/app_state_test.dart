@@ -1,7 +1,43 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:spendflow_mobile/api/auth.dart';
+import 'package:spendflow_mobile/data/claim_repository.dart';
 import 'package:spendflow_mobile/data/fixtures.dart';
+import 'package:spendflow_mobile/data/fixtures_claim_repository.dart';
 import 'package:spendflow_mobile/models/models.dart';
 import 'package:spendflow_mobile/state/app_state.dart';
+
+/// Records every call so an injected [AppState] can be proven to read its
+/// claims through the repository rather than straight from [Fixtures].
+class _RecordingRepository implements ClaimRepository {
+  int listClaimsCalls = 0;
+
+  @override
+  Future<AuthUser?> getCurrentUser() async => null;
+
+  @override
+  Future<AuthUser> signIn(String email, String password) async => AuthUser(
+        id: 'u1',
+        email: email,
+        name: 'Tester',
+        role: 'employee',
+      );
+
+  @override
+  Future<void> signOut() async {}
+
+  @override
+  Future<List<Claim>> listClaims(String employeeId) async {
+    listClaimsCalls += 1;
+    return const <Claim>[];
+  }
+
+  @override
+  Future<Claim?> claimById(String claimId) async => null;
+
+  @override
+  Future<List<InboxItem>> listInbox(String approverId) async =>
+      const <InboxItem>[];
+}
 
 void main() {
   group('policy caps', () {
@@ -151,6 +187,24 @@ void main() {
 
       expect(state.inbox, hasLength(Fixtures.inbox.length - 1));
       expect(state.inbox.first.submitter, 'Bima Nugroho');
+    });
+  });
+
+  group('repository injection', () {
+    test('the default repository is the fixtures demo implementation', () {
+      expect(AppState().repository, isA<FixturesClaimRepository>());
+    });
+
+    test('loadClaims reads claims through the injected repository', () async {
+      final repo = _RecordingRepository();
+      final state = AppState(repository: repo);
+
+      expect(state.homeClaims, hasLength(1)); // draft only, repo still empty
+
+      await state.loadClaims();
+
+      expect(repo.listClaimsCalls, 1);
+      expect(state.homeClaims, hasLength(1));
     });
   });
 
