@@ -1,6 +1,18 @@
 import '../api/auth.dart';
 import '../models/models.dart';
 
+/// Approver verdict on one inbox item (#92).
+enum Decision { approve, reject, returnForRevision }
+
+/// What a successful submit hands back (#92): the stored claim plus its
+/// submission status ('submitted' when it went straight to the approver).
+class SubmissionResult {
+  const SubmissionResult({required this.claim, this.status = 'submitted'});
+
+  final Claim claim;
+  final String status;
+}
+
 /// The one seam the UI depends on for claim data (#91).
 ///
 /// Screens and [AppState] talk to this interface only — never to `Fixtures`
@@ -34,4 +46,15 @@ abstract class ClaimRepository {
 
   /// Persist the edited draft after confirmation. Returns the stored draft.
   Future<OcrDraft> saveDraft(OcrDraft draft);
+
+  /// Submit the confirmed draft as a claim (#92).
+  Future<SubmissionResult> submit(OcrDraft draft);
+
+  /// Push every locally-held (offline-queued) submission to the backend and
+  /// return the count successfully synced (#92).
+  Future<int> sync();
+
+  /// Record the approver's verdict on one inbox item (#92). Throws
+  /// [ApiException] when the backend rejects or is unreachable.
+  Future<void> decide(String inboxItemId, Decision decision);
 }

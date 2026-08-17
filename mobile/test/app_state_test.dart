@@ -12,6 +12,10 @@ class _RecordingRepository implements ClaimRepository {
   int listClaimsCalls = 0;
   int captureCalls = 0;
   int saveDraftCalls = 0;
+  int syncCalls = 0;
+  int decideCalls = 0;
+  String? lastDecidedId;
+  Decision? lastDecision;
   OcrDraft? savedDraft;
 
   final OcrDraft captureResult =
@@ -42,7 +46,7 @@ class _RecordingRepository implements ClaimRepository {
 
   @override
   Future<List<InboxItem>> listInbox(String approverId) async =>
-      const <InboxItem>[];
+      Fixtures.inbox;
 
   @override
   Future<OcrDraft> capture() async {
@@ -55,6 +59,23 @@ class _RecordingRepository implements ClaimRepository {
     saveDraftCalls += 1;
     savedDraft = draft;
     return draft;
+  }
+
+  @override
+  Future<SubmissionResult> submit(OcrDraft draft) async =>
+      SubmissionResult(claim: Fixtures.claims.first);
+
+  @override
+  Future<int> sync() async {
+    syncCalls += 1;
+    return Fixtures.queue.length;
+  }
+
+  @override
+  Future<void> decide(String inboxItemId, Decision decision) async {
+    decideCalls += 1;
+    lastDecidedId = inboxItemId;
+    lastDecision = decision;
   }
 }
 
@@ -198,11 +219,11 @@ void main() {
   });
 
   group('approver inbox', () {
-    test('deciding consumes the item from the top', () {
+    test('deciding consumes the item from the top', () async {
       final state = AppState();
       expect(state.inbox, hasLength(Fixtures.inbox.length));
 
-      state.decide();
+      await state.decide();
 
       expect(state.inbox, hasLength(Fixtures.inbox.length - 1));
       expect(state.inbox.first.submitter, 'Bima Nugroho');
@@ -249,6 +270,37 @@ void main() {
       expect(repo.saveDraftCalls, 1);
       expect(repo.savedDraft, same(edited));
       expect(state.draft, same(edited));
+    });
+
+    test('decide delegates to repository.decide and removes the inbox item',
+        () async {
+      final repo = _RecordingRepository();
+      final state = AppState(repository: repo);
+      await state.loadClaims();
+      expect(state.inbox, hasLength(Fixtures.inbox.length));
+
+      await state.decide('EXP-2026-1001', Decision.approve);
+
+      expect(repo.decideCalls, 1);
+      expect(repo.lastDecidedId, 'EXP-2026-1001');
+      expect(repo.lastDecision, Decision.approve);
+      expect(state.inbox.where((item) => item.id == 'EXP-2026-1001'), isEmpty);
+      expect(state.inbox, hasLength(Fixtures.inbox.length - 1));
+    });
+
+    test('syncNow delegates to repository.sync and clears the queue',
+        () async {
+      final repo = _RecordingRepository();
+      final state = AppState(repository: repo);
+      expect(state.pendingQueueCount, Fixtures.queue.length);
+
+      expect(await state.syncNow(), isTrue);
+
+      expect(repo.syncCalls, 1);
+      expect(state.synced, isTrue);
+      expect(state.lastSyncedCount, Fixtures.queue.length);
+      expect(state.pendingQueueCount, 0);
+      expect(state.queuedItems, isEmpty);
     });
   });
 

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../api/errors.dart';
+import '../data/claim_repository.dart';
 import '../data/fixtures.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
@@ -88,6 +90,28 @@ class ApprovalsScreen extends StatelessWidget {
   }
 }
 
+/// Push the verdict through the repository (#92). The item only leaves the
+/// local list when the backend accepted the decision, so a failure keeps it
+/// in front of the approver.
+Future<void> _decide(
+  BuildContext context,
+  InboxItem item,
+  Decision decision,
+) async {
+  final state = AppScope.read(context);
+  final verb = switch (decision) {
+    Decision.approve => 'Approved · ${item.title} → Finance payment run',
+    Decision.reject => 'Rejected · ${item.title} returned to ${item.submitter}',
+    Decision.returnForRevision => 'Returned to ${item.submitter} with a comment',
+  };
+  try {
+    await state.decide(item.id, decision);
+    if (context.mounted) showToast(context, verb);
+  } on ApiException catch (error) {
+    if (context.mounted) showToast(context, error.message);
+  }
+}
+
 class _InboxZero extends StatelessWidget {
   const _InboxZero({required this.theme, required this.tokens});
 
@@ -146,7 +170,6 @@ class _InboxCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final state = AppScope.of(context);
     final theme = Theme.of(context);
     final tokens = SpendFlowTokens.of(context);
 
@@ -254,13 +277,8 @@ class _InboxCard extends StatelessWidget {
             children: <Widget>[
               Expanded(
                 child: OutlinedButton(
-                  onPressed: () {
-                    state.decide();
-                    showToast(
-                      context,
-                      'Returned to ${item.submitter} with a comment',
-                    );
-                  },
+                  onPressed: () =>
+                      _decide(context, item, Decision.returnForRevision),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, 46),
                     foregroundColor: theme.colorScheme.error,
@@ -271,13 +289,7 @@ class _InboxCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: () {
-                    state.decide();
-                    showToast(
-                      context,
-                      'Approved · ${item.title} → Finance payment run',
-                    );
-                  },
+                  onPressed: () => _decide(context, item, Decision.approve),
                   style: FilledButton.styleFrom(minimumSize: const Size(0, 46)),
                   icon: const Icon(Icons.check, size: 16),
                   label: const Text('Approve'),

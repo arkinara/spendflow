@@ -20,6 +20,13 @@ class SuccessScreen extends StatelessWidget {
     final theme = Theme.of(context);
     final tokens = SpendFlowTokens.of(context);
 
+    // Confirmation view over the most recent repository submit (#92) — no
+    // API calls here. Falls back to the open draft when the submit went
+    // through the Phase 1 local-only path.
+    final claim = state.lastSubmittedClaim;
+    final reference = claim?.id ?? Fixtures.draftClaimId;
+    final amount = claim?.amount ?? state.draftTotal;
+
     return Scaffold(
       body: SafeArea(
         child: Padding(
@@ -69,14 +76,14 @@ class SuccessScreen extends StatelessWidget {
               PanelCard(
                 child: Column(
                   children: <Widget>[
-                    const _SummaryRow(
+                    _SummaryRow(
                       label: 'Reference',
-                      value: Fixtures.draftClaimId,
+                      value: reference,
                     ),
                     const SizedBox(height: 9),
                     _SummaryRow(
                       label: 'Amount',
-                      value: formatIdr(state.draftTotal),
+                      value: formatIdr(amount),
                     ),
                     const SizedBox(height: 9),
                     const _SummaryRow(
@@ -100,7 +107,7 @@ class SuccessScreen extends StatelessWidget {
                 onPressed: () => Navigator.of(context).pushNamedAndRemoveUntil(
                   ClaimDetailScreen.routeName,
                   (route) => route.settings.name == MainShell.routeName,
-                  arguments: Fixtures.draftClaimId,
+                  arguments: reference,
                 ),
                 child: const Text('Track this claim'),
               ),

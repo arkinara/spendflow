@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../data/fixtures.dart';
+import '../api/errors.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/tokens.dart';
@@ -23,6 +23,9 @@ class QueueScreen extends StatelessWidget {
 
   static const String routeName = '/queue';
 
+  /// Push the queue through the repository (#92). A backend failure keeps
+  /// the queue intact — the toast says exactly what went wrong so a retry is
+  /// an informed decision, not a hope.
   Future<void> _sync(BuildContext context) async {
     final state = AppScope.read(context);
     if (!state.online) {
@@ -33,12 +36,14 @@ class QueueScreen extends StatelessWidget {
       showToast(context, 'Nothing left to sync');
       return;
     }
-    final done = await state.syncNow();
-    if (done && context.mounted) {
-      showToast(
-        context,
-        '${Fixtures.queue.length} items synced · draft submitted for approval',
-      );
+    final count = state.queuedItems.length;
+    try {
+      final done = await state.syncNow();
+      if (done && context.mounted) {
+        showToast(context, 'All synced — $count items uploaded');
+      }
+    } on ApiException catch (error) {
+      if (context.mounted) showToast(context, error.message);
     }
   }
 
@@ -56,9 +61,9 @@ class QueueScreen extends StatelessWidget {
             children: <Widget>[
               const _NetworkBanner(),
               const SizedBox(height: 11),
-              for (var i = 0; i < Fixtures.queue.length; i++) ...<Widget>[
+              for (var i = 0; i < state.queuedItems.length; i++) ...<Widget>[
                 _QueueRow(
-                  item: Fixtures.queue[i],
+                  item: state.queuedItems[i],
                   queueState: state.queueStateAt(i),
                 ),
                 const SizedBox(height: 11),
@@ -95,7 +100,7 @@ class QueueScreen extends StatelessWidget {
             : state.syncing
                 ? 'Syncing…'
                 : state.online
-                    ? 'Sync ${Fixtures.queue.length} items now'
+                    ? 'Sync ${state.pendingQueueCount} items now'
                     : 'Waiting for network',
       ),
       style: FilledButton.styleFrom(
@@ -216,7 +221,7 @@ class _NetworkToggle extends StatelessWidget {
           context,
           state.offline
               ? 'Airplane mode on — capture keeps working'
-              : 'Back online — ${Fixtures.queue.length} items ready to sync',
+              : 'Back online — ${state.pendingQueueCount} items ready to sync',
         );
       },
       icon: Icon(state.online ? Icons.wifi : Icons.wifi_off, size: 15),
@@ -240,19 +245,19 @@ class _NetworkBanner extends StatelessWidget {
     final state = AppScope.of(context);
 
     if (state.synced) {
-      return const NoticeBanner(
+      return NoticeBanner(
         tone: ChipTone.success,
         icon: Icons.cloud_done_outlined,
         title: 'Everything is synced',
-        text: 'Last sync just now · 3 items uploaded',
+        text: 'Last sync just now · ${state.lastSyncedCount} items uploaded',
       );
     }
     if (state.online) {
-      return const NoticeBanner(
+      return NoticeBanner(
         tone: ChipTone.info,
         icon: Icons.cloud_outlined,
         title: 'Back online',
-        text: 'Tap sync to upload 3 queued items and their receipts.',
+        text: 'Tap sync to upload ${state.pendingQueueCount} queued items and their receipts.',
       );
     }
     return const NoticeBanner(

@@ -7,7 +7,9 @@ import 'package:spendflow_mobile/api/auth.dart';
 import 'package:spendflow_mobile/api/http_client.dart';
 import 'package:spendflow_mobile/data/fixtures.dart';
 import 'package:spendflow_mobile/data/fixtures_claim_repository.dart';
+import 'package:spendflow_mobile/data/claim_repository.dart';
 import 'package:spendflow_mobile/data/rest_claim_repository.dart';
+import 'package:spendflow_mobile/models/models.dart';
 import 'package:spendflow_mobile/state/app_state.dart';
 
 Uri _base = Uri.parse('http://be.test');
@@ -47,6 +49,33 @@ void main() {
           Fixtures.initialDraft.copyWith(description: 'Edited dinner');
       expect(await repo.saveDraft(edited), same(edited));
       expect(repo.savedDraft, same(edited));
+    });
+
+    test('submit returns a SubmissionResult with a non-null claim', () async {
+      final result = await repo.submit(Fixtures.initialDraft);
+
+      expect(result.claim, isA<Claim>());
+      expect(result.claim.id, Fixtures.draftClaimId);
+      expect(result.claim.status, ClaimStatus.pending);
+      expect(result.claim.amount, greaterThan(0));
+      expect(result.claim.lines.last.source, LineSource.ocr);
+      expect(result.status, 'submitted');
+    });
+
+    test('sync returns the positive queued count', () async {
+      final synced = await repo.sync();
+
+      expect(synced, Fixtures.queue.length);
+      expect(synced, greaterThan(0));
+    });
+
+    test('decide removes the inbox item at that id', () async {
+      await repo.decide('EXP-2026-1001', Decision.approve);
+
+      final inbox = await repo.listInbox('demo-aulia');
+      expect(inbox.where((item) => item.id == 'EXP-2026-1001'), isEmpty);
+      expect(inbox, hasLength(Fixtures.inbox.length - 1));
+      expect(inbox.first.id, 'EXP-2026-1005');
     });
   });
 
@@ -161,6 +190,77 @@ void main() {
       expect(sent['amount'], '391.830');
       expect(sent['description'], 'Team dinner with PT Nusantara');
       expect(saved.description, 'Stored on the server');
+    });
+
+    test('submit POSTs /api/mobile/claims and decodes the stored claim',
+        () async {
+      final calls = <http.Request>[];
+      final client = MockClient((request) async {
+        calls.add(request);
+        return http.Response(
+          '{"claim":{"id":"c9","code":"Q3","title":"Q3 · Client Visit",'
+          '"place":"Jakarta","status":"pending","amount":391830,'
+          '"dateLabel":"28 Jul","itemCount":3,"receiptCount":3,'
+          '"headline":"submitted 28 Jul 2026","slaLabel":"SLA 2 days left",'
+          '"lines":[],"timeline":[]},"status":"submitted"}',
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      final repo = RestClaimRepository(
+        client: HttpClient(baseUrl: _base, inner: client),
+      );
+
+      final result = await repo.submit(Fixtures.initialDraft);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'POST');
+      expect(calls.single.url.path, '/api/mobile/claims');
+      final sent = jsonDecode(calls.single.body) as Map<String, dynamic>;
+      expect(sent['merchant'], 'Warung Sederhana');
+      expect(sent['amount'], '391.830');
+      expect(result.claim.id, 'c9');
+      expect(result.claim.amount, 391830);
+      expect(result.status, 'submitted');
+    });
+
+    test('sync POSTs /api/mobile/sync and returns the synced count', () async {
+      final calls = <http.Request>[];
+      final client = MockClient((request) async {
+        calls.add(request);
+        return http.Response('{"synced":3}', 200,
+            headers: {'content-type': 'application/json'});
+      });
+      final repo = RestClaimRepository(
+        client: HttpClient(baseUrl: _base, inner: client),
+      );
+
+      final synced = await repo.sync();
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'POST');
+      expect(calls.single.url.path, '/api/mobile/sync');
+      expect(synced, 3);
+    });
+
+    test('decide POSTs the decision to the inbox item endpoint', () async {
+      final calls = <http.Request>[];
+      final client = MockClient((request) async {
+        calls.add(request);
+        return http.Response('{}', 200,
+            headers: {'content-type': 'application/json'});
+      });
+      final repo = RestClaimRepository(
+        client: HttpClient(baseUrl: _base, inner: client),
+      );
+
+      await repo.decide('EXP-2026-1001', Decision.approve);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'POST');
+      expect(calls.single.url.path, '/api/mobile/inbox/EXP-2026-1001/decide');
+      final sent = jsonDecode(calls.single.body) as Map<String, dynamic>;
+      expect(sent['decision'], 'approve');
     });
   });
 

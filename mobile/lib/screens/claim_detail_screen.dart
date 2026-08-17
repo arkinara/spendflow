@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../api/errors.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/tokens.dart';
@@ -11,7 +12,10 @@ import '../widgets/status_chip.dart';
 ///
 /// The timeline is the mobile mirror of the web app's audit trail — the point
 /// is that an employee can answer "where is my money" without calling Finance.
-class ClaimDetailScreen extends StatelessWidget {
+///
+/// Data path (#92): the AppState cache (open draft + loaded employee claims)
+/// first, then a `repository.claimById` fetch for anything not loaded yet.
+class ClaimDetailScreen extends StatefulWidget {
   const ClaimDetailScreen({required this.claimId, super.key});
 
   final String claimId;
@@ -19,11 +23,49 @@ class ClaimDetailScreen extends StatelessWidget {
   static const String routeName = '/claim';
 
   @override
+  State<ClaimDetailScreen> createState() => _ClaimDetailScreenState();
+}
+
+class _ClaimDetailScreenState extends State<ClaimDetailScreen> {
+  Claim? _claim;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final state = AppScope.read(context);
+    var claim = state.claimById(widget.claimId);
+    if (claim == null) {
+      try {
+        claim = await state.repository.claimById(widget.claimId);
+      } on ApiException {
+        // Unreachable backend → the not-found body below still renders; the
+        // caller's toasts own error copy.
+        claim = null;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _claim = claim;
+      _loaded = true;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final state = AppScope.of(context);
     final theme = Theme.of(context);
     final tokens = SpendFlowTokens.of(context);
-    final claim = state.claimById(claimId);
+    final claim = _claim;
+
+    if (!_loaded) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     if (claim == null) {
       return Scaffold(
@@ -32,7 +74,7 @@ class ClaimDetailScreen extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Text(
-              'No claim with reference $claimId.',
+              'No claim with reference ${widget.claimId}.',
               textAlign: TextAlign.center,
               style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
             ),

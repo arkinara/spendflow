@@ -91,7 +91,6 @@ class AppState extends ChangeNotifier {
   /// copy, short enough that the flow never feels blocked.
   static const Duration _scanTick = Duration(milliseconds: 190);
   static const int _scanStepPercent = 11;
-  static const Duration _syncDuration = Duration(milliseconds: 1400);
 
   AppVariant _variant;
   AppVariant get variant => _variant;
@@ -354,6 +353,23 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
+  /// Submit the confirmed draft through the repository (#92). The claim comes
+  /// back stored — the success screen renders it; errors surface via
+  /// [ApiException].
+  Future<SubmissionResult> submit(OcrDraft draft) async {
+    final result = await repository.submit(draft);
+    _lastSubmission = result;
+    _submitted = true;
+    notifyListeners();
+    return result;
+  }
+
+  /// The claim returned by the most recent successful repository submit, if
+  /// any — the success screen's data source.
+  Claim? get lastSubmittedClaim => _lastSubmission?.claim;
+
+  SubmissionResult? _lastSubmission;
+
   /* ---------------- sync queue ---------------- */
 
   bool _syncing = false;
@@ -362,7 +378,17 @@ class AppState extends ChangeNotifier {
   bool _synced = false;
   bool get synced => _synced;
 
+  /// Count the last successful sync pushed, straight from the repository —
+  /// the queue banner reports it back.
+  int _lastSyncedCount = 0;
+  int get lastSyncedCount => _lastSyncedCount;
+
   int get pendingQueueCount => _synced ? 0 : Fixtures.queue.length;
+
+  /// Rows the queue screen renders. In-memory only — on-device persistence
+  /// of the queue is #93's job.
+  List<QueueItem> get queuedItems =>
+      _synced ? const <QueueItem>[] : Fixtures.queue;
 
   QueueState queueStateAt(int index) {
     if (_synced) return QueueState.synced;
@@ -376,13 +402,21 @@ class AppState extends ChangeNotifier {
       : '$pendingQueueCount receipt${pendingQueueCount == 1 ? '' : 's'} queued · '
           '${formatIdr(Fixtures.queueHeldTotal)} held locally';
 
-  /// Upload everything held on device. No-op unless there is a network and
-  /// something is actually queued; the caller reports why.
+  /// Upload everything held on device through the repository (#92). No-op
+  /// unless there is a network and something is actually queued; the caller
+  /// reports why. Throws [ApiException] when the backend rejects the sync —
+  /// the queue stays intact so the next press retries.
   Future<bool> syncNow() async {
     if (!online || _synced) return false;
     _syncing = true;
     notifyListeners();
-    await Future<void>.delayed(_syncDuration);
+    try {
+      _lastSyncedCount = await repository.sync();
+    } on ApiException {
+      _syncing = false;
+      notifyListeners();
+      rethrow;
+    }
     _syncing = false;
     _synced = true;
     notifyListeners();
@@ -391,15 +425,20 @@ class AppState extends ChangeNotifier {
 
   /* ---------------- approver inbox ---------------- */
 
-  int _decided = 0;
+  List<InboxItem> get inbox => _inboxItems;
 
-  /// Decisions taken this session, consumed from the top of the inbox.
-  int get decided => _decided;
-
-  List<InboxItem> get inbox => _inboxItems.skip(_decided).toList();
-
-  void decide() {
-    _decided += 1;
+  /// Decide one inbox item through the repository (#92) and drop it from the
+  /// local list on success. Omitting the id keeps the Phase 1 "consume from
+  /// the top" behaviour (first visible item, approved).
+  Future<void> decide([
+    String? inboxItemId,
+    Decision decision = Decision.approve,
+  ]) async {
+    final id = inboxItemId ??
+        (_inboxItems.isNotEmpty ? _inboxItems.first.id : null);
+    if (id == null) return;
+    await repository.decide(id, decision);
+    _inboxItems = _inboxItems.where((item) => item.id != id).toList();
     notifyListeners();
   }
 

@@ -118,6 +118,45 @@ class RestClaimRepository implements ClaimRepository {
     return data is Map<String, dynamic> ? _draftFrom(data) : draft;
   }
 
+  /// Submit the confirmed draft as a claim (#92, reuses the #88 endpoint).
+  /// Tolerates both `{ claim, status }` and a bare claim object.
+  @override
+  Future<SubmissionResult> submit(OcrDraft draft) async {
+    final data = await _client.request(
+      method: 'POST',
+      path: '/api/mobile/claims',
+      body: _draftToJson(draft),
+    );
+    final map = data is Map<String, dynamic> ? data : const <String, dynamic>{};
+    final claimJson = map['claim'] is Map<String, dynamic>
+        ? map['claim'] as Map<String, dynamic>
+        : map;
+    return SubmissionResult(
+      claim: _claimFrom(claimJson),
+      status: map['status'] is String ? map['status'] as String : 'submitted',
+    );
+  }
+
+  /// Push the offline queue (#92). The BE endpoint is not landed yet — a
+  /// 404/501 surfaces as [ApiError] like any other 4xx/5xx.
+  @override
+  Future<int> sync() async {
+    final data =
+        await _client.request(method: 'POST', path: '/api/mobile/sync');
+    final map = data is Map<String, dynamic> ? data : const <String, dynamic>{};
+    return (map['synced'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Record the approver's verdict (#92). 200 → void; 4xx/5xx → [ApiError].
+  @override
+  Future<void> decide(String inboxItemId, Decision decision) async {
+    await _client.request(
+      method: 'POST',
+      path: '/api/mobile/inbox/$inboxItemId/decide',
+      body: <String, String>{'decision': decision.name},
+    );
+  }
+
   /* ---------------- decoding ---------------- */
 
   OcrDraft _draftFrom(dynamic data) {
