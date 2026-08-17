@@ -499,4 +499,15 @@ void main() {
       expect(state.themeMode, ThemeMode.system);
     });
   });
+
+  group('variant (#96)', () {
+    test('the variant setter accepts valid variants in debug', () {
+      final state = AppState();
+      expect(state.variant, AppVariant.standard);
+
+      state.variant = AppVariant.captureMultishot;
+
+      expect(state.variant, AppVariant.captureMultishot);
+    });
+  });
 }

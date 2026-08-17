@@ -15,6 +15,7 @@ import '../data/server_ocr_pass.dart';
 import '../models/models.dart';
 import '../storage/local_store.dart';
 import '../util/currency.dart';
+import '../util/debug_menu.dart';
 
 /// Layout and behaviour variants carried over from the design doc, so the
 /// alternatives can be reviewed on a device instead of in a browser.
@@ -63,7 +64,9 @@ class AppState extends ChangeNotifier {
   })  // ignore: prefer_initializing_formals
   : repository = repository ?? FixturesClaimRepository(),
         // ignore: prefer_initializing_formals
-        _variant = variant,
+        // Debug-only (#96): a release build clamps any injected variant to the
+        // standard one, so a caller cannot sneak a review variant into prod.
+        _variant = debugMenuEnabled ? variant : AppVariant.standard,
         // ignore: prefer_initializing_formals
         _offline = offline,
         // ignore: prefer_initializing_formals
@@ -134,7 +137,11 @@ class AppState extends ChangeNotifier {
       final variantName = await store.readString(_variantKey);
       if (variantName != null) {
         for (final candidate in AppVariant.values) {
-          if (candidate.name == variantName) _variant = candidate;
+          // Debug-only (#96): a release build never restores a non-standard
+          // variant, even from a store written by a debug build.
+          if (candidate.name == variantName && debugMenuEnabled) {
+            _variant = candidate;
+          }
         }
       }
       final offlineRaw = await store.readString(_offlineKey);
@@ -241,6 +248,9 @@ class AppState extends ChangeNotifier {
   AppVariant _variant;
   AppVariant get variant => _variant;
   set variant(AppVariant value) {
+    // Debug-only (#96): release builds silently ignore variant changes —
+    // production users always render the standard variant.
+    if (!debugMenuEnabled) return;
     if (_variant == value) return;
     _variant = value;
     _persistSettings();

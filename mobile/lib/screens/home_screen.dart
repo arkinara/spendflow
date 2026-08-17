@@ -5,6 +5,7 @@ import '../models/models.dart';
 import '../state/app_state.dart';
 import '../theme/tokens.dart';
 import '../util/currency.dart';
+import '../util/debug_menu.dart';
 import '../widgets/common.dart';
 import '../widgets/status_chip.dart';
 import 'claim_detail_screen.dart';
@@ -195,7 +196,10 @@ class _HomeHeader extends StatelessWidget {
         children: <Widget>[
           GestureDetector(
             // Long-press the wordmark to switch design variants on device.
-            onLongPress: () => _showVariantPicker(context),
+            // Debug-only (#96): production builds render the wordmark but do
+            // not respond to the gesture.
+            onLongPress:
+                debugMenuEnabled ? () => _showVariantPicker(context) : null,
             child: Row(
               children: <Widget>[
                 Container(
