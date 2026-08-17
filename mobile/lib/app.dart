@@ -20,7 +20,12 @@ import 'theme/app_theme.dart';
 /// also owns the two cross-cutting HTTP concerns: the global 401 handler and
 /// the boot-time `/api/me` session probe.
 class SpendFlowApp extends StatefulWidget {
-  const SpendFlowApp({this.initialState, this.initialRepository, super.key});
+  const SpendFlowApp({
+    this.initialState,
+    this.initialRepository,
+    this.bootstrap = false,
+    super.key,
+  });
 
   /// Injected by tests to start from a specific point in the flow.
   final AppState? initialState;
@@ -29,6 +34,11 @@ class SpendFlowApp extends StatefulWidget {
   /// [RestClaimRepository] — lands in #90b/#90c; the default stays demo
   /// fixtures so offline behaviour is unchanged.
   final ClaimRepository? initialRepository;
+
+  /// Run the cold-start `/api/me` probe even though an [initialState] was
+  /// injected (#93): production boot passes a hydrated state and still needs
+  /// the session probe, while tests omit it so they never touch the network.
+  final bool bootstrap;
 
   @override
   State<SpendFlowApp> createState() => _SpendFlowAppState();
@@ -46,7 +56,7 @@ class _SpendFlowAppState extends State<SpendFlowApp> {
     // Any 401 from any endpoint resets the session and routes to /login —
     // registered once, here, so no screen handles auth expiry itself.
     httpClient.setAuth401Handler(_handleUnauthorized);
-    if (_ownsState) {
+    if (_ownsState || widget.bootstrap) {
       // Cold-start session probe. Skipped when a test injected a prepared
       // state — those runs must not touch the network.
       WidgetsBinding.instance.addPostFrameCallback((_) {

@@ -8,6 +8,7 @@ import '../data/claim_repository.dart';
 import '../data/fixtures.dart';
 import '../data/fixtures_claim_repository.dart';
 import '../models/models.dart';
+import '../storage/local_store.dart';
 import '../util/currency.dart';
 
 /// Layout and behaviour variants carried over from the design doc, so the
@@ -40,8 +41,10 @@ enum ScanStage {
 ///
 /// The capture → confirm → draft → submit → sync journey spans several routes
 /// but shares one piece of state (the OCR draft, the network mode, the local
-/// queue), so it lives in a single notifier rather than in each screen. Nothing
-/// is persisted: Phase 1 has no mobile API and no on-device store yet.
+/// queue), so it lives in a single notifier rather than in each screen.
+/// Since #93 the queue, draft, inbox and settings persist through a
+/// [LocalStore] so a process kill is recoverable; build via [AppState.create]
+/// to hydrate before the first frame.
 class AppState extends ChangeNotifier {
   // The backing fields are private, so they cannot be initializing formals of
   // a named parameter.
@@ -49,12 +52,15 @@ class AppState extends ChangeNotifier {
     AppVariant variant = AppVariant.standard,
     bool offline = false,
     ClaimRepository? repository,
+    LocalStore? store,
   })  // ignore: prefer_initializing_formals
   : repository = repository ?? FixturesClaimRepository(),
         // ignore: prefer_initializing_formals
         _variant = variant,
         // ignore: prefer_initializing_formals
-        _offline = offline {
+        _offline = offline,
+        // ignore: prefer_initializing_formals
+        _store = store {
     // Demo mode seeds synchronously so reads before any await — first build,
     // existing tests — still see the fixture data. A REST repository starts
     // empty and fills via [loadClaims].
@@ -64,6 +70,111 @@ class AppState extends ChangeNotifier {
       _inboxItems = demo.demoInbox;
     }
   }
+
+  /// Boot path (#93): init the store, construct the state, then hydrate the
+  /// persisted queue / draft / inbox / settings. Returns once hydration is
+  /// done, so [main] can build the first frame on fully recovered state.
+  static Future<AppState> create({
+    AppVariant variant = AppVariant.standard,
+    bool offline = false,
+    ClaimRepository? repository,
+    LocalStore? store,
+  }) async {
+    final hydratedStore = store ?? InMemoryStore();
+    await hydratedStore.init();
+    final state = AppState(
+      variant: variant,
+      offline: offline,
+      repository: repository,
+      store: hydratedStore,
+    );
+    await state._hydrate();
+    return state;
+  }
+
+  /* ---------------- persistence (#93) ---------------- */
+
+  static const String _variantKey = 'variant';
+  static const String _offlineKey = 'offline';
+  static const String _queueKey = 'queue';
+  static const String _draftKey = 'draft';
+  static const String _inboxKey = 'inbox';
+
+  /// Null in pre-persistence callers (tests, bare constructors) — nothing is
+  /// written and the in-memory behaviour is unchanged.
+  final LocalStore? _store;
+
+  /// Load persisted state over the constructor's defaults. A corrupt or
+  /// partially-written blob logs and is skipped: the in-memory defaults win
+  /// rather than crashing the boot (negative AC #93).
+  Future<void> _hydrate() async {
+    final store = _store;
+    if (store == null) return;
+    try {
+      final variantName = await store.readString(_variantKey);
+      if (variantName != null) {
+        for (final candidate in AppVariant.values) {
+          if (candidate.name == variantName) _variant = candidate;
+        }
+      }
+      final offlineRaw = await store.readString(_offlineKey);
+      if (offlineRaw != null) _offline = offlineRaw == 'true';
+      final queue = await store.readList(_queueKey);
+      if (queue != null) {
+        _queue = queue.map(QueueItem.fromJson).toList();
+        // An empty persisted queue means a sync finished before the kill.
+        if (_queue.isEmpty) _synced = true;
+      }
+      final draft = await store.readMap(_draftKey);
+      if (draft != null) {
+        _draft = OcrDraft.fromJson(draft);
+        _added = draft['added'] == true;
+      }
+      final inbox = await store.readList(_inboxKey);
+      if (inbox != null) {
+        _inboxItems = inbox.map(InboxItem.fromJson).toList();
+      }
+    } catch (error, stack) {
+      debugPrint('SpendFlow persistence: hydration failed: $error\n$stack');
+    }
+    notifyListeners();
+  }
+
+  /// Writes are fire-and-forget with their errors swallowed after logging —
+  /// a failed write (disk full, corrupt store) must preserve the in-memory
+  /// session rather than crash it (negative AC #93). They are also routed to
+  /// save points (submit / confirm / sync / toggle), not per keystroke.
+  void _write(Future<void> Function(LocalStore store) action) {
+    final store = _store;
+    if (store == null) return;
+    unawaited(() async {
+      try {
+        await action(store);
+      } catch (error) {
+        debugPrint('SpendFlow persistence: write failed: $error');
+      }
+    }());
+  }
+
+  void _persistSettings() => _write((store) async {
+        await store.writeString(_variantKey, _variant.name);
+        await store.writeString(_offlineKey, _offline ? 'true' : 'false');
+      });
+
+  void _persistDraft() => _write((store) async {
+        await store.writeMap(_draftKey, <String, dynamic>{
+          'added': _added,
+          ..._draft.toJson(),
+        });
+      });
+
+  void _clearPersistedDraft() => _write((store) => store.delete(_draftKey));
+
+  void _persistInbox() => _write(
+      (store) => store.writeList(_inboxKey, _inboxItems.map((i) => i.toJson()).toList()));
+
+  void _clearPersistedQueue() =>
+      _write((store) => store.writeList(_queueKey, const <Map<String, dynamic>>[]));
 
   /// Data seam for every claim read (#91). Screens depend on this, never on
   /// `Fixtures` or the HTTP client.
@@ -97,6 +208,7 @@ class AppState extends ChangeNotifier {
   set variant(AppVariant value) {
     if (_variant == value) return;
     _variant = value;
+    _persistSettings();
     notifyListeners();
   }
 
@@ -111,6 +223,7 @@ class AppState extends ChangeNotifier {
   void toggleOnline() {
     _offline = !_offline;
     if (_offline) _synced = false;
+    _persistSettings();
     notifyListeners();
   }
 
@@ -223,6 +336,7 @@ class AppState extends ChangeNotifier {
   Future<OcrDraft> capture() async {
     final draft = await repository.capture();
     _draft = draft;
+    _persistDraft();
     notifyListeners();
     return draft;
   }
@@ -232,6 +346,7 @@ class AppState extends ChangeNotifier {
   Future<OcrDraft> saveDraft(OcrDraft draft) async {
     final saved = await repository.saveDraft(draft);
     _draft = saved;
+    _persistDraft();
     notifyListeners();
     return saved;
   }
@@ -334,10 +449,12 @@ class AppState extends ChangeNotifier {
 
   int get flaggedCount => draftLines.where((l) => l.isFlagged).length;
 
-  /// Add the confirmed line to the open draft claim.
+  /// Add the confirmed line to the open draft claim. A save point (#93):
+  /// the confirmed draft survives a process kill from here on.
   void confirmLine() {
     _added = true;
     _scanPercent = 0;
+    _persistDraft();
     notifyListeners();
   }
 
@@ -346,6 +463,8 @@ class AppState extends ChangeNotifier {
   bool submitClaim() {
     if (online) {
       _submitted = true;
+      // The draft is now a real submitted claim, not a draft (#93).
+      _clearPersistedDraft();
       notifyListeners();
       return true;
     }
@@ -360,6 +479,8 @@ class AppState extends ChangeNotifier {
     final result = await repository.submit(draft);
     _lastSubmission = result;
     _submitted = true;
+    // Submitted claims live on the backend — no draft left to recover (#93).
+    _clearPersistedDraft();
     notifyListeners();
     return result;
   }
@@ -383,12 +504,20 @@ class AppState extends ChangeNotifier {
   int _lastSyncedCount = 0;
   int get lastSyncedCount => _lastSyncedCount;
 
-  int get pendingQueueCount => _synced ? 0 : Fixtures.queue.length;
+  /// Locally-held captures. Seeded from the demo fixture so the offline
+  /// story is visible without a backend; replaced by the hydrated copy on
+  /// boot (#93) once anything was ever persisted.
+  List<QueueItem> _queue = Fixtures.queue;
 
-  /// Rows the queue screen renders. In-memory only — on-device persistence
-  /// of the queue is #93's job.
+  int get pendingQueueCount => _synced ? 0 : _queue.length;
+
+  /// Rows the queue screen renders. Backed by the persisted copy (#93) —
+  /// killing the app no longer drops the offline queue.
   List<QueueItem> get queuedItems =>
-      _synced ? const <QueueItem>[] : Fixtures.queue;
+      _synced ? const <QueueItem>[] : _queue;
+
+  int get _queueHeldTotal =>
+      _queue.fold(0, (total, item) => total + item.amount);
 
   QueueState queueStateAt(int index) {
     if (_synced) return QueueState.synced;
@@ -400,7 +529,7 @@ class AppState extends ChangeNotifier {
   String get queueSummary => _synced
       ? 'All caught up — nothing queued'
       : '$pendingQueueCount receipt${pendingQueueCount == 1 ? '' : 's'} queued · '
-          '${formatIdr(Fixtures.queueHeldTotal)} held locally';
+          '${formatIdr(_queueHeldTotal)} held locally';
 
   /// Upload everything held on device through the repository (#92). No-op
   /// unless there is a network and something is actually queued; the caller
@@ -419,6 +548,9 @@ class AppState extends ChangeNotifier {
     }
     _syncing = false;
     _synced = true;
+    // Save point (#93): a finished sync clears the persisted queue so a
+    // relaunch boots "all caught up" instead of replaying uploaded items.
+    _clearPersistedQueue();
     notifyListeners();
     return true;
   }
@@ -439,6 +571,9 @@ class AppState extends ChangeNotifier {
     if (id == null) return;
     await repository.decide(id, decision);
     _inboxItems = _inboxItems.where((item) => item.id != id).toList();
+    // Save point (#93): the decided-away item stays decided-away after a
+    // process kill, even before the next [loadClaims] refresh.
+    _persistInbox();
     notifyListeners();
   }
 

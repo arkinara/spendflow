@@ -141,6 +141,24 @@ class QueueItem {
 
   /// On-device footprint, e.g. "JPG 0.8 MB".
   final String size;
+
+  /// Plain-map serialization for the on-device store (#93) — no Hive type
+  /// adapters, no codegen.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'title': title,
+        'meta': meta,
+        'amount': amount,
+        'size': size,
+      };
+
+  factory QueueItem.fromJson(Map<String, dynamic> json) => QueueItem(
+        id: json['id'] as String,
+        title: json['title'] as String,
+        meta: json['meta'] as String,
+        amount: (json['amount'] as num).toInt(),
+        size: json['size'] as String,
+      );
 }
 
 enum SlaTone { info, error, ok }
@@ -169,6 +187,31 @@ class InboxItem {
   final String? flagText;
 
   bool get isFlagged => flagText != null;
+
+  /// Plain-map serialization for the on-device store (#93).
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'submitter': submitter,
+        'initials': initials,
+        'title': title,
+        'sub': sub,
+        'amount': amount,
+        'sla': sla,
+        'slaTone': slaTone.name,
+        if (flagText != null) 'flagText': flagText,
+      };
+
+  factory InboxItem.fromJson(Map<String, dynamic> json) => InboxItem(
+        id: json['id'] as String,
+        submitter: json['submitter'] as String,
+        initials: json['initials'] as String,
+        title: json['title'] as String,
+        sub: json['sub'] as String,
+        amount: (json['amount'] as num).toInt(),
+        sla: json['sla'] as String,
+        slaTone: SlaTone.values.byName(json['slaTone'] as String),
+        flagText: json['flagText'] as String?,
+      );
 }
 
 /// Confidence the OCR pass reports per field. Low-confidence fields get an
@@ -251,6 +294,28 @@ class OcrDraft {
         OcrFieldKey.tax => copyWith(tax: value),
         OcrFieldKey.amount => copyWith(amount: value),
       };
+
+  /// Plain-map serialization for the on-device store (#93) — a kill during
+  /// capture must not lose the in-progress draft.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'merchant': merchant,
+        'date': date,
+        'amount': amount,
+        'tax': tax,
+        'currency': currency,
+        'category': category,
+        'description': description,
+      };
+
+  factory OcrDraft.fromJson(Map<String, dynamic> json) => OcrDraft(
+        merchant: json['merchant'] as String,
+        date: json['date'] as String,
+        amount: json['amount'] as String,
+        tax: json['tax'] as String,
+        currency: json['currency'] as String,
+        category: json['category'] as String,
+        description: json['description'] as String,
+      );
 }
 
 /// One printed line of the receipt facsimile.

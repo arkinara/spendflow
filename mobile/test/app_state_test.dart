@@ -5,6 +5,7 @@ import 'package:spendflow_mobile/data/fixtures.dart';
 import 'package:spendflow_mobile/data/fixtures_claim_repository.dart';
 import 'package:spendflow_mobile/models/models.dart';
 import 'package:spendflow_mobile/state/app_state.dart';
+import 'package:spendflow_mobile/storage/local_store.dart';
 
 /// Records every call so an injected [AppState] can be proven to read its
 /// claims through the repository rather than straight from [Fixtures].
@@ -331,6 +332,90 @@ void main() {
     test('scan copy names the on-device pass when offline', () async {
       final state = AppState(offline: true);
       expect(state.scanSubtitle, contains('Offline'));
+    });
+  });
+
+  group('persistence (#93)', () {
+    test('create boots from a pre-populated store (queue + draft + settings)',
+        () async {
+      final store = InMemoryStore();
+      await store.init();
+      await store.writeList('queue', <Map<String, dynamic>>[
+        const QueueItem(
+          id: 'q9',
+          title: 'Bench fee',
+          meta: 'Taxi · captured offline',
+          amount: 25000,
+          size: 'JPG 0.1 MB',
+        ).toJson(),
+      ]);
+      await store.writeMap('draft', <String, dynamic>{
+        ...Fixtures.initialDraft.toJson(),
+        'amount': '120.000',
+        'added': true,
+      });
+      await store.writeString('offline', 'true');
+      await store.writeString('variant', 'homeEditorial');
+
+      final state = await AppState.create(store: store);
+
+      expect(state.queuedItems, hasLength(1));
+      expect(state.queuedItems.first.title, 'Bench fee');
+      expect(state.pendingQueueCount, 1);
+      expect(state.draft.amount, '120.000');
+      expect(state.added, isTrue);
+      expect(state.draftLines, hasLength(3)); // base lines + hydrated line
+      expect(state.offline, isTrue);
+      expect(state.variant, AppVariant.homeEditorial);
+    });
+
+    test('confirmLine persists the updated draft (read back via the store)',
+        () async {
+      final store = InMemoryStore();
+      final state = await AppState.create(store: store);
+
+      state
+        ..setField(OcrFieldKey.amount, '150.000')
+        ..confirmLine();
+
+      final saved = await store.readMap('draft');
+      expect(saved, isNotNull);
+      expect(saved!['amount'], '150.000');
+      expect(saved['added'], isTrue);
+      expect(saved['merchant'], Fixtures.initialDraft.merchant);
+
+      // A relaunch over the same store recovers the confirmed draft.
+      final relaunched = await AppState.create(store: store);
+      expect(relaunched.added, isTrue);
+      expect(relaunched.draft.amount, '150.000');
+    });
+
+    test('submitting clears the persisted draft', () async {
+      final store = InMemoryStore();
+      final state = await AppState.create(store: store);
+      state.confirmLine();
+      expect(await store.readMap('draft'), isNotNull);
+
+      await state.submit(state.draft);
+
+      expect(await store.readMap('draft'), isNull);
+    });
+
+    test('a successful sync clears the persisted queue', () async {
+      final store = InMemoryStore();
+      final state = await AppState.create(store: store);
+      expect(state.pendingQueueCount, Fixtures.queue.length);
+
+      expect(await state.syncNow(), isTrue);
+
+      final persisted = await store.readList('queue');
+      expect(persisted, isEmpty);
+
+      // Relaunch over the same store boots "all caught up".
+      final relaunched = await AppState.create(store: store);
+      expect(relaunched.synced, isTrue);
+      expect(relaunched.queuedItems, isEmpty);
+      expect(relaunched.queueSummary, 'All caught up — nothing queued');
     });
   });
 }

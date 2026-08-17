@@ -40,6 +40,14 @@ dependencies:
   # dart:io cookie store instead of bearer tokens.
   http: ^1.2.0
 
+  # On-device persistence (#93): shared_preferences keeps the tiny key-value
+  # settings (design variant, offline toggle); hive_flutter keeps the larger
+  # queue / draft / inbox blobs. Deliberately no hive_generator or
+  # build_runner — plain Map serialization via jsonEncode/jsonDecode keeps
+  # the build simple and migrations unnecessary.
+  shared_preferences: ^2.3.0
+  hive_flutter: ^1.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
