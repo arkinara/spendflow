@@ -1,3 +1,4 @@
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,9 +9,11 @@ import 'confirm_screen.dart';
 
 /// Receipt capture.
 ///
-/// There is no camera plugin behind this yet — the viewfinder is a stand-in so
-/// the framing, controls and the scan hand-off can be exercised on a device
-/// before the platform channel lands.
+/// The viewfinder is a live [CameraPreview] (#94): the platform camera feed,
+/// with the framing guides and scan hand-off on top. When no camera is
+/// available (emulator/simulator without a virtual camera) it falls back to
+/// the paper-sheet stand-in and the scan goes through the [OcrPass] the app is
+/// wired with, which for the demo is the fixtures mock.
 class CaptureScreen extends StatefulWidget {
   const CaptureScreen({super.key});
 
@@ -20,24 +23,88 @@ class CaptureScreen extends StatefulWidget {
   State<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _CaptureScreenState extends State<CaptureScreen> {
+class _CaptureScreenState extends State<CaptureScreen>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Each visit starts a fresh capture — page 1, no leftover scan progress.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) AppScope.read(context).resetCapture();
     });
+    _initCamera();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycleState) {
+    final controller = _camera;
+    if (controller == null || !controller.value.isInitialized) return;
+    // The camera is a shared hardware resource — release it while the app is
+    // backgrounded, reopen it on resume.
+    if (lifecycleState == AppLifecycleState.inactive) {
+      controller.dispose();
+    } else if (lifecycleState == AppLifecycleState.resumed) {
+      _initCamera();
+    }
+  }
+
+  CameraController? _camera;
+
+  Future<void> _initCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) return;
+      final controller = CameraController(
+        cameras.first,
+        ResolutionPreset.high,
+        enableAudio: false,
+      );
+      await controller.initialize();
+      if (!mounted) return;
+      setState(() => _camera = controller);
+    } on CameraException {
+      // No usable camera (simulator without a virtual camera) — the viewfinder
+      // keeps the paper-sheet stand-in and the scan falls back to the mock.
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _camera?.dispose();
+    super.dispose();
+  }
+
+  /// The current camera frame, or null when there is no live feed — the caller
+  /// then falls back to the mock scan path.
+  Future<Uint8List?> _frameBytes() async {
+    final controller = _camera;
+    if (controller == null || !controller.value.isInitialized) return null;
+    try {
+      final frame = await controller.takePicture();
+      return await frame.readAsBytes();
+    } on CameraException {
+      return null;
+    }
   }
 
   Future<void> _shoot() async {
     final state = AppScope.read(context);
-    final wasMultiPage =
-        state.variant == AppVariant.captureMultishot && state.shots < 3;
+    final multiPage = state.variant == AppVariant.captureMultishot;
 
     final bool finished;
     try {
-      finished = await state.shoot();
+      if (multiPage && state.shots < 3) {
+        // Stacking a page takes no frame — the scan runs on the last press.
+        finished = await state.shoot();
+      } else {
+        final bytes = await _frameBytes();
+        finished = bytes == null
+            // No camera — the mock pass still makes the demo flow.
+            ? await state.shoot()
+            : await state.captureFromCamera(bytes);
+      }
     } on ApiException catch (error) {
       // Back to the viewfinder, message up top — the retake is the recovery.
       if (mounted) showToast(context, error.message);
@@ -48,7 +115,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     if (!finished) {
       showToast(
         context,
-        wasMultiPage
+        multiPage
             ? 'Page ${state.shots} captured — shoot the next one, or tap the shutter again to finish'
             : 'Page captured',
       );
@@ -68,7 +135,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         body: SafeArea(
           child: state.scanning || state.scanPercent >= 100
               ? const _ScanningView()
-              : _ViewfinderView(onShoot: _shoot),
+              : _ViewfinderView(onShoot: _shoot, camera: _camera),
         ),
       ),
     );
@@ -76,9 +143,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
 }
 
 class _ViewfinderView extends StatelessWidget {
-  const _ViewfinderView({required this.onShoot});
+  const _ViewfinderView({required this.onShoot, this.camera});
 
   final Future<void> Function() onShoot;
+
+  /// Null when no camera is available — the viewfinder then shows the
+  /// paper-sheet stand-in instead of a live feed.
+  final CameraController? camera;
 
   @override
   Widget build(BuildContext context) {
@@ -99,6 +170,7 @@ class _ViewfinderView extends StatelessWidget {
               child: AspectRatio(
                 aspectRatio: 3 / 4,
                 child: _Viewfinder(
+                  camera: camera,
                   hint: state.autoCrop
                       ? 'Edges locked · hold steady'
                       : 'Manual crop — drag the corners',
@@ -189,12 +261,16 @@ class _GlassButton extends StatelessWidget {
   }
 }
 
-/// Stand-in preview: a receipt lying on a dark surface with the auto-detected
-/// edges locked on.
+/// The live camera feed with the auto-detected edge guides overlaid.
+///
+/// When [camera] is null (no camera hardware — simulator, denied permission)
+/// the view falls back to the paper-sheet stand-in so the framing, controls
+/// and scan hand-off stay exercisable.
 class _Viewfinder extends StatelessWidget {
-  const _Viewfinder({required this.hint});
+  const _Viewfinder({required this.hint, this.camera});
 
   final String hint;
+  final CameraController? camera;
 
   @override
   Widget build(BuildContext context) {
@@ -234,25 +310,15 @@ class _Viewfinder extends StatelessWidget {
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFF3A3742), Color(0xFF22202A), Color(0xFF15141A)],
-          stops: <double>[0, 0.55, 1],
-        ),
+        color: const Color(0xFF111014),
       ),
       child: Stack(
+        fit: StackFit.expand,
         children: <Widget>[
-          Positioned.fill(
-            left: 40,
-            right: 40,
-            top: 34,
-            bottom: 34,
-            child: Transform.rotate(
-              angle: -0.024,
-              child: const _PaperSheet(),
-            ),
-          ),
+          if (camera != null && camera!.value.isInitialized)
+            CameraPreview(camera!)
+          else
+            const Positioned.fill(child: _PaperSheet()),
           Padding(
             padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
             child: Stack(

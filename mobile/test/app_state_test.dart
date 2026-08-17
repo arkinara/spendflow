@@ -1,8 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spendflow_mobile/api/auth.dart';
 import 'package:spendflow_mobile/data/claim_repository.dart';
 import 'package:spendflow_mobile/data/fixtures.dart';
 import 'package:spendflow_mobile/data/fixtures_claim_repository.dart';
+import 'package:spendflow_mobile/data/ocr_pass.dart';
 import 'package:spendflow_mobile/models/models.dart';
 import 'package:spendflow_mobile/state/app_state.dart';
 import 'package:spendflow_mobile/storage/local_store.dart';
@@ -77,6 +80,29 @@ class _RecordingRepository implements ClaimRepository {
     decideCalls += 1;
     lastDecidedId = inboxItemId;
     lastDecision = decision;
+  }
+}
+
+/// A spy [OcrPass] proving captureFromCamera reads through the pass, not the
+/// repository: records the bytes and returns a distinctive result.
+class _SpyOcrPass implements OcrPass {
+  int calls = 0;
+  Uint8List? lastBytes;
+
+  @override
+  Future<OcrResult> scanFrame(Uint8List bytes) async {
+    calls += 1;
+    lastBytes = bytes;
+    return OcrResult(
+      merchant: 'Kopi Toko Djawa',
+      date: '15/07/2026',
+      amount: '24.000',
+      tax: '0',
+      currency: 'IDR',
+      category: 'Meals',
+      description: 'Morning standup round',
+      fields: const <OcrFieldKey, FieldResult>{},
+    );
   }
 }
 
@@ -332,6 +358,25 @@ void main() {
     test('scan copy names the on-device pass when offline', () async {
       final state = AppState(offline: true);
       expect(state.scanSubtitle, contains('Offline'));
+    });
+
+    test('captureFromCamera delegates to OcrPass.scanFrame and persists',
+        () async {
+      final pass = _SpyOcrPass();
+      final store = InMemoryStore();
+      final state = await AppState.create(store: store, ocrPass: pass);
+      final bytes = Uint8List.fromList(<int>[1, 2, 3]);
+
+      final finished = await state.captureFromCamera(bytes);
+
+      expect(finished, isTrue);
+      expect(pass.calls, 1);
+      expect(pass.lastBytes, bytes);
+      expect(state.draft.merchant, 'Kopi Toko Djawa');
+      final saved = await store.readMap('draft');
+      expect(saved, isNotNull);
+      expect(saved!['merchant'], 'Kopi Toko Djawa');
+      expect(saved['amount'], '24.000');
     });
   });
 

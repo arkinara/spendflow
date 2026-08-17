@@ -4,6 +4,8 @@
 /// fixture source for the REST API later is a parsing change, not a redesign.
 library;
 
+import 'dart:ui' show Rect;
+
 /// Claim lifecycle, same vocabulary as the backend's `ClaimStatus`.
 enum ClaimStatus {
   draft('Draft'),
@@ -316,6 +318,138 @@ class OcrDraft {
         category: json['category'] as String,
         description: json['description'] as String,
       );
+}
+
+/// One field read off a frame by an [OcrPass], with the OCR pass's own
+/// confidence and the source-row box on the receipt it was read from.
+///
+/// The [bbox] is the source-row rectangle from the receipt facsimile. When it
+/// is null the confirmation screen falls back to the hard-coded `cropTop` from
+/// [OcrFieldDef] — back-compat until real OCR output is wired through.
+class FieldResult {
+  const FieldResult({
+    required this.value,
+    required this.confidence,
+    this.bbox,
+  });
+
+  final String value;
+  final FieldConfidence confidence;
+
+  /// Null means "no box known — use the facsimile default".
+  final Rect? bbox;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'value': value,
+        'confidence': confidence.name,
+        if (bbox != null)
+          'bbox': <String, double>{
+            'left': bbox!.left,
+            'top': bbox!.top,
+            'right': bbox!.right,
+            'bottom': bbox!.bottom,
+          },
+      };
+
+  factory FieldResult.fromJson(Map<String, dynamic> json) => FieldResult(
+        value: '${json['value'] ?? ''}',
+        confidence: _confidenceByName(json['confidence']),
+        bbox: _bboxFrom(json['bbox']),
+      );
+
+  static FieldConfidence _confidenceByName(Object? raw) {
+    for (final value in FieldConfidence.values) {
+      if (value.name == raw) return value;
+    }
+    return FieldConfidence.low;
+  }
+
+  static Rect? _bboxFrom(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    return Rect.fromLTRB(
+      (raw['left'] as num).toDouble(),
+      (raw['top'] as num).toDouble(),
+      (raw['right'] as num).toDouble(),
+      (raw['bottom'] as num).toDouble(),
+    );
+  }
+}
+
+/// The full read of one captured frame: the flat field values plus the
+/// per-field confidence/bbox the OCR pass reports.
+class OcrResult {
+  const OcrResult({
+    required this.merchant,
+    required this.date,
+    required this.amount,
+    required this.tax,
+    required this.currency,
+    required this.category,
+    required this.description,
+    this.fields = const <OcrFieldKey, FieldResult>{},
+  });
+
+  final String merchant;
+  final String date;
+  final String amount;
+  final String tax;
+  final String currency;
+  final String category;
+  final String description;
+
+  /// Per-field confidence + source box. The flat strings above stay the
+  /// editable draft values; this map is the extra signal the confirm screen
+  /// uses (currently ignored — `cropTop` still drives [ReceiptCrop]).
+  final Map<OcrFieldKey, FieldResult> fields;
+
+  /// Flatten into the [OcrDraft] shape the capture → confirm flow edits and
+  /// persists. The per-field confidence/bbox are not part of that shape yet.
+  OcrDraft toOcrDraft() => OcrDraft(
+        merchant: merchant,
+        date: date,
+        amount: amount,
+        tax: tax,
+        currency: currency,
+        category: category,
+        description: description,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'merchant': merchant,
+        'date': date,
+        'amount': amount,
+        'tax': tax,
+        'currency': currency,
+        'category': category,
+        'description': description,
+        'fields': <String, dynamic>{
+          for (final entry in fields.entries)
+            entry.key.name: entry.value.toJson(),
+        },
+      };
+
+  factory OcrResult.fromJson(Map<String, dynamic> json) {
+    final fields = <OcrFieldKey, FieldResult>{};
+    final rawFields = json['fields'];
+    if (rawFields is Map<String, dynamic>) {
+      for (final key in OcrFieldKey.values) {
+        final raw = rawFields[key.name];
+        if (raw is Map<String, dynamic>) {
+          fields[key] = FieldResult.fromJson(raw);
+        }
+      }
+    }
+    return OcrResult(
+      merchant: '${json['merchant'] ?? ''}',
+      date: '${json['date'] ?? ''}',
+      amount: '${json['amount'] ?? ''}',
+      tax: '${json['tax'] ?? ''}',
+      currency: '${json['currency'] ?? ''}',
+      category: '${json['category'] ?? ''}',
+      description: '${json['description'] ?? ''}',
+      fields: fields,
+    );
+  }
 }
 
 /// One printed line of the receipt facsimile.

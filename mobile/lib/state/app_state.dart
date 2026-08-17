@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 
@@ -7,6 +8,10 @@ import '../api/errors.dart';
 import '../data/claim_repository.dart';
 import '../data/fixtures.dart';
 import '../data/fixtures_claim_repository.dart';
+import '../data/mock_ocr_pass.dart';
+import '../data/ocr_pass.dart';
+import '../data/rest_claim_repository.dart';
+import '../data/server_ocr_pass.dart';
 import '../models/models.dart';
 import '../storage/local_store.dart';
 import '../util/currency.dart';
@@ -53,6 +58,7 @@ class AppState extends ChangeNotifier {
     bool offline = false,
     ClaimRepository? repository,
     LocalStore? store,
+    OcrPass? ocrPass,
   })  // ignore: prefer_initializing_formals
   : repository = repository ?? FixturesClaimRepository(),
         // ignore: prefer_initializing_formals
@@ -60,7 +66,13 @@ class AppState extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _offline = offline,
         // ignore: prefer_initializing_formals
-        _store = store {
+        _store = store,
+        // Demo mode runs the fixture pass; the live repository gets the
+        // server-side pass (#94).
+        ocrPass = ocrPass ??
+            (repository is RestClaimRepository
+                ? ServerOcrPass()
+                : MockOcrPass()) {
     // Demo mode seeds synchronously so reads before any await — first build,
     // existing tests — still see the fixture data. A REST repository starts
     // empty and fills via [loadClaims].
@@ -79,6 +91,7 @@ class AppState extends ChangeNotifier {
     bool offline = false,
     ClaimRepository? repository,
     LocalStore? store,
+    OcrPass? ocrPass,
   }) async {
     final hydratedStore = store ?? InMemoryStore();
     await hydratedStore.init();
@@ -87,6 +100,7 @@ class AppState extends ChangeNotifier {
       offline: offline,
       repository: repository,
       store: hydratedStore,
+      ocrPass: ocrPass,
     );
     await state._hydrate();
     return state;
@@ -179,6 +193,11 @@ class AppState extends ChangeNotifier {
   /// Data seam for every claim read (#91). Screens depend on this, never on
   /// `Fixtures` or the HTTP client.
   final ClaimRepository repository;
+
+  /// The OCR pass for the capture screen (#94): a frame in, an [OcrResult] out.
+  /// Defaults to the demo [MockOcrPass]; the live repository injects
+  /// [ServerOcrPass] against the backend.
+  final OcrPass ocrPass;
 
   /// Claims loaded from [repository]; fixture-seeded in demo mode.
   List<Claim> _employeeClaims = const <Claim>[];
@@ -339,6 +358,21 @@ class AppState extends ChangeNotifier {
     _persistDraft();
     notifyListeners();
     return draft;
+  }
+
+  /// Run the OCR pass over a real camera frame and adopt the resulting draft
+  /// (#94). The multi-page page-stacking stays on [shoot]; this is the scan
+  /// itself — no wall-clock timer, the real [OcrPass] owns the outcome.
+  ///
+  /// Returns true when the scan finished and the confirmation screen should
+  /// take over. Throws [ApiException] when the pass fails; callers surface the
+  /// message and let the user retake.
+  Future<bool> captureFromCamera(Uint8List bytes) async {
+    final result = await ocrPass.scanFrame(bytes);
+    _draft = result.toOcrDraft();
+    _persistDraft();
+    notifyListeners();
+    return true;
   }
 
   /// Persist the edited draft through the repository and keep the stored

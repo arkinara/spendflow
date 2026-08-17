@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -70,14 +71,41 @@ class HttpClient {
       encoded = _jsonEncode(body);
     }
 
+    final request = http.Request(method, uri)..headers.addAll(headers);
+    if (encoded != null) request.body = encoded;
+    return _send(request, timeout);
+  }
+
+  /// Sends the captured frame as a multipart/form-data upload.
+  ///
+  /// The [HttpClient] is JSON-only everywhere else, so this is the one place a
+  /// binary body is allowed. The auth cookie is still attached via the shared
+  /// [http.Client]; only the content-type switches to multipart.
+  ///
+  /// Error behaviour matches [request]: [UnauthorizedError] on 401 (firing
+  /// [onUnauthorized]), [ApiError] on any other 4xx/5xx, [NetworkError] when
+  /// no response arrives.
+  Future<dynamic> upload({
+    required String path,
+    required Map<String, String> fields,
+    required Uint8List bytes,
+    required String filename,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final uri = Uri.parse('$baseUrl$path');
+    final request = http.MultipartRequest('POST', uri)
+      ..fields.addAll(fields)
+      ..files.add(http.MultipartFile.fromBytes('file', bytes,
+          filename: filename));
+    return _send(request, timeout);
+  }
+
+  /// Shared send + status handling for [request] and [upload].
+  Future<dynamic> _send(http.BaseRequest request, Duration timeout) async {
     final http.Response response;
     try {
-      final request = http.Request(method, uri)..headers.addAll(headers);
-      if (encoded != null) request.body = encoded;
-      response = await _inner
-          .send(request)
-          .then(http.Response.fromStream)
-          .timeout(timeout);
+      final streamed = await _inner.send(request).timeout(timeout);
+      response = await http.Response.fromStream(streamed);
     } on TimeoutException {
       throw NetworkError('Request timed out after ${timeout.inSeconds}s.');
     } catch (error) {

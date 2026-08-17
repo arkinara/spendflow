@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Camera capture (#94): the viewfinder is a live CameraPreview. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="SpendFlow"
         android:name="${applicationName}"

@@ -40,6 +40,16 @@ dependencies:
   # dart:io cookie store instead of bearer tokens.
   http: ^1.2.0
 
+  # Live camera feed for the capture viewfinder (#94). The platform permission
+  # entries (Android CAMERA, iOS NSCameraUsageDescription) live in the manifest
+  # and Info.plist, not here.
+  camera: ^0.11.0+2
+
+  # Receipt image temp paths (#94): the captured frame is written to the app's
+  # cache directory before the OCR pass reads it back as bytes.
+  path: any
+  path_provider: ^2.1.0
+
   # On-device persistence (#93): shared_preferences keeps the tiny key-value
   # settings (design variant, offline toggle); hive_flutter keeps the larger
   # queue / draft / inbox blobs. Deliberately no hive_generator or
