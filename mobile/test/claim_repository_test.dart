@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -12,7 +14,7 @@ Uri _base = Uri.parse('http://be.test');
 
 void main() {
   group('FixturesClaimRepository', () {
-    const repo = FixturesClaimRepository();
+    final repo = FixturesClaimRepository();
 
     test('listClaims delegates to Fixtures.claims', () async {
       final claims = await repo.listClaims('demo-aulia');
@@ -34,6 +36,17 @@ void main() {
       final user = await repo.signIn(Fixtures.userEmail, 'pw');
       expect(user, isA<AuthUser>());
       expect(user.email, Fixtures.userEmail);
+    });
+
+    test('capture hands back the fixtures initialDraft', () async {
+      expect(await repo.capture(), same(Fixtures.initialDraft));
+    });
+
+    test('saveDraft stores the edited draft and hands it back', () async {
+      final edited =
+          Fixtures.initialDraft.copyWith(description: 'Edited dinner');
+      expect(await repo.saveDraft(edited), same(edited));
+      expect(repo.savedDraft, same(edited));
     });
   });
 
@@ -94,12 +107,67 @@ void main() {
       expect(calls.last.url.path, '/api/me');
       expect(user.email, 'a@b.c');
     });
+
+    test('capture POSTs /api/mobile/capture and decodes the draft', () async {
+      final calls = <http.Request>[];
+      final client = MockClient((request) async {
+        calls.add(request);
+        return http.Response(
+          '{"merchant":"Warung Sederhana","date":"15/07/2026",'
+          '"amount":"391.830","tax":"38.830","currency":"IDR",'
+          '"category":"Meals","description":"Team dinner with PT Nusantara"}',
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      final repo = RestClaimRepository(
+        client: HttpClient(baseUrl: _base, inner: client),
+      );
+
+      final draft = await repo.capture();
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'POST');
+      expect(calls.single.url.path, '/api/mobile/capture');
+      expect(draft.merchant, 'Warung Sederhana');
+      expect(draft.amount, '391.830');
+      expect(draft.category, 'Meals');
+    });
+
+    test('saveDraft PATCHes /api/mobile/drafts/current with the draft body',
+        () async {
+      final calls = <http.Request>[];
+      final client = MockClient((request) async {
+        calls.add(request);
+        return http.Response(
+          '{"merchant":"Warung Sederhana","date":"15/07/2026",'
+          '"amount":"391.830","tax":"38.830","currency":"IDR",'
+          '"category":"Meals","description":"Stored on the server"}',
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      final repo = RestClaimRepository(
+        client: HttpClient(baseUrl: _base, inner: client),
+      );
+
+      final saved = await repo.saveDraft(Fixtures.initialDraft);
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'PATCH');
+      expect(calls.single.url.path, '/api/mobile/drafts/current');
+      final sent = jsonDecode(calls.single.body) as Map<String, dynamic>;
+      expect(sent['merchant'], 'Warung Sederhana');
+      expect(sent['amount'], '391.830');
+      expect(sent['description'], 'Team dinner with PT Nusantara');
+      expect(saved.description, 'Stored on the server');
+    });
   });
 
   group('AppState regression', () {
     test('an AppState on FixturesClaimRepository keeps the old inbox', () {
       final plain = AppState();
-      final injected = AppState(repository: const FixturesClaimRepository());
+      final injected = AppState(repository: FixturesClaimRepository());
 
       expect(injected.homeClaims, hasLength(Fixtures.claims.length + 1));
       // The inbox getter copies via `skip().toList()`, so compare contents.

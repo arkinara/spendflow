@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../api/errors.dart';
 import '../state/app_state.dart';
 import '../widgets/common.dart';
 import 'confirm_screen.dart';
@@ -34,7 +35,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final wasMultiPage =
         state.variant == AppVariant.captureMultishot && state.shots < 3;
 
-    final finished = await state.shoot();
+    final bool finished;
+    try {
+      finished = await state.shoot();
+    } on ApiException catch (error) {
+      // Back to the viewfinder, message up top — the retake is the recovery.
+      if (mounted) showToast(context, error.message);
+      return;
+    }
 
     if (!mounted) return;
     if (!finished) {

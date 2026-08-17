@@ -26,4 +26,12 @@ abstract class ClaimRepository {
 
   /// Approver inbox pending decision.
   Future<List<InboxItem>> listInbox(String approverId);
+
+  /// Run the OCR pass over the captured pages and hand back the editable
+  /// draft (#91). The demo implementation returns the fixture draft; the
+  /// live one calls the mock OCR endpoint (real OCR is #93).
+  Future<OcrDraft> capture();
+
+  /// Persist the edited draft after confirmation. Returns the stored draft.
+  Future<OcrDraft> saveDraft(OcrDraft draft);
 }

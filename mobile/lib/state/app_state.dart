@@ -50,7 +50,7 @@ class AppState extends ChangeNotifier {
     bool offline = false,
     ClaimRepository? repository,
   })  // ignore: prefer_initializing_formals
-  : repository = repository ?? const FixturesClaimRepository(),
+  : repository = repository ?? FixturesClaimRepository(),
         // ignore: prefer_initializing_formals
         _variant = variant,
         // ignore: prefer_initializing_formals
@@ -185,21 +185,56 @@ class AppState extends ChangeNotifier {
     _scanPercent = _scanStepPercent;
     notifyListeners();
 
+    // The repository call owns the outcome (#91): the timer below only paces
+    // the staged progress copy while the OCR pass runs. The scan finishes
+    // when the wall-clock pace is spent AND the draft has arrived.
+    final reading = repository.capture();
+
     final completer = Completer<bool>();
-    _scanTimer = Timer.periodic(_scanTick, (timer) {
+    _scanTimer = Timer.periodic(_scanTick, (timer) async {
       _scanPercent += _scanStepPercent;
-      if (_scanPercent >= 100) {
-        _scanPercent = 100;
+      if (_scanPercent < 100) {
+        notifyListeners();
+        return;
+      }
+      try {
+        _draft = await reading;
+      } on ApiException catch (error, stack) {
         timer.cancel();
         _scanTimer = null;
         _scanning = false;
+        _scanPercent = 0;
         notifyListeners();
-        if (!completer.isCompleted) completer.complete(true);
+        if (!completer.isCompleted) completer.completeError(error, stack);
         return;
       }
+      _scanPercent = 100;
+      timer.cancel();
+      _scanTimer = null;
+      _scanning = false;
       notifyListeners();
+      if (!completer.isCompleted) completer.complete(true);
     });
     return completer.future;
+  }
+
+  /// Run the OCR pass through the repository and adopt the resulting draft
+  /// as the current one. Throws [ApiException] when the pass fails; callers
+  /// surface the message and let the user retake.
+  Future<OcrDraft> capture() async {
+    final draft = await repository.capture();
+    _draft = draft;
+    notifyListeners();
+    return draft;
+  }
+
+  /// Persist the edited draft through the repository and keep the stored
+  /// version as the current draft.
+  Future<OcrDraft> saveDraft(OcrDraft draft) async {
+    final saved = await repository.saveDraft(draft);
+    _draft = saved;
+    notifyListeners();
+    return saved;
   }
 
   /* ---------------- OCR draft ---------------- */

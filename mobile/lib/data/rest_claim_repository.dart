@@ -96,7 +96,52 @@ class RestClaimRepository implements ClaimRepository {
         .toList();
   }
 
+  /// Mock OCR pass (#93 lands the real one). 404/501 — the BE has no OCR
+  /// endpoint yet — surface as [ApiError] straight from the [HttpClient]
+  /// contract, exactly like any other 4xx/5xx.
+  @override
+  Future<OcrDraft> capture() async {
+    final data =
+        await _client.request(method: 'POST', path: '/api/mobile/capture');
+    return _draftFrom(data);
+  }
+
+  @override
+  Future<OcrDraft> saveDraft(OcrDraft draft) async {
+    final data = await _client.request(
+      method: 'PATCH',
+      path: '/api/mobile/drafts/current',
+      body: _draftToJson(draft),
+    );
+    // A body-less 200 means "stored as sent" — echo the draft back rather
+    // than decoding an empty response into blank fields.
+    return data is Map<String, dynamic> ? _draftFrom(data) : draft;
+  }
+
   /* ---------------- decoding ---------------- */
+
+  OcrDraft _draftFrom(dynamic data) {
+    final json = data is Map<String, dynamic> ? data : const <String, dynamic>{};
+    return OcrDraft(
+      merchant: '${json['merchant'] ?? ''}',
+      date: '${json['date'] ?? ''}',
+      amount: '${json['amount'] ?? ''}',
+      tax: '${json['tax'] ?? ''}',
+      currency: '${json['currency'] ?? ''}',
+      category: '${json['category'] ?? ''}',
+      description: '${json['description'] ?? ''}',
+    );
+  }
+
+  Map<String, String> _draftToJson(OcrDraft draft) => <String, String>{
+        'merchant': draft.merchant,
+        'date': draft.date,
+        'amount': draft.amount,
+        'tax': draft.tax,
+        'currency': draft.currency,
+        'category': draft.category,
+        'description': draft.description,
+      };
 
   List<Claim> _claimsFrom(dynamic data) {
     final rows = data is Map<String, dynamic> ? data['claims'] : data;

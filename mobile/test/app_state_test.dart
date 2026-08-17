@@ -10,6 +10,12 @@ import 'package:spendflow_mobile/state/app_state.dart';
 /// claims through the repository rather than straight from [Fixtures].
 class _RecordingRepository implements ClaimRepository {
   int listClaimsCalls = 0;
+  int captureCalls = 0;
+  int saveDraftCalls = 0;
+  OcrDraft? savedDraft;
+
+  final OcrDraft captureResult =
+      Fixtures.initialDraft.copyWith(merchant: 'Kopi Toko Djawa');
 
   @override
   Future<AuthUser?> getCurrentUser() async => null;
@@ -37,6 +43,19 @@ class _RecordingRepository implements ClaimRepository {
   @override
   Future<List<InboxItem>> listInbox(String approverId) async =>
       const <InboxItem>[];
+
+  @override
+  Future<OcrDraft> capture() async {
+    captureCalls += 1;
+    return captureResult;
+  }
+
+  @override
+  Future<OcrDraft> saveDraft(OcrDraft draft) async {
+    saveDraftCalls += 1;
+    savedDraft = draft;
+    return draft;
+  }
 }
 
 void main() {
@@ -205,6 +224,31 @@ void main() {
 
       expect(repo.listClaimsCalls, 1);
       expect(state.homeClaims, hasLength(1));
+    });
+
+    test('capture delegates to repository.capture and adopts the draft',
+        () async {
+      final repo = _RecordingRepository();
+      final state = AppState(repository: repo);
+
+      final draft = await state.capture();
+
+      expect(repo.captureCalls, 1);
+      expect(draft, same(repo.captureResult));
+      expect(state.draft, same(repo.captureResult));
+    });
+
+    test('saveDraft delegates to repository.saveDraft', () async {
+      final repo = _RecordingRepository();
+      final state = AppState(repository: repo);
+      final edited =
+          Fixtures.initialDraft.copyWith(description: 'Edited dinner');
+
+      await state.saveDraft(edited);
+
+      expect(repo.saveDraftCalls, 1);
+      expect(repo.savedDraft, same(edited));
+      expect(state.draft, same(edited));
     });
   });
 

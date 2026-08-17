@@ -9,7 +9,13 @@ import 'fixtures.dart';
 /// Phase 1 demo behaviour is preserved exactly and swapping in
 /// [RestClaimRepository] later is a one-line change at the injection site.
 class FixturesClaimRepository implements ClaimRepository {
-  const FixturesClaimRepository();
+  FixturesClaimRepository();
+
+  OcrDraft? _savedDraft;
+
+  /// Last draft handed to [saveDraft], readable so callers and tests can
+  /// round-trip what the demo "persisted".
+  OcrDraft? get savedDraft => _savedDraft;
 
   /* ------- synchronous seeds ------- */
 
@@ -45,4 +51,13 @@ class FixturesClaimRepository implements ClaimRepository {
 
   @override
   Future<List<InboxItem>> listInbox(String approverId) async => Fixtures.inbox;
+
+  @override
+  Future<OcrDraft> capture() async => Fixtures.initialDraft;
+
+  @override
+  Future<OcrDraft> saveDraft(OcrDraft draft) async {
+    _savedDraft = draft;
+    return draft;
+  }
 }

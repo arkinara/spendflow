@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../api/errors.dart';
 import '../data/fixtures.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
@@ -49,8 +50,16 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
     super.dispose();
   }
 
-  void _confirm() {
+  Future<void> _confirm() async {
     final state = AppScope.read(context);
+    try {
+      await state.saveDraft(state.draft);
+    } on ApiException catch (error) {
+      // Stay on the confirm screen — the edits are kept for a retry.
+      if (mounted) showToast(context, error.message);
+      return;
+    }
+    if (!mounted) return;
     state.confirmLine();
     // Toast first: the messenger lives above the navigator, so the message
     // survives the route swap.
