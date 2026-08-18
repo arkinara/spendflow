@@ -57,6 +57,7 @@ def list_items():
       node(id: "%s") {
         ... on ProjectV2 {
           items(first: 100) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               id
               content { ... on Issue { number title state } }
@@ -73,7 +74,24 @@ def list_items():
         }
       }
     }''' % PROJECT_ID
-    data = gql(q)['data']['node']['items']['nodes']
+    items = []
+    while True:
+        raw = gql(q)
+        batch = (raw.get("data", {}).get("node", {})
+                 .get("items", {}).get("nodes", []))
+        items.extend(batch)
+        page = (raw.get("data", {}).get("node", {})
+                .get("items", {}).get("pageInfo", {}))
+        if not page.get("hasNextPage"):
+            break
+        # Re-issue with cursor
+        cursor = page.get("endCursor")
+        q_paged = q.replace(
+            "items(first: 100) {",
+            f"items(first: 100, after: \"{cursor}\") {{",
+        )
+        q = q_paged
+    data = items
     opt_to_name = {v: k for k, v in LANES.items()}
     rows = []
     for it in data:
