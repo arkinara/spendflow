@@ -58,6 +58,11 @@ dependencies:
   shared_preferences: ^2.3.0
   hive_flutter: ^1.1.0
 
+  # On-device OCR (#99): the locked "OCR = ML Kit" decision — receipt text is
+  # read locally, no server round trip. The recognizer runs on the captured
+  # frame bytes and never leaves the device.
+  google_mlkit_text_recognition: ^0.17.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

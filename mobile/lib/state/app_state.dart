@@ -8,10 +8,10 @@ import '../api/errors.dart';
 import '../data/claim_repository.dart';
 import '../data/fixtures.dart';
 import '../data/fixtures_claim_repository.dart';
+import '../data/mlkit_ocr_pass.dart';
 import '../data/mock_ocr_pass.dart';
 import '../data/ocr_pass.dart';
 import '../data/rest_claim_repository.dart';
-import '../data/server_ocr_pass.dart';
 import '../models/models.dart';
 import '../storage/local_store.dart';
 import '../util/currency.dart';
@@ -74,11 +74,8 @@ class AppState extends ChangeNotifier {
         // ignore: prefer_initializing_formals
         _store = store,
         // Demo mode runs the fixture pass; the live repository gets the
-        // server-side pass (#94).
-        ocrPass = ocrPass ??
-            (repository is RestClaimRepository
-                ? ServerOcrPass()
-                : MockOcrPass()) {
+        // on-device ML Kit pass (#99).
+        ocrPass = ocrPass ?? _defaultOcrPass(repository) {
     // Demo mode seeds synchronously so reads before any await — first build,
     // existing tests — still see the fixture data. A REST repository starts
     // empty and fills via [loadClaims].
@@ -112,6 +109,20 @@ class AppState extends ChangeNotifier {
     );
     await state._hydrate();
     return state;
+  }
+
+  /// The OCR pass the capture screen is wired with. Live mode (a REST
+  /// repository) gets the on-device ML Kit pass (#99); demo mode keeps the
+  /// fixtures mock. A build without the ML Kit native library must not crash
+  /// the boot — fall back to the mock and warn.
+  static OcrPass _defaultOcrPass(ClaimRepository? repository) {
+    if (repository is! RestClaimRepository) return MockOcrPass();
+    try {
+      return MlKitOcrPass();
+    } catch (error) {
+      debugPrint('SpendFlow: ML Kit OCR unavailable, using mock: $error');
+      return MockOcrPass();
+    }
   }
 
   /* ---------------- persistence (#93) ---------------- */
@@ -218,8 +229,8 @@ class AppState extends ChangeNotifier {
   final ClaimRepository repository;
 
   /// The OCR pass for the capture screen (#94): a frame in, an [OcrResult] out.
-  /// Defaults to the demo [MockOcrPass]; the live repository injects
-  /// [ServerOcrPass] against the backend.
+  /// Defaults to the on-device [MlKitOcrPass] for the live repository and the
+  /// demo [MockOcrPass] for fixtures (#99).
   final OcrPass ocrPass;
 
   /// Claims loaded from [repository]; fixture-seeded in demo mode.

@@ -6,7 +6,10 @@ import 'package:spendflow_mobile/api/auth.dart';
 import 'package:spendflow_mobile/data/claim_repository.dart';
 import 'package:spendflow_mobile/data/fixtures.dart';
 import 'package:spendflow_mobile/data/fixtures_claim_repository.dart';
+import 'package:spendflow_mobile/data/mlkit_ocr_pass.dart';
+import 'package:spendflow_mobile/data/mock_ocr_pass.dart';
 import 'package:spendflow_mobile/data/ocr_pass.dart';
+import 'package:spendflow_mobile/data/rest_claim_repository.dart';
 import 'package:spendflow_mobile/models/models.dart';
 import 'package:spendflow_mobile/state/app_state.dart';
 import 'package:spendflow_mobile/storage/local_store.dart';
@@ -261,6 +264,13 @@ void main() {
   group('repository injection', () {
     test('the default repository is the fixtures demo implementation', () {
       expect(AppState().repository, isA<FixturesClaimRepository>());
+    });
+
+    test('the default ocrPass is MlKitOcrPass for the REST repository and '
+        'MockOcrPass otherwise (#99)', () {
+      expect(AppState(repository: RestClaimRepository()).ocrPass,
+          isA<MlKitOcrPass>());
+      expect(AppState().ocrPass, isA<MockOcrPass>());
     });
 
     test('loadClaims reads claims through the injected repository', () async {

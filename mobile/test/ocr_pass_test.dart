@@ -1,14 +1,9 @@
-import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' show Rect;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
-import 'package:spendflow_mobile/api/http_client.dart';
 import 'package:spendflow_mobile/data/fixtures.dart';
 import 'package:spendflow_mobile/data/mock_ocr_pass.dart';
-import 'package:spendflow_mobile/data/server_ocr_pass.dart';
 import 'package:spendflow_mobile/models/models.dart';
 
 void main() {
@@ -85,53 +80,6 @@ void main() {
       expect(FieldResult.fromJson(highJson).confidence, FieldConfidence.high);
       expect(FieldResult.fromJson(lowJson).confidence, FieldConfidence.low);
       expect(FieldResult.fromJson(lowJson).bbox, Rect.fromLTRB(1, 2, 3, 4));
-    });
-  });
-
-  group('ServerOcrPass (#94)', () {
-    test('posts multipart to /api/mobile/ocr and decodes the OcrResult', () async {
-      http.Request? seen;
-      final pass = ServerOcrPass(
-        client: HttpClient(
-          baseUrl: Uri.parse('http://be.test'),
-          inner: MockClient((request) async {
-            seen = request;
-            return http.Response(
-              jsonEncode(<String, dynamic>{
-                'merchant': 'Warung Sederhana',
-                'date': '15/07/2026',
-                'amount': '391.830',
-                'tax': '38.830',
-                'currency': 'IDR',
-                'category': 'Meals',
-                'description': 'Team dinner with PT Nusantara',
-                'fields': <String, dynamic>{
-                  'tax': <String, dynamic>{
-                    'value': '38.830',
-                    'confidence': 'low',
-                  },
-                },
-              }),
-              200,
-              headers: {'content-type': 'application/json'},
-            );
-          }),
-        ),
-      );
-
-      final result =
-          await pass.scanFrame(Uint8List.fromList(<int>[9, 9, 9, 9]));
-
-      expect(seen!.url.path, '/api/mobile/ocr');
-      expect(seen!.method, 'POST');
-      expect(seen!.headers['content-type'], contains('multipart/form-data'));
-      expect(seen!.body, contains('receipt.jpg'));
-      expect(result.merchant, 'Warung Sederhana');
-      expect(result.amount, '391.830');
-      expect(
-        result.fields[OcrFieldKey.tax]?.confidence,
-        FieldConfidence.low,
-      );
     });
   });
 }
