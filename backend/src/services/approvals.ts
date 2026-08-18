@@ -58,8 +58,21 @@ export interface DecisionInput {
   comment?: string;
 }
 
-export interface InboxItem {
-  id: string;
+/**
+ * Outcome of a recorded decision — the shape {@link recordDecision} returns
+ * and the mobile decide endpoint wraps as `{ outcome }` (#100).
+ */
+export interface ApprovalOutcome {
+  claim: ClaimRow;
+  action: DecisionAction;
+  advanced: boolean;
+  finalised: boolean;
+}
+
+/** Mobile decide values (#100) mapped onto the web's decision actions. */
+export type MobileDecision = "approve" | "reject" | "return";
+
+export interface InboxItem {  id: string;
   reference: string;
   title: string;
   employeeId: string;
@@ -546,4 +559,33 @@ function notifyNextApprover(
       claimId,
     });
   }
+}
+
+/* ------------------------------------------- mobile inbox decide (#100) ----- */
+
+const MOBILE_DECISION_ACTIONS: Record<MobileDecision, DecisionAction> = {
+  approve: "approve",
+  reject: "reject",
+  return: "request_changes",
+};
+
+/**
+ * Approver decision from the mobile app (#100). The mobile `inboxItemId` IS
+ * the claim id (the mobile inbox lists claim ids). Reuses the web's decision
+ * engine ({@link recordDecision}) so state transitions, audit, notifications,
+ * and the stale-step guard are identical to the web approve/reject/return
+ * path. The mobile body carries no comment, so reject/return stamp a generic
+ * comment on the decision (the web's comment_required contract still holds).
+ */
+export async function decideMobileInboxItem(
+  db: DB,
+  actorId: string,
+  roles: Role[],
+  inboxItemId: string,
+  decision: MobileDecision
+): Promise<ApprovalOutcome> {
+  const action = MOBILE_DECISION_ACTIONS[decision];
+  const comment =
+    action === "approve" ? undefined : "Decided via mobile app";
+  return recordDecision(db, actorId, roles, inboxItemId, { action, comment });
 }

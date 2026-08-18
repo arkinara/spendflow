@@ -743,6 +743,20 @@ export const passwordResetsRelations = relations(
 /** Row type for the password_resets table (re-exported for callers). */
 export type PasswordResetRow = typeof passwordResetsTable.$inferSelect;
 
+/* ---------------------------------------------------------- mobile_drafts -- */
+
+/**
+ * Per-user mobile OCR draft (#100). One row per employee — the mobile app's
+ * `saveDraft` PATCHes the same `/current` URL, so the row is upserted (last
+ * write wins; no CRDT/merge per #100 scope). `draft_json` is the raw
+ * `OcrDraft` JSON; `updated_at` is an ISO/text timestamp.
+ */
+export const mobileDraftsTable = sqliteTable("mobile_drafts", {
+  userId: text("user_id").primaryKey(),
+  draftJson: text("draft_json").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 /* -------------------------------------------------------------- exports ---- */
 
 /** The schema handed to Better Auth's Drizzle adapter + owned by this app. */
@@ -765,6 +779,7 @@ export const schema = {
   comments: commentsTable,
   payments: paymentsTable,
   passwordResets: passwordResetsTable,
+  mobileDrafts: mobileDraftsTable,
 };
 
 export type Schema = typeof schema;

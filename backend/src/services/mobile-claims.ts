@@ -9,7 +9,7 @@
  * ========================================================================== */
 
 import { eq } from "drizzle-orm";
-import { categoriesTable } from "../db/schema.js";
+import { categoriesTable, mobileDraftsTable } from "../db/schema.js";
 import type { DB } from "../db/index.js";
 import {
   ClaimError,
@@ -36,6 +36,21 @@ export interface MobileClaimSubmission {
 
 export interface MobileClaimResult {
   claim: ClaimRow;
+}
+
+/**
+ * The mobile OCR draft shape (#100): identical to {@link MobileClaimSubmission}
+ * but WITHOUT `receiptUrl` — the mobile app's on-device draft is the confirmed
+ * OCR fields only, and receipt metadata rides along on the final submit.
+ */
+export interface OcrDraft {
+  merchant: string;
+  date: string;
+  amount: string;
+  tax: string;
+  currency: string;
+  category: string;
+  description: string;
 }
 
 const INDONESIAN_AMOUNT_RE = /^\d{1,3}(\.\d{3})*$/;
@@ -131,4 +146,63 @@ export async function submitMobileClaim(
 
   const { claim } = submitClaim(db, draft.id, actorId);
   return { claim };
+}
+
+/* ----------------------------------------------- drafts/current + sync (#100) */
+
+/**
+ * Persist the authenticated user's current OCR draft (upsert, one row per
+ * user — last write wins per #100; no merge/CRDT). The stored row is read
+ * back so the returned draft is exactly what round-trips the database.
+ */
+export function saveMobileDraft(
+  db: DB,
+  actorId: string,
+  input: OcrDraft
+): OcrDraft {
+  const draftJson = JSON.stringify(input);
+  const now = new Date().toISOString();
+  db.insert(mobileDraftsTable)
+    .values({ userId: actorId, draftJson, updatedAt: now })
+    .onConflictDoUpdate({
+      target: mobileDraftsTable.userId,
+      set: { draftJson, updatedAt: now },
+    })
+    .run();
+  const row = db
+    .select()
+    .from(mobileDraftsTable)
+    .where(eq(mobileDraftsTable.userId, actorId))
+    .get();
+  return row ? (JSON.parse(row.draftJson) as OcrDraft) : input;
+}
+
+/**
+ * Push every locally-queued offline submission in one call (#100). Each item
+ * is submitted as its OWN claim through {@link submitMobileClaim} — there is
+ * no batch-claim concept. Per-item failures (ClaimError: invalid_category,
+ * invalid_amount, etc.) are collected into `failed[]` and never fatal; the
+ * client reports `synced` vs the failed count. Unexpected (non-ClaimError)
+ * failures still propagate as a 500.
+ */
+export async function syncMobileClaims(
+  db: DB,
+  actorId: string,
+  items: MobileClaimSubmission[]
+): Promise<{ synced: number; failed: MobileClaimSubmission[] }> {
+  let synced = 0;
+  const failed: MobileClaimSubmission[] = [];
+  for (const item of items) {
+    try {
+      await submitMobileClaim(db, actorId, item);
+      synced += 1;
+    } catch (err) {
+      if (err instanceof ClaimError) {
+        failed.push(item);
+      } else {
+        throw err;
+      }
+    }
+  }
+  return { synced, failed };
 }

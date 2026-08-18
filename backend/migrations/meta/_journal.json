@@ -57,6 +57,13 @@
       "when": 1786256400000,
       "tag": "0007_password_resets",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786340000000,
+      "tag": "0008_mobile_drafts",
+      "breakpoints": true
     }
   ]
 }
