@@ -411,16 +411,20 @@ class AppState extends ChangeNotifier {
     return draft;
   }
 
-  /// Run the OCR pass over a real camera frame and adopt the resulting draft
-  /// (#94). The multi-page page-stacking stays on [shoot]; this is the scan
-  /// itself — no wall-clock timer, the real [OcrPass] owns the outcome.
+  /// Run the capture flow over a real camera frame (#94): the repository
+  /// uploads the bytes to the BE's receipt storage and runs the on-device
+  /// OCR pass, then the resulting draft is adopted and persisted. The
+  /// multi-page page-stacking stays on [shoot]; this is the scan itself — no
+  /// wall-clock timer, the real [OcrPass] owns the outcome.
   ///
   /// Returns true when the scan finished and the confirmation screen should
-  /// take over. Throws [ApiException] when the pass fails; callers surface the
-  /// message and let the user retake.
+  /// take over. Throws [ApiException] when the OCR pass fails; callers surface
+  /// the message and let the user retake. A failed receipt upload does NOT
+  /// throw — the OCR result is the source of truth, the receipt URL is a
+  /// nice-to-have (#103).
   Future<bool> captureFromCamera(Uint8List bytes) async {
-    final result = await ocrPass.scanFrame(bytes);
-    _draft = result.toOcrDraft();
+    final draft = await repository.capture(cameraBytes: bytes);
+    _draft = draft;
     _persistDraft();
     notifyListeners();
     return true;

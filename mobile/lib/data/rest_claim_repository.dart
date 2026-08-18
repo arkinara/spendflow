@@ -1,8 +1,13 @@
+import 'package:flutter/foundation.dart';
+
 import '../api/auth.dart';
 import '../api/errors.dart';
 import '../api/http_client.dart';
 import '../models/models.dart';
 import 'claim_repository.dart';
+import 'mlkit_ocr_pass.dart';
+import 'mock_ocr_pass.dart';
+import 'ocr_pass.dart';
 
 /// Live [ClaimRepository] over the #90 [HttpClient] seam.
 ///
@@ -12,9 +17,16 @@ import 'claim_repository.dart';
 /// (`claims`/bare list, missing optional fields) so the exact wire format can
 /// be tightened in #91b/#91c without redesign.
 class RestClaimRepository implements ClaimRepository {
-  RestClaimRepository({HttpClient? client}) : _client = client ?? httpClient;
+  RestClaimRepository({HttpClient? client, OcrPass? ocrPass})
+      : _client = client ?? httpClient,
+        _ocrPass = ocrPass;
 
   final HttpClient _client;
+
+  /// The OCR pass used when [capture] is handed a real camera frame (#103).
+  /// Injected by tests; lazily defaulted to the on-device [MlKitOcrPass]
+  /// (mock fallback when the native library is unavailable).
+  OcrPass? _ocrPass;
 
   @override
   Future<AuthUser?> getCurrentUser() async {
@@ -99,11 +111,70 @@ class RestClaimRepository implements ClaimRepository {
   /// Mock OCR pass (#93 lands the real one). 404/501 — the BE has no OCR
   /// endpoint yet — surface as [ApiError] straight from the [HttpClient]
   /// contract, exactly like any other 4xx/5xx.
+  ///
+  /// With a real camera frame (#103) the mock endpoint is skipped entirely:
+  /// the bytes are uploaded to the BE's receipt storage first, then the
+  /// on-device OCR pass reads the same frame. The upload is best-effort —
+  /// a failure leaves the receipt URL off the [OcrResult] but never blocks
+  /// the OCR draft (the URL is a nice-to-have, the OCR read is the source
+  /// of truth).
   @override
-  Future<OcrDraft> capture() async {
-    final data =
-        await _client.request(method: 'POST', path: '/api/mobile/capture');
-    return _draftFrom(data);
+  Future<OcrDraft> capture({Uint8List? cameraBytes}) async {
+    if (cameraBytes == null) {
+      final data =
+          await _client.request(method: 'POST', path: '/api/mobile/capture');
+      return _draftFrom(data);
+    }
+    final receiptUrl = await _uploadReceipt(cameraBytes);
+    final result = await _ocrPassOrFallback().scanFrame(cameraBytes);
+    final withUrl = result.copyWith(receiptUrl: receiptUrl);
+    _lastOcrResult = withUrl;
+    return withUrl.toOcrDraft();
+  }
+
+  /// The most recent OCR read that carried a real camera frame, including its
+  /// [OcrResult.receiptUrl] when the upload landed. The draft handed to the
+  /// confirm flow drops the URL (it is source metadata, not an editable
+  /// field); this seam keeps it reachable for the receipt thumbnail later.
+  OcrResult? _lastOcrResult;
+  OcrResult? get lastOcrResult => _lastOcrResult;
+
+  /// Push the captured frame to the BE's mobile receipt endpoint (#103).
+  ///
+  /// Returns the durable receiptUrl on success, null when the endpoint is
+  /// missing (404), rejects the upload, or the network is down — the caller
+  /// still runs the OCR pass and the capture flow continues.
+  Future<String?> _uploadReceipt(Uint8List bytes) async {
+    final dynamic data;
+    try {
+      data = await _client.upload(
+        path: '/api/mobile/receipts',
+        fields: const <String, String>{},
+        bytes: bytes,
+        filename: 'capture.jpg',
+      );
+    } on ApiException {
+      // UnauthorizedError is an ApiException too — a session expiry mid-capture
+      // also degrades to "no receipt URL" rather than killing the scan.
+      return null;
+    }
+    if (data is Map<String, dynamic> && data['receiptUrl'] is String) {
+      return data['receiptUrl'] as String;
+    }
+    return null;
+  }
+
+  OcrPass _ocrPassOrFallback() {
+    final pass = _ocrPass;
+    if (pass != null) return pass;
+    try {
+      return _ocrPass = MlKitOcrPass();
+    } catch (error) {
+      // A build without the ML Kit native library must not crash capture —
+      // fall back to the fixtures mock and warn (same as AppState #99).
+      debugPrint('SpendFlow: ML Kit OCR unavailable, using mock: $error');
+      return _ocrPass = MockOcrPass();
+    }
   }
 
   @override

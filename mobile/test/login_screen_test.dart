@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -51,7 +52,7 @@ class _FakeRepository implements ClaimRepository {
       const <InboxItem>[];
 
   @override
-  Future<OcrDraft> capture() async => Fixtures.initialDraft;
+  Future<OcrDraft> capture({Uint8List? cameraBytes}) async => Fixtures.initialDraft;
 
   @override
   Future<OcrDraft> saveDraft(OcrDraft draft) async => draft;

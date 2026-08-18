@@ -387,6 +387,7 @@ class OcrResult {
     required this.category,
     required this.description,
     this.fields = const <OcrFieldKey, FieldResult>{},
+    this.receiptUrl,
   });
 
   final String merchant;
@@ -402,8 +403,27 @@ class OcrResult {
   /// uses (currently ignored — `cropTop` still drives [ReceiptCrop]).
   final Map<OcrFieldKey, FieldResult> fields;
 
+  /// Durable storage reference for the captured frame (#103) — the URL the
+  /// BE returned after the image upload. Metadata about the source image, not
+  /// an editable field: [toOcrDraft] deliberately drops it.
+  final String? receiptUrl;
+
+  OcrResult copyWith({String? receiptUrl}) => OcrResult(
+        merchant: merchant,
+        date: date,
+        amount: amount,
+        tax: tax,
+        currency: currency,
+        category: category,
+        description: description,
+        fields: fields,
+        receiptUrl: receiptUrl ?? this.receiptUrl,
+      );
+
   /// Flatten into the [OcrDraft] shape the capture → confirm flow edits and
-  /// persists. The per-field confidence/bbox are not part of that shape yet.
+  /// persists. The per-field confidence/bbox are not part of that shape yet,
+  /// and neither is [receiptUrl] — the URL is source metadata, not an
+  /// editable field (#103).
   OcrDraft toOcrDraft() => OcrDraft(
         merchant: merchant,
         date: date,
@@ -426,6 +446,7 @@ class OcrResult {
           for (final entry in fields.entries)
             entry.key.name: entry.value.toJson(),
         },
+        if (receiptUrl != null) 'receiptUrl': receiptUrl,
       };
 
   factory OcrResult.fromJson(Map<String, dynamic> json) {
@@ -448,6 +469,7 @@ class OcrResult {
       category: '${json['category'] ?? ''}',
       description: '${json['description'] ?? ''}',
       fields: fields,
+      receiptUrl: json['receiptUrl'] is String ? json['receiptUrl'] as String : null,
     );
   }
 }

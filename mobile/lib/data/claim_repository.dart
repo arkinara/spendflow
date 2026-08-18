@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../api/auth.dart';
 import '../models/models.dart';
 
@@ -42,7 +44,13 @@ abstract class ClaimRepository {
   /// Run the OCR pass over the captured pages and hand back the editable
   /// draft (#91). The demo implementation returns the fixture draft; the
   /// live one calls the mock OCR endpoint (real OCR is #93).
-  Future<OcrDraft> capture();
+  ///
+  /// When [cameraBytes] is provided (#103) the repository first uploads the
+  /// captured frame to the backend's receipt storage, then runs the on-device
+  /// OCR pass over the same bytes — the upload is best-effort (a failed or
+  /// not-yet-landed upload still yields the OCR draft; the receipt URL is a
+  /// nice-to-have, not a blocker).
+  Future<OcrDraft> capture({Uint8List? cameraBytes});
 
   /// Persist the edited draft after confirmation. Returns the stored draft.
   Future<OcrDraft> saveDraft(OcrDraft draft);

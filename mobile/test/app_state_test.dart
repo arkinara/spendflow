@@ -8,7 +8,6 @@ import 'package:spendflow_mobile/data/fixtures.dart';
 import 'package:spendflow_mobile/data/fixtures_claim_repository.dart';
 import 'package:spendflow_mobile/data/mlkit_ocr_pass.dart';
 import 'package:spendflow_mobile/data/mock_ocr_pass.dart';
-import 'package:spendflow_mobile/data/ocr_pass.dart';
 import 'package:spendflow_mobile/data/rest_claim_repository.dart';
 import 'package:spendflow_mobile/models/models.dart';
 import 'package:spendflow_mobile/state/app_state.dart';
@@ -26,8 +25,16 @@ class _RecordingRepository implements ClaimRepository {
   Decision? lastDecision;
   OcrDraft? savedDraft;
 
-  final OcrDraft captureResult =
-      Fixtures.initialDraft.copyWith(merchant: 'Kopi Toko Djawa');
+  /// The bytes handed to [capture] on its most recent call (#103) — proves
+  /// captureFromCamera routes the camera frame through the repository.
+  Uint8List? lastCameraBytes;
+
+  // capture result is a distinct draft (different merchant + amount) so
+  // the test can assert state.draft is exactly what the repository returned.
+  final OcrDraft captureResult = Fixtures.initialDraft.copyWith(
+    merchant: 'Kopi Toko Djawa',
+    amount: '24.000',
+  );
 
   @override
   Future<AuthUser?> getCurrentUser() async => null;
@@ -57,8 +64,9 @@ class _RecordingRepository implements ClaimRepository {
       Fixtures.inbox;
 
   @override
-  Future<OcrDraft> capture() async {
+  Future<OcrDraft> capture({Uint8List? cameraBytes}) async {
     captureCalls += 1;
+    lastCameraBytes = cameraBytes;
     return captureResult;
   }
 
@@ -87,29 +95,8 @@ class _RecordingRepository implements ClaimRepository {
   }
 }
 
-/// A spy [OcrPass] proving captureFromCamera reads through the pass, not the
-/// repository: records the bytes and returns a distinctive result.
-class _SpyOcrPass implements OcrPass {
-  int calls = 0;
-  Uint8List? lastBytes;
-
-  @override
-  Future<OcrResult> scanFrame(Uint8List bytes) async {
-    calls += 1;
-    lastBytes = bytes;
-    return OcrResult(
-      merchant: 'Kopi Toko Djawa',
-      date: '15/07/2026',
-      amount: '24.000',
-      tax: '0',
-      currency: 'IDR',
-      category: 'Meals',
-      description: 'Morning standup round',
-      fields: const <OcrFieldKey, FieldResult>{},
-    );
-  }
-}
-
+/// A recording repository whose [capture] result is distinctive, proving the
+/// camera-frame path routes through the repository rather than the fixtures.
 void main() {
   group('policy caps', () {
     test('the scanned meal is over the Meals cap', () {
@@ -371,19 +358,19 @@ void main() {
       expect(state.scanSubtitle, contains('Offline'));
     });
 
-    test('captureFromCamera delegates to OcrPass.scanFrame and persists',
+    test('captureFromCamera passes bytes to repository.capture and persists',
         () async {
-      final pass = _SpyOcrPass();
+      final repo = _RecordingRepository();
       final store = InMemoryStore();
-      final state = await AppState.create(store: store, ocrPass: pass);
+      final state = await AppState.create(store: store, repository: repo);
       final bytes = Uint8List.fromList(<int>[1, 2, 3]);
 
       final finished = await state.captureFromCamera(bytes);
 
       expect(finished, isTrue);
-      expect(pass.calls, 1);
-      expect(pass.lastBytes, bytes);
-      expect(state.draft.merchant, 'Kopi Toko Djawa');
+      expect(repo.captureCalls, 1);
+      expect(repo.lastCameraBytes, bytes);
+      expect(state.draft, same(repo.captureResult));
       final saved = await store.readMap('draft');
       expect(saved, isNotNull);
       expect(saved!['merchant'], 'Kopi Toko Djawa');

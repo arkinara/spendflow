@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../api/auth.dart';
 import '../models/models.dart';
 import '../util/currency.dart';
@@ -60,7 +62,7 @@ class FixturesClaimRepository implements ClaimRepository {
       _inboxView ?? Fixtures.inbox;
 
   @override
-  Future<OcrDraft> capture() async => Fixtures.initialDraft;
+  Future<OcrDraft> capture({Uint8List? cameraBytes}) async => Fixtures.initialDraft;
 
   @override
   Future<OcrDraft> saveDraft(OcrDraft draft) async {
