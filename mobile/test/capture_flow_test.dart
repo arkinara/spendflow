@@ -14,6 +14,10 @@ Future<void> _runScan(WidgetTester tester) async {
 
 Future<void> _signIn(WidgetTester tester, {AppState? state}) async {
   await tester.pumpWidget(SpendFlowApp(initialState: state ?? AppState()));
+  // The #102 form validates non-empty fields, so the flow tests enter real
+  // (demo) credentials instead of tapping the button cold.
+  await tester.enterText(find.byType(TextFormField).first, 'a@b.c');
+  await tester.enterText(find.byType(TextFormField).at(1), 'pw');
   await tester.tap(find.text('Sign in'));
   await tester.pumpAndSettle();
 }

@@ -1,34 +1,60 @@
 import 'package:flutter/material.dart';
 
 import '../api/errors.dart';
-import '../data/fixtures.dart';
 import '../state/app_state.dart';
 import '../theme/tokens.dart';
+import '../widgets/common.dart';
 import 'shell.dart';
 
 /// Sign-in.
 ///
-/// Tries the repository seam (#91) — `RestClaimRepository` when a backend is
-/// wired, cookie session + `/api/me` read-back. When no backend is reachable
-/// — offline, CI, or the fixture demo — the fixtures repository (or the
-/// ApiException fallback) keeps the Phase 1 demo hand-off alive, preserving
-/// offline capture. A production auth screen replaces the fallback.
-class LoginScreen extends StatelessWidget {
+/// Real email + password form against the repository seam (#91) — the REST
+/// repository POSTs to `/api/auth/sign-in/email` and reads the session back
+/// from `/api/me`; the fixtures repository accepts anything and returns the
+/// demo employee. Errors surface as a toast and the screen stays put — no
+/// silent fallback to demo credentials.
+class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
   static const String routeName = '/';
 
-  Future<void> _signIn(BuildContext context) async {
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final TextEditingController _email = TextEditingController();
+  final TextEditingController _password = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  /// Validate, then exchange the credentials for a session. On success the
+  /// [AppState] is seeded with the returned user and the shell takes over; on
+  /// [ApiException] (bad credentials, offline, …) the message is toasted and
+  /// the screen stays put. The email is preserved so a retry never retypes it;
+  /// only the password resets.
+  Future<void> _submit() async {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _submitting = true);
     final state = AppScope.read(context);
     try {
       final user =
-          await state.repository.signIn(Fixtures.userEmail, 'spendflow-demo');
+          await state.repository.signIn(_email.text.trim(), _password.text);
       state.signInAs(user);
-    } on ApiException {
-      state.signIn();
-    }
-    if (context.mounted) {
+      if (!mounted) return;
       Navigator.of(context).pushReplacementNamed(MainShell.routeName);
+    } on ApiException catch (error) {
+      _password.clear();
+      if (mounted) showToast(context, error.message);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
@@ -77,29 +103,64 @@ class LoginScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 28),
-                const _ReadOnlyField(
-                  label: 'Work email',
-                  value: Fixtures.userEmail,
-                ),
-                const SizedBox(height: 14),
-                const _ReadOnlyField(
-                  label: 'Password',
-                  value: '••••••••••',
-                ),
-                const SizedBox(height: 20),
-                FilledButton(
-                  onPressed: () => _signIn(context),
-                  style: FilledButton.styleFrom(minimumSize: const Size(0, 52)),
-                  child: const Text('Sign in'),
-                ),
-                const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: () => _signIn(context),
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size(0, 52),
+                Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      TextFormField(
+                        controller: _email,
+                        enabled: !_submitting,
+                        keyboardType: TextInputType.emailAddress,
+                        autofillHints: const <String>[AutofillHints.username],
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(
+                          labelText: 'Work email',
+                          prefixIcon: Icon(Icons.mail_outline, size: 20),
+                        ),
+                        validator: (value) {
+                          final email = value?.trim() ?? '';
+                          if (email.isEmpty) return 'Enter your work email';
+                          if (!email.contains('@')) {
+                            return 'Enter a valid email';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      TextFormField(
+                        controller: _password,
+                        enabled: !_submitting,
+                        obscureText: true,
+                        autofillHints: const <String>[AutofillHints.password],
+                        textInputAction: TextInputAction.done,
+                        onFieldSubmitted: (_) => _submit(),
+                        decoration: const InputDecoration(
+                          labelText: 'Password',
+                          prefixIcon: Icon(Icons.lock_outline, size: 20),
+                        ),
+                        validator: (value) => (value == null || value.isEmpty)
+                            ? 'Enter your password'
+                            : null,
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: _submitting ? null : _submit,
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(0, 52),
+                        ),
+                        child: _submitting
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                ),
+                              )
+                            : const Text('Sign in'),
+                      ),
+                    ],
                   ),
-                  icon: const Icon(Icons.lock_outline, size: 18),
-                  label: const Text('Continue with SSO'),
                 ),
                 const SizedBox(height: 24),
                 Text(
@@ -117,39 +178,6 @@ class LoginScreen extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _ReadOnlyField extends StatelessWidget {
-  const _ReadOnlyField({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Text(
-          label,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-        ),
-        const SizedBox(height: 6),
-        Container(
-          height: 48,
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            color: SpendFlowTokens.of(context).surfaceContainerHigh,
-            borderRadius: Radii.md,
-            border: Border.all(color: theme.colorScheme.outline),
-          ),
-          child: Text(value, style: const TextStyle(fontSize: 14)),
-        ),
-      ],
     );
   }
 }

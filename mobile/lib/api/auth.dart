@@ -40,8 +40,14 @@ class AuthUser {
   }
 }
 
-/// POST credentials to the Better Auth login endpoint. Resolves to the
-/// authenticated user and lets the cookie store keep the session cookie.
+/// POST credentials to the Better Auth email+password endpoint. Resolves to
+/// the authenticated user and lets the cookie store keep the session cookie.
+///
+/// HTTP contract (matches Better Auth's `signIn.email`, verified against the
+/// backend in #89): `POST /api/auth/sign-in/email` with the JSON body
+/// `{ "email": ..., "password": ... }`. The response `Set-Cookie`s an
+/// httpOnly session cookie that [httpClient]'s shared [HttpClient] cookie jar
+/// stores and re-sends on every later request.
 ///
 /// Better Auth's raw sign-in answer is not the normalized shape — `/api/me`
 /// is — so the session is read back after the POST, same as the web client.
