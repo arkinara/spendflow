@@ -43,7 +43,27 @@ revisit:
 | --- | --- | --- |
 | `backend/` | Hono + SQLite | Phase 1, wired |
 | `frontend/` | Next.js 14 + Tailwind | Phase 1, wired |
-| `mobile/` | Flutter 3.44 (Android + iOS) | Phase 2, front end only |
+| `mobile/` | Flutter 3.47 (Android + iOS) | Phase 2, productionized (2026-08-18) |
+
+## Phase 2 mobile (productionized)
+
+The mobile app went from "FE-only with fixtures" to a real product in the
+productionization epic (#98-#104):
+
+- **#98** Dart SDK ^3.8.0 — unblocks the pre-existing analyzer errors
+- **#76** S3/R2 receipt storage behind a driver seam (local default)
+- **#99** On-device OCR via `google_mlkit_text_recognition` (MlKitOcrPass)
+- **#100** BE: `PATCH /api/mobile/drafts/current`, `POST /api/mobile/sync`,
+  `POST /api/mobile/inbox/:id/decide`
+- **#101** `OcrDraft → LineItem[]` mapper + Web↔Mobile data-shape audit
+- **#102** Real auth: email + password form → `/api/auth/sign-in/email`
+- **#103** Receipt image flow: capture → `POST /api/mobile/receipts` → S3/R2
+
+E2E verification at close (2026-08-18): 372 BE + 530 FE (web) + 112 mobile
+tests pass, 0 analyzer errors, repo in sync. See
+[`docs/epic-mobile-productionization.md`](docs/epic-mobile-productionization.md)
+for the full epic record + remaining follow-ups (push notifications, sync
+idempotency, receipt dedup, real-device pass).
 
 ## Verification
 
