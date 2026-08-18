@@ -32,7 +32,7 @@ import {
   toClaimRow,
   type ClaimRow,
 } from "./claims.js";
-import { computeClaimSla, type SlaSummary } from "./sla.js";
+import { computeClaimSla, claimSlaBadge, type SlaSummary } from "./sla.js";
 
 export class ApprovalError extends Error {
   constructor(
@@ -568,6 +568,96 @@ const MOBILE_DECISION_ACTIONS: Record<MobileDecision, DecisionAction> = {
   reject: "reject",
   return: "request_changes",
 };
+
+/**
+ * Mobile approver-inbox item shape (#101). Field vocabulary matches what
+ * `mobile/lib/models/models.dart` `InboxItem.fromJson` / the tolerant decoder
+ * in `rest_claim_repository.dart` expect — a DIFFERENT wire shape from the web
+ * inbox (`BackendInboxItem`), served only by the mobile route. `sla` is the
+ * human badge label the web's SlaBadge renders (so both clients show the same
+ * text); `slaTone` maps the badge tone onto the mobile's info/ok/error enum.
+ */
+export interface MobileInboxItem {
+  id: string;
+  submitter: string;
+  initials: string;
+  title: string;
+  sub: string;
+  amount: number;
+  sla: string;
+  slaTone: "info" | "ok" | "error";
+  flagText: string | null;
+}
+
+/**
+ * Mobile SLA label — reproduces the web SlaBadge's `levelLabel` verbatim
+ * (frontend/components/ui/SlaBadge.tsx) so phone + web render the same chip.
+ */
+function mobileSlaLabel(sla: SlaSummary): string {
+  switch (sla.level) {
+    case "fresh":
+      return "Just submitted";
+    case "on_track":
+      return `${sla.ageDays}d open`;
+    case "aging":
+      return `Aging: ${sla.ageDays}d`;
+    case "stale":
+      return `Stale: ${sla.ageDays}d`;
+    case "breached":
+      return `Overdue: ${sla.ageDays}d`;
+  }
+}
+
+/** Map the web badge tone onto the mobile SlaTone enum names. */
+function mobileSlaTone(sla: SlaSummary): MobileInboxItem["slaTone"] {
+  return claimSlaBadge(sla.level, sla.ageDays).tone === "error"
+    ? "error"
+    : claimSlaBadge(sla.level, sla.ageDays).tone === "warning"
+      ? "ok"
+      : "info";
+}
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  return parts.map((p) => p[0]?.toUpperCase() ?? "").join("") || "?";
+}
+
+/**
+ * Approver inbox in the MOBILE wire shape (#101). Same claim set as
+ * {@link approverInbox} (identity-scoped to the caller) but serialised into
+ * the `InboxItem` vocabulary the mobile app decodes. `flagText` summarises any
+ * lines carrying a persisted policy flag, mirroring the mobile fixture's
+ * warning strip; null when the claim passed policy cleanly.
+ */
+export function mobileApproverInbox(
+  db: DB,
+  approverId: string,
+  approverRoles: Role[]
+): MobileInboxItem[] {
+  return approverInbox(db, approverId, approverRoles).map((item) => {
+    const flaggedLines = db
+      .select({ flag: claimLineItemsTable.policyFlag })
+      .from(claimLineItemsTable)
+      .where(eq(claimLineItemsTable.claimId, item.id))
+      .all()
+      .filter((l) => l.flag != null);
+    const count = flaggedLines.length;
+    return {
+      id: item.id,
+      submitter: item.employeeName,
+      initials: initialsOf(item.employeeName),
+      title: item.title,
+      sub: `${item.employeeName} · ${item.reference} · ${item.stepLabel}`,
+      amount: item.totalAmount,
+      sla: mobileSlaLabel(item.sla),
+      slaTone: mobileSlaTone(item.sla),
+      flagText:
+        count > 0
+          ? `${count} line${count === 1 ? "" : "s"} flagged for Finance exception review`
+          : null,
+    };
+  });
+}
 
 /**
  * Approver decision from the mobile app (#100). The mobile `inboxItemId` IS

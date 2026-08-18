@@ -195,6 +195,39 @@ Reporting-line integrity: `manager_id` is a self-referencing foreign key
 writing. Every role/manager change appends an immutable `audit_logs` row
 capturing the actor and before/after state.
 
+## Web ↔ Mobile data-shape audit (#101)
+
+The mobile app (`mobile/`) submits receipts as a flat `OcrDraft` and reads the
+same backend the web app uses. This audit walks every field of the canonical
+`Claim` + `LineItem` shape and records where each side produces it, so a claim
+submitted from the phone is **byte-identical** to one submitted from the web
+wizard for the same category/amount/date. The single mapper is
+`ocrDraftToLineItem` in `backend/src/services/mobile-claims.ts`.
+
+| Canonical field | Web produces it via | Mobile produces it via | Match |
+| --------------- | ------------------- | ---------------------- | ----- |
+| claim.title | wizard title field → `createClaim` | `OcrDraft.merchant` → mapper → `createClaim` | ✅ merchant maps to the claim title (NOT folded into the line description — the ticket's original "prefix" guess would break byte-identity) |
+| claim.purpose | wizard purpose → `createClaim` | `OcrDraft.description` → mapper | ✅ |
+| claim.currency | wizard currency → `createClaim` | `OcrDraft.currency` (claim level + per-line) | ✅ line.currency and claim.currency both get the draft currency |
+| line.categoryId | wizard picks the category **row id** (`"meals"`) | `OcrDraft.category` label `"Meals"` → `resolveCategoryByName` → row id | ✅ VERIFIED: the web sends the row id, not the display code (`"MEL"`); the mapper resolves label → id case-insensitively |
+| line.description | wizard description | `OcrDraft.description` | ✅ |
+| line.amount | wizard int minor units (391830) | `OcrDraft.amount` `"391.830"` → `parseIndonesianAmount` → int | ✅ (converted by the mapper) |
+| line.date | wizard ISO `"2026-07-15"` | `OcrDraft.date` `"15/07/2026"` → `toIsoDate` | ✅ (converted by the mapper) |
+| line.tax | **no tax field on `ClaimLine`** — tax is folded into the confirmed amount | `OcrDraft.tax` parsed for validation symmetry only; stays inside the confirmed total | ✅ both sides have no per-line tax column |
+| line.note | attachment rows (see `attachments` table) | `OcrDraft.receiptUrl` → `line.note` | ⚠️ documented: real attachment wiring (receiptUrl → attachment rows) is ticket #103 |
+| line.currency | wizard currency per line | `OcrDraft.currency` per line | ✅ |
+| line.quantity / unitRate / mileage | mileage lines compute server-side | non-mileage drafts never set these | ✅ |
+
+**InboxItem shape (approver side).** The mobile decodes a **different** wire
+shape from the web (`GET /api/approver/inbox` → `{ items }` with
+`employeeName`/`totalAmount`/`stepLabel`/`sla` object). The mobile consumer
+(`rest_claim_repository.dart`) calls `GET /api/inbox/:approverId` and expects
+`{ inbox }` with `submitter`/`initials`/`sub`/`amount`/`sla` (string)/
+`slaTone`/`flagText`. Additive fix: `mobileApproverInbox` in
+`backend/src/services/approvals.ts` serves the same claim set in the mobile
+vocabulary; the web endpoint is untouched. `sla` mirrors the web SlaBadge
+label; `slaTone` maps the badge tone onto the mobile's info/ok/error enum.
+
 ## Demo credentials (after `npm run seed`)
 
 | Role     | Email                              |

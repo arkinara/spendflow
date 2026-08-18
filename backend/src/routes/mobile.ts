@@ -18,7 +18,7 @@ import {
   submitMobileClaim,
   syncMobileClaims,
 } from "../services/mobile-claims.js";
-import { decideMobileInboxItem } from "../services/approvals.js";
+import { decideMobileInboxItem, mobileApproverInbox } from "../services/approvals.js";
 import { jsonError } from "./claims.js";
 
 const mobileClaimSchema = z.object({
@@ -98,6 +98,18 @@ export function mobileClaimsRoutes(deps: {
       parsed.data.items
     );
     return c.json({ synced, failed }, 200);
+  });
+
+  router.get("/api/inbox/:approverId", async (c) => {
+    // The mobile app's approver inbox (#101). Approvers + finance review;
+    // identity is taken from the session (the path id mirrors the client's
+    // contract, per the mobile RestClaimRepository.listInbox wire shape).
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, [
+      "approver",
+      "finance",
+    ]);
+    const inbox = mobileApproverInbox(deps.db, ctx.user.id, ctx.user.roles);
+    return c.json({ inbox }, 200);
   });
 
   router.post("/api/mobile/inbox/:id/decide", async (c) => {

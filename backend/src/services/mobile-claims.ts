@@ -16,7 +16,9 @@ import {
   createClaim,
   submitClaim,
   type ClaimRow,
+  type LineItemInput,
 } from "./claims.js";
+import type { PolicyWarning } from "./policy.js";
 
 /** Request body shape mirroring the Flutter `OcrDraft` model (mobile/lib/models). */
 export interface MobileClaimSubmission {
@@ -109,6 +111,62 @@ function resolveCategoryByName(db: DB, name: string) {
 }
 
 /**
+ * Result of mapping one mobile OcrDraft onto the canonical LineItem shape
+ * (#101). The `line` is exactly what {@link createClaim} consumes, so the
+ * mobile submit path and the web wizard produce byte-identical rows for the
+ * same category/amount/date. `flags` is always `[]` — policy warnings are
+ * evaluated by {@link submitClaim}'s applySubmission pass (same as the web
+ * path), never pre-stamped by a draft mapping.
+ */
+export interface DraftLineMapping {
+  line: LineItemInput;
+  flags: PolicyWarning[];
+}
+
+/**
+ * Map a mobile OcrDraft onto a single canonical LineItemInput (#101). Pure +
+ * DB-scoped only for the category name → row resolution:
+ *  - merchant  → claim title (composed by {@link submitMobileClaim}, mirroring
+ *    the web wizard; NOT folded into the line description — that would break
+ *    byte-identity with web lines, which carry the bare description)
+ *  - amount    "391.830" → int 391830 (Indonesian thousands separator)
+ *  - tax       parsed for symmetry with the web tax field; the canonical line
+ *    schema has NO separate tax column, so tax stays embedded in the OCR total
+ *    amount the user confirmed (documented — mirrors the web, which also has
+ *    no per-line tax)
+ *  - date      "15/07/2026" → "2026-07-15" (ISO)
+ *  - category  "Meals" label → category row id "meals" (case-insensitive).
+ *    VERIFIED #101: the web sends the category ROW id ("meals"), not the
+ *    display code ("MEL") — resolving to the id keeps phone ↔ web identical.
+ *  - currency  → line.currency (mirrors web line.currency)
+ *  - receiptUrl → line.note (real attachment rows are #103, not here)
+ *  - description → line.description (mirrors the web wizard)
+ */
+export function ocrDraftToLineItem(
+  db: DB,
+  input: MobileClaimSubmission
+): DraftLineMapping {
+  const category = resolveCategoryByName(db, input.category);
+  const amount = parseIndonesianAmount(input.amount);
+  // Parsed for validation symmetry with the web wizard's tax field; the
+  // canonical line schema has no separate tax column — tax stays embedded in
+  // the OCR amount the user confirmed.
+  parseIndonesianAmount(input.tax);
+  const note = input.receiptUrl?.trim() ? input.receiptUrl.trim() : undefined;
+  return {
+    line: {
+      categoryId: category.id,
+      description: input.description.trim(),
+      date: toIsoDate(input.date),
+      amount,
+      currency: input.currency,
+      note,
+    },
+    flags: [],
+  };
+}
+
+/**
  * Submit an OCR draft as a claim in one step: map the draft onto the canonical
  * createClaim + submitClaim path. Policy evaluation, approval routing, audit,
  * notifications, and SLA stamping all happen inside that path — a mobile
@@ -121,27 +179,13 @@ export async function submitMobileClaim(
   actorId: string,
   input: MobileClaimSubmission
 ): Promise<MobileClaimResult> {
-  const category = resolveCategoryByName(db, input.category);
-  const amount = parseIndonesianAmount(input.amount);
-  // Parsed for validation symmetry with the web wizard's tax field; the
-  // canonical line schema has no separate tax column — tax stays embedded in
-  // the OCR amount the user confirmed.
-  parseIndonesianAmount(input.tax);
+  const { line } = ocrDraftToLineItem(db, input);
 
   const draft = createClaim(db, actorId, {
     title: input.merchant.trim(),
     purpose: input.description.trim(),
     currency: input.currency,
-    lineItems: [
-      {
-        categoryId: category.id,
-        description: input.description.trim(),
-        date: toIsoDate(input.date),
-        amount,
-        currency: input.currency,
-        note: input.receiptUrl,
-      },
-    ],
+    lineItems: [line],
   });
 
   const { claim } = submitClaim(db, draft.id, actorId);
