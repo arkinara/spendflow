@@ -2,7 +2,7 @@
  * SpendFlow — Attachment upload/retrieval/scope tests (ticket #11, Attachment
  * Storage & Manual Metadata API sub-feature).
  * ========================================================================== */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEMO,
   authedDelete,
@@ -13,6 +13,35 @@ import {
   login,
   type Harness,
 } from "./helpers.js";
+
+// #76: stub the AWS SDK module so the S3 driver never touches the network in
+// tests. storage.ts constructs S3Client / PutObjectCommand against these fakes.
+const s3Mock = vi.hoisted(() => {
+  class FakePutObjectCommand {
+    input: Record<string, unknown>;
+    constructor(input: Record<string, unknown>) {
+      this.input = input;
+    }
+  }
+  class FakeDeleteObjectCommand {
+    input: Record<string, unknown>;
+    constructor(input: Record<string, unknown>) {
+      this.input = input;
+    }
+  }
+  class FakeS3Client {
+    async send(): Promise<unknown> {
+      return {};
+    }
+  }
+  return { FakeS3Client, FakePutObjectCommand, FakeDeleteObjectCommand };
+});
+
+vi.mock("@aws-sdk/client-s3", () => ({
+  S3Client: s3Mock.FakeS3Client,
+  PutObjectCommand: s3Mock.FakePutObjectCommand,
+  DeleteObjectCommand: s3Mock.FakeDeleteObjectCommand,
+}));
 
 let h: Harness;
 let employeeCookie: string;
@@ -181,5 +210,71 @@ describe("attachment deletion", () => {
     const claimRes = await authedGet(h.app, `/api/claims/${claimId}`, employeeCookie);
     const claim = await claimRes.json();
     expect(claim.claim.lineItems[0].hasReceipt).toBe(false);
+  });
+});
+
+describe("storage driver wiring (#76)", () => {
+  // AC (#76): when SPENDFLOW_STORAGE_DRIVER=local (the default), uploads behave
+  // exactly as before — the response fileUrl stays a relative storage key and
+  // downloads stream the bytes.
+  it("POST /api/attachments with SPENDFLOW_STORAGE_DRIVER=local works exactly as today", async () => {
+    const { claimId, lineId } = await createDraftClaimWithLine();
+    const file = new File([new Uint8Array([1, 2, 3])], "r.png", { type: "image/png" });
+    const uploadRes = await authedPostForm(
+      h.app,
+      `/api/claims/${claimId}/line-items/${lineId}/attachments`,
+      employeeCookie,
+      { file, merchant: "Cafe X" }
+    );
+    expect(uploadRes.status).toBe(201);
+    const body = await uploadRes.json();
+    expect(body.attachment.fileUrl.startsWith("http")).toBe(false);
+    expect(body.attachment.fileUrl.startsWith(`${lineId}/`)).toBe(true);
+
+    const downloadRes = await authedGet(
+      h.app,
+      `/api/attachments/${body.attachment.id}`,
+      employeeCookie
+    );
+    expect(downloadRes.status).toBe(200);
+    expect(downloadRes.headers.get("content-type")).toBe("image/png");
+    const bytes = new Uint8Array(await downloadRes.arrayBuffer());
+    expect(bytes.length).toBe(3);
+  });
+
+  // AC (#76): when SPENDFLOW_STORAGE_DRIVER=s3, the response fileUrl is the
+  // configured public URL prefix + key (CDN-friendly receiptUrl for clients).
+  it("POST /api/attachments with SPENDFLOW_STORAGE_DRIVER=s3 returns the S3 public URL", async () => {
+    const prev = { ...process.env };
+    process.env.SPENDFLOW_STORAGE_DRIVER = "s3";
+    process.env.SPENDFLOW_STORAGE_BUCKET = "spendflow-receipts";
+    process.env.SPENDFLOW_STORAGE_REGION = "us-east-1";
+    process.env.SPENDFLOW_STORAGE_ACCESS_KEY_ID = "test-key";
+    process.env.SPENDFLOW_STORAGE_SECRET_ACCESS_KEY = "test-secret";
+    process.env.SPENDFLOW_STORAGE_PUBLIC_URL = "https://cdn.example.com";
+    try {
+      h = await bootstrap();
+      const s3Login = await login(h.app, DEMO.employee.email);
+      expect(s3Login.status).toBe(200);
+      employeeCookie = s3Login.cookie;
+      const { claimId, lineId } = await createDraftClaimWithLine();
+      const file = new File([new Uint8Array([1, 2, 3])], "r.png", { type: "image/png" });
+      const uploadRes = await authedPostForm(
+        h.app,
+        `/api/claims/${claimId}/line-items/${lineId}/attachments`,
+        employeeCookie,
+        { file }
+      );
+      expect(uploadRes.status).toBe(201);
+      const body = await uploadRes.json();
+      expect(body.attachment.fileUrl).toMatch(
+        /^https:\/\/cdn\.example\.com\/receipts\//
+      );
+    } finally {
+      for (const k of Object.keys(process.env)) {
+        if (!(k in prev)) delete process.env[k];
+      }
+      Object.assign(process.env, prev);
+    }
   });
 });

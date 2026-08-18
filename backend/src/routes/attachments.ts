@@ -17,10 +17,13 @@ import {
   resolveAttachmentForDownload,
   storeAttachment,
 } from "../services/attachments.js";
+import { getReceiptStorage } from "../services/storage.js";
 import { jsonError } from "./claims.js";
 
 export function attachmentRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
   const router = new Hono();
+  // #76: active storage driver (local disk by default; S3/R2 when configured).
+  const storage = getReceiptStorage(deps.env);
 
   /**
    * Upload a receipt attachment against a line item. Accepts multipart/form-data
@@ -54,7 +57,7 @@ export function attachmentRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
           bytes,
           metadata,
         },
-        { uploadsDirOverride: deps.env.uploadsDir ?? null }
+        { uploadsDirOverride: deps.env.uploadsDir ?? null, storage }
       );
       return c.json({ attachment }, 201);
     }
@@ -62,22 +65,30 @@ export function attachmentRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
 
   /**
    * Download a stored attachment. Auth + scope checked server-side: only the
-   * owner, an assigned approver, or finance may stream the bytes.
+   * owner, an assigned approver, or finance may access it. Local driver streams
+   * the bytes; S3 driver 302-redirects to the public URL (#76).
    */
   router.get("/api/attachments/:id", async (c) => {
     const ctx = await requireUser(deps.auth, c.req.raw.headers);
-    const { row, bytes } = await resolveAttachmentForDownload(
+    const result = await resolveAttachmentForDownload(
       deps.db,
       c.req.param("id"),
       { id: ctx.user.id, roles: ctx.user.roles },
-      { uploadsDirOverride: deps.env.uploadsDir ?? null }
+      {
+        uploadsDirOverride: deps.env.uploadsDir ?? null,
+        storage,
+        driver: deps.env.storageDriver,
+      }
     );
-    return new Response(bytes, {
+    if (result.mode === "s3") {
+      return c.redirect(result.redirectUrl, 302);
+    }
+    return new Response(result.bytes, {
       status: 200,
       headers: {
-        "content-type": row.mimeType,
-        "content-length": String(bytes.byteLength),
-        "content-disposition": `inline; filename="${encodeURIComponent(row.fileName)}"`,
+        "content-type": result.row.mimeType,
+        "content-length": String(result.bytes.byteLength),
+        "content-disposition": `inline; filename="${encodeURIComponent(result.row.fileName)}"`,
       },
     });
   });
@@ -86,6 +97,7 @@ export function attachmentRoutes(deps: { auth: Auth; db: DB; env: Env }): Hono {
     const ctx = await requireUser(deps.auth, c.req.raw.headers);
     await deleteAttachment(deps.db, c.req.param("id"), ctx.user.id, {
       uploadsDirOverride: deps.env.uploadsDir ?? null,
+      storage,
     });
     return c.json({ ok: true });
   });

@@ -9,8 +9,8 @@
  * ========================================================================== */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, extname, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import {
   approvalStepsTable,
@@ -23,6 +23,11 @@ import type { DB } from "../db/index.js";
 import type { Role } from "../types.js";
 import { writeAudit } from "./audit.js";
 import { getOwnedClaim, ClaimError } from "./claims.js";
+import {
+  LocalReceiptStorage,
+  type ReceiptStorage,
+  type StoredReceipt,
+} from "./storage.js";
 
 export class AttachmentError extends Error {
   constructor(
@@ -102,12 +107,27 @@ function sanitiseFileName(original: string): string {
 }
 
 /**
+ * Resolve the storage driver to use for this call. The route passes an
+ * explicit `storage` (built from env by the factory); direct callers fall back
+ * to the historical local-disk behavior.
+ */
+function resolveStorage(opts: {
+  uploadsDirOverride?: string | null;
+  storage?: ReceiptStorage;
+}): ReceiptStorage {
+  return (
+    opts.storage ?? new LocalReceiptStorage(uploadsDir(opts.uploadsDirOverride))
+  );
+}
+
+/**
  * Store an uploaded receipt against a line item. The caller must have already
  * authenticated; this function re-checks ownership (the line item must belong
  * to a Draft/Action Required claim owned by `actorId`) before writing anything.
  *
  * `bytes` + `mimeType` come from the multipart parser in the route layer; the
- * manual `metadata` fields are user-entered (never auto-extracted).
+ * manual `metadata` fields are user-entered (never auto-extracted). File bytes
+ * are delegated to the active `ReceiptStorage` driver (#76).
  */
 export async function storeAttachment(
   db: DB,
@@ -120,9 +140,10 @@ export async function storeAttachment(
     bytes: Uint8Array;
     metadata: AttachmentMetadata;
   },
-  opts: { uploadsDirOverride?: string | null } = {}
+  opts: { uploadsDirOverride?: string | null; storage?: ReceiptStorage } = {}
 ): Promise<StoredAttachment> {
   const { claimId, lineItemId, actorId } = args;
+  const storage = resolveStorage(opts);
 
   // Ownership + mutability check: claim must be owned by the caller and in a
   // status where line items can still be edited.
@@ -161,26 +182,32 @@ export async function storeAttachment(
 
   const baseName = sanitiseFileName(args.fileName);
   const relPath = `${lineItemId}/${baseName}`;
-  const absPath = join(uploadsDir(opts.uploadsDirOverride), relPath);
 
+  let stored: StoredReceipt;
   try {
-    await mkdir(dirname(absPath), { recursive: true });
-    await writeFile(absPath, args.bytes);
+    stored = await storage.store(args.bytes, {
+      filename: relPath,
+      contentType: mime,
+      sizeBytes: args.bytes.byteLength,
+    });
   } catch (err) {
     throw new AttachmentError(
       500,
       "storage_failed",
-      `Failed to write attachment: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to store attachment: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 
   const id = `att-${crypto.randomUUID()}`;
   const now = new Date();
+  // Client-facing `fileUrl` is the storage driver's public URL; the DB row
+  // persists the storage key (`stored.key`, still the relative path) so local
+  // reads / S3 redirects / deletes can all recover the object.
   const row: StoredAttachment = {
     id,
     lineItemId,
     fileName: args.fileName,
-    fileUrl: relPath,
+    fileUrl: stored.publicUrl,
     mimeType: mime,
     sizeBytes: args.bytes.byteLength,
     merchant: args.metadata.merchant?.trim() || null,
@@ -200,7 +227,7 @@ export async function storeAttachment(
         id: row.id,
         lineItemId: row.lineItemId,
         fileName: row.fileName,
-        fileUrl: row.fileUrl,
+        fileUrl: relPath,
         mimeType: row.mimeType,
         sizeBytes: row.sizeBytes,
         merchant: row.merchant,
@@ -236,14 +263,23 @@ export async function storeAttachment(
 /**
  * Resolve an attachment for download, verifying the caller has access to the
  * parent claim (owner, assigned approver, or finance). Returns the row + the
- * file bytes. The route layer streams the bytes back.
+ * file bytes for the local driver, or a redirect URL for the S3 driver. The
+ * route layer either streams the bytes or 302-redirects accordingly.
  */
+export type AttachmentDownload =
+  | { row: StoredAttachment; mode: "local"; absPath: string; bytes: Buffer }
+  | { row: StoredAttachment; mode: "s3"; redirectUrl: string };
+
 export async function resolveAttachmentForDownload(
   db: DB,
   attachmentId: string,
   viewer: { id: string; roles: Role[] },
-  opts: { uploadsDirOverride?: string | null } = {}
-): Promise<{ row: StoredAttachment; absPath: string; bytes: Buffer }> {
+  opts: {
+    uploadsDirOverride?: string | null;
+    storage?: ReceiptStorage;
+    driver?: "local" | "s3";
+  } = {}
+): Promise<AttachmentDownload> {
   const row = db
     .select()
     .from(attachmentsTable)
@@ -285,6 +321,26 @@ export async function resolveAttachmentForDownload(
     );
   }
 
+  const rowOut: StoredAttachment = {
+    id: row.id,
+    lineItemId: row.lineItemId,
+    fileName: row.fileName,
+    fileUrl: row.fileUrl,
+    mimeType: row.mimeType,
+    sizeBytes: row.sizeBytes,
+    merchant: row.merchant,
+    amount: row.amount,
+    currency: row.currency,
+    transactionDate: row.transactionDate,
+    uploadedBy: row.uploadedBy,
+    uploadedAt: row.uploadedAt,
+  };
+
+  if (opts.driver === "s3") {
+    const storage = resolveStorage(opts);
+    return { row: rowOut, mode: "s3", redirectUrl: await storage.getPublicUrl(row.fileUrl) };
+  }
+
   const absPath = join(uploadsDir(opts.uploadsDirOverride), row.fileUrl);
   let bytes: Buffer;
   try {
@@ -297,24 +353,7 @@ export async function resolveAttachmentForDownload(
     );
   }
 
-  return {
-    row: {
-      id: row.id,
-      lineItemId: row.lineItemId,
-      fileName: row.fileName,
-      fileUrl: row.fileUrl,
-      mimeType: row.mimeType,
-      sizeBytes: row.sizeBytes,
-      merchant: row.merchant,
-      amount: row.amount,
-      currency: row.currency,
-      transactionDate: row.transactionDate,
-      uploadedBy: row.uploadedBy,
-      uploadedAt: row.uploadedAt,
-    },
-    absPath,
-    bytes,
-  };
+  return { row: rowOut, mode: "local", absPath, bytes };
 }
 
 /**
@@ -353,7 +392,10 @@ export async function deleteAttachment(
   db: DB,
   attachmentId: string,
   actorId: string,
-  opts: { uploadsDirOverride?: string | null } = {}
+  opts: {
+    uploadsDirOverride?: string | null;
+    storage?: ReceiptStorage;
+  } = {}
 ): Promise<void> {
   const row = db
     .select()
@@ -394,9 +436,9 @@ export async function deleteAttachment(
     );
   }
 
-  const absPath = join(uploadsDir(opts.uploadsDirOverride), row.fileUrl);
+  const storage = resolveStorage(opts);
   try {
-    await rm(absPath, { force: true });
+    await storage.delete(row.fileUrl);
   } catch {
     // best-effort; metadata row is the source of truth
   }

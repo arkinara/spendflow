@@ -16,6 +16,18 @@ export interface Env {
   port: number;
   /** Override for the local attachment storage directory (tests / prod). */
   uploadsDir: string | null;
+  /** #76 — receipt storage driver: "local" (default, dev) or "s3" (AWS S3 / Cloudflare R2). */
+  storageDriver: "local" | "s3";
+  storageBucket: string | null;
+  storageRegion: string | null;
+  /** S3-compatible endpoint override (Cloudflare R2). Empty for AWS S3. */
+  storageEndpoint: string | null;
+  storageAccessKeyId: string | null;
+  storageSecretAccessKey: string | null;
+  /** Base public URL used to build receipt URLs for clients (CDN-friendly). */
+  storagePublicUrl: string | null;
+  /** Key namespace prefix applied to every stored object key. */
+  storagePathPrefix: string;
   /** #75 — Slack incoming-webhook URL for claim lifecycle events. Optional. */
   slackWebhookUrl: string | null;
   /** #75 — Microsoft Teams incoming-webhook URL for claim lifecycle events. Optional. */
@@ -55,6 +67,33 @@ export function loadEnv(overrides: Partial<Env> = {}): Env {
     sessionExpiresIn: overrides.sessionExpiresIn ?? int("SESSION_EXPIRES_IN", 604800),
     port: overrides.port ?? int("PORT", 8787),
     uploadsDir: overrides.uploadsDir ?? process.env.UPLOADS_DIR ?? null,
+    storageDriver:
+      overrides.storageDriver ??
+      (process.env.SPENDFLOW_STORAGE_DRIVER === "s3" ? "s3" : "local"),
+    storageBucket:
+      overrides.storageBucket ??
+      process.env.SPENDFLOW_STORAGE_BUCKET ??
+      null,
+    storageRegion:
+      overrides.storageRegion ?? process.env.SPENDFLOW_STORAGE_REGION ?? null,
+    storageEndpoint:
+      overrides.storageEndpoint ?? process.env.SPENDFLOW_STORAGE_ENDPOINT ?? null,
+    storageAccessKeyId:
+      overrides.storageAccessKeyId ??
+      process.env.SPENDFLOW_STORAGE_ACCESS_KEY_ID ??
+      null,
+    storageSecretAccessKey:
+      overrides.storageSecretAccessKey ??
+      process.env.SPENDFLOW_STORAGE_SECRET_ACCESS_KEY ??
+      null,
+    storagePublicUrl:
+      overrides.storagePublicUrl ??
+      process.env.SPENDFLOW_STORAGE_PUBLIC_URL ??
+      null,
+    storagePathPrefix:
+      overrides.storagePathPrefix ??
+      process.env.SPENDFLOW_STORAGE_PATH_PREFIX ??
+      "receipts/",
     slackWebhookUrl:
       overrides.slackWebhookUrl ??
       process.env.SPENDFLOW_SLACK_WEBHOOK_URL ??
