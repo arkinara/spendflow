@@ -18,6 +18,12 @@ import {
   submitMobileClaim,
   syncMobileClaims,
 } from "../services/mobile-claims.js";
+import {
+  ALLOWED_MIME,
+  MAX_FILE_BYTES,
+  sanitiseFileName,
+} from "../services/attachments.js";
+import { getReceiptStorage } from "../services/storage.js";
 import { decideMobileInboxItem, mobileApproverInbox } from "../services/approvals.js";
 import { jsonError } from "./claims.js";
 
@@ -52,6 +58,50 @@ export function mobileClaimsRoutes(deps: {
   env: Env;
 }): Hono {
   const router = new Hono();
+  // #103 — the receipt bytes land in the same storage driver the web
+  // attachments use (#76): local disk by default, S3/R2 when configured.
+  const storage = getReceiptStorage(deps.env);
+
+  router.post("/api/mobile/receipts", async (c) => {
+    // Only employees upload receipts — the capture → confirm flow is
+    // employee self-service.
+    const ctx = await requireRole(deps.auth, c.req.raw.headers, "employee");
+    const form = await c.req.formData();
+    const file = form.get("file");
+    if (!(file instanceof File)) {
+      return jsonError(c, 400, "invalid_file", "Missing 'file' in multipart body");
+    }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const mime = (file.type || "application/octet-stream").toLowerCase();
+    if (!ALLOWED_MIME.has(mime)) {
+      return jsonError(
+        c,
+        415,
+        "invalid_file",
+        `Unsupported file type ${file.type}. Allowed: image/*, application/pdf.`
+      );
+    }
+    if (bytes.byteLength > MAX_FILE_BYTES) {
+      return jsonError(
+        c,
+        413,
+        "file_too_large",
+        `File is ${bytes.byteLength} bytes; max is ${MAX_FILE_BYTES}.`
+      );
+    }
+    // Namespaced by uploader so one draft's frames never collide with another
+    // user's. The returned reference feeds the draft's receiptUrl field (#103).
+    const key = `mobile/${ctx.user.id}/${sanitiseFileName(file.name || "receipt")}`;
+    const stored = await storage.store(bytes, {
+      filename: key,
+      contentType: mime,
+      sizeBytes: bytes.byteLength,
+    });
+    return c.json(
+      { receiptUrl: stored.publicUrl, key: stored.key, sizeBytes: stored.sizeBytes },
+      201
+    );
+  });
 
   router.post("/api/mobile/claims", async (c) => {
     // Only employees submit expense claims (approvers/finance review them).

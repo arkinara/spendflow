@@ -47,7 +47,7 @@ export class AttachmentError extends Error {
 }
 
 /** Allowed upload MIME types (images + PDF only, per ticket). */
-const ALLOWED_MIME = new Set([
+export const ALLOWED_MIME = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
@@ -57,7 +57,7 @@ const ALLOWED_MIME = new Set([
 ]);
 
 /** Phase 1 soft cap: 10 MiB per file. */
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 export interface StoredAttachment {
   id: string;
@@ -94,7 +94,7 @@ export function uploadsDir(override?: string | null): string {
 }
 
 /** Sanitise a client filename into a safe on-disk basename (no path traversal). */
-function sanitiseFileName(original: string): string {
+export function sanitiseFileName(original: string): string {
   const base = original.replace(/[\\/]/g, "_").replace(/[^.\w-]+/g, "_");
   const ext = extname(base).toLowerCase();
   const stem = base.slice(0, base.length - ext.length) || "receipt";
